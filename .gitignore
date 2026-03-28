@@ -1,0 +1,150 @@
+# Dependencies
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+.turbo/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+.env.production.local
+
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-workspace
+*.sublime-project
+.vim/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Testing
+coverage/
+.nyc_output/
+*.lcov
+.jest-cache/
+
+# Temporary files
+tmp/
+temp/
+*.log
+logs/
+
+# Docker
+.dockerignore
+Dockerfile.local
+
+# Kubernetes
+kubeconfig
+*.yaml~
+secrets.yaml
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+
+# Database
+*.sql
+!init-scripts/
+pgbackup/
+
+# Certificates
+*.pem
+*.key
+*.crt
+!.gitkeep
+
+# Local development
+.env.local
+local.yml
+docker-compose.override.yml
+
+# IDE workspace files
+.vscode/extensions.json
+.vscode/launch.json
+.vscode/settings.json
+
+# NPM
+npm-debug.log
+npm-error.log
+
+# Yarn
+yarn-debug.log
+yarn-error.log
+
+# pnpm
+pnpm-debug.log
+
+# Generated files
+tsconfig.tsbuildinfo
+.eslintcache
+.prettierignore
+
+# Distribution
+dist/
+lib/
+
+# Cache directories
+.cache/
+.eslintcache
+.parcel-cache
+
+# Misc
+.git/
+.github/
+.gitmodules
+.vscode-settings
+.editorconfig
+
+# Sensitive files
+*.key
+*.pem
+secrets/
+.aws/
+.gcp-credentials.json
+
+# Database backups
+*.dump
+*.sql.gz
+
+# LLM-specific
+.huggingface/
+models/
+cache/
+
+# Go binaries
+services/llm-orchestrator/bin/
+
+# Rust build artifacts
+services/bree-engine/target/
+
+# BREE runtime data
+services/bree-engine/data/
+
+# CI/CD
+.circleci/
+.github/workflows/*.local.yml

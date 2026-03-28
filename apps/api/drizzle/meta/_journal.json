@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1773971296271,
+      "tag": "0000_wild_wrecker",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1774029507307,
+      "tag": "0001_odd_mysterio",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1774104171484,
+      "tag": "0002_heavy_lifeguard",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1774282763817,
+      "tag": "0003_reflective_iron_lad",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1774284127871,
+      "tag": "0004_fearless_synch",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1774285167060,
+      "tag": "0005_huge_the_phantom",
+      "breakpoints": true
+    }
+  ]
+}

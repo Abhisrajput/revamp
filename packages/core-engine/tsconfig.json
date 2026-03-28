@@ -1,0 +1,17 @@
+{
+  "extends": "../config/tsconfig/base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "declarationMap": true,
+    "sourceMap": true,
+    "lib": ["ES2020"],
+    "baseUrl": ".",
+    "paths": {
+      "@revamp/shared-types": ["../shared-types/dist"],
+      "@revamp/shared-types/*": ["../shared-types/dist/*"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist", "node_modules"]
+}

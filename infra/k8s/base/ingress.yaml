@@ -1,0 +1,143 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: revamp-network-policy
+  namespace: revamp
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: revamp
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: revamp
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53  # DNS
+  - to:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443  # HTTPS for external APIs
+    - protocol: TCP
+      port: 80   # HTTP
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: revamp-tls
+  namespace: revamp
+spec:
+  secretName: revamp-tls-secret
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+  - revamp.example.com
+  - "*.revamp.example.com"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: revamp-ingress
+  namespace: revamp
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization"
+    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+    nginx.ingress.kubernetes.io/enable-owasp-core-rules: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - revamp.example.com
+    - api.revamp.example.com
+    secretName: revamp-tls-secret
+  rules:
+  - host: revamp.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: revamp-web
+            port:
+              number: 80
+  - host: api.revamp.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: revamp-api
+            port:
+              number: 80
+  - host: orchestrator.revamp.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: revamp-llm-orchestrator
+            port:
+              number: 80
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: revamp-api-pdb
+  namespace: revamp
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: revamp-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: revamp-web-pdb
+  namespace: revamp
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: revamp-web
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: revamp-llm-pdb
+  namespace: revamp
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: revamp-llm-orchestrator

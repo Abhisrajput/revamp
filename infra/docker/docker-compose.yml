@@ -1,0 +1,174 @@
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: revamp-postgres
+    environment:
+      POSTGRES_USER: revamp
+      POSTGRES_PASSWORD: revamp_dev_password
+      POSTGRES_DB: revamp
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts/postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U revamp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - revamp-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: revamp-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass revamp_redis_password
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - revamp-network
+
+  # MinIO Object Storage (S3-compatible)
+  minio:
+    image: minio/minio:latest
+    container_name: revamp-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin_password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - revamp-network
+
+  # API Gateway (Fastify)
+  api:
+    build:
+      context: ../../apps/api
+      dockerfile: ../../infra/docker/Dockerfile.api
+    container_name: revamp-api
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgresql://revamp:revamp_dev_password@postgres:5432/revamp
+      REDIS_URL: redis://:revamp_redis_password@redis:6379
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin_password
+      MINIO_BUCKET: revamp
+      LOG_LEVEL: debug
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ../../apps/api/src:/app/src
+      - ../../packages:/app/packages
+    networks:
+      - revamp-network
+    command: npm run dev
+
+  # Web Application (Next.js)
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: ../../infra/docker/Dockerfile.web
+    container_name: revamp-web
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:3000
+      NEXT_PUBLIC_WS_URL: ws://localhost:3000
+    ports:
+      - "3001:3000"
+    depends_on:
+      - api
+    volumes:
+      - ../../apps/web/src:/app/src
+      - ../../packages:/app/packages
+    networks:
+      - revamp-network
+    command: npm run dev
+
+  # LLM Orchestrator (Go service)
+  llm-orchestrator:
+    build:
+      context: ../../services/llm-orchestrator
+      dockerfile: Dockerfile
+    container_name: revamp-llm-orchestrator
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgresql://revamp:revamp_dev_password@postgres:5432/revamp
+      REDIS_URL: redis://:revamp_redis_password@redis:6379
+      LOG_LEVEL: debug
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../../services/llm-orchestrator/src:/app/src
+    networks:
+      - revamp-network
+
+  # BREE Language Support Engine (Rust service)
+  bree-engine:
+    build:
+      context: ../../services/bree-engine
+      dockerfile: Dockerfile
+    container_name: revamp-bree-engine
+    environment:
+      PORT: 8081
+      LOG_LEVEL: info
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - revamp-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  minio_data:
+    driver: local
+
+networks:
+  revamp-network:
+    driver: bridge

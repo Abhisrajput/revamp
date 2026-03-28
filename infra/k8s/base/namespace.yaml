@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: revamp
+  labels:
+    name: revamp
+    managed-by: kustomize
+    environment: production
+  annotations:
+    description: "REVAMP platform namespace for modernization orchestration"
+    version: "1.0.0"

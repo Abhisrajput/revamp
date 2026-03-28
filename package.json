@@ -1,0 +1,38 @@
+{
+  "name": "revamp-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "REVAMP 10X — AI-Powered Legacy Application Modernizer",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "test": "turbo test",
+    "type-check": "turbo type-check",
+    "clean": "turbo clean",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "dev:web": "turbo dev --filter=@revamp/web",
+    "dev:api": "turbo dev --filter=@revamp/api",
+    "dev:vscode": "turbo dev --filter=@revamp/vscode",
+    "build:web": "turbo build --filter=@revamp/web",
+    "build:api": "turbo build --filter=@revamp/api",
+    "build:vscode": "turbo build --filter=@revamp/vscode",
+    "build:llm": "cd services/llm-orchestrator && go build -o bin/llm-orchestrator ./cmd/server",
+    "db:generate": "turbo db:generate --filter=@revamp/api",
+    "db:migrate": "turbo db:migrate --filter=@revamp/api",
+    "db:studio": "turbo db:studio --filter=@revamp/api",
+    "docker:dev": "docker compose -f infra/docker/docker-compose.yml up -d",
+    "docker:prod": "docker compose -f infra/docker/docker-compose.prod.yml up -d"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.27.0",
+    "prettier": "^3.4.0",
+    "tsx": "^4.16.2",
+    "turbo": "^2.4.0"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}

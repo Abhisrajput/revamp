@@ -1,0 +1,56 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: revamp-postgres
+    environment:
+      POSTGRES_USER: revamp
+      POSTGRES_PASSWORD: revamp_dev_password
+      POSTGRES_DB: revamp
+    ports:
+      - "5433:5432"
+    volumes:
+      - revamp_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U revamp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: revamp-redis
+    ports:
+      - "6380:6379"
+    command: redis-server --appendonly yes --requirepass revamp_redis_password
+    volumes:
+      - revamp_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "revamp_redis_password", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: revamp-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin_password
+    ports:
+      - "9002:9000"
+      - "9003:9001"
+    volumes:
+      - revamp_minio_data:/data
+    command: minio server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  revamp_postgres_data:
+  revamp_redis_data:
+  revamp_minio_data:

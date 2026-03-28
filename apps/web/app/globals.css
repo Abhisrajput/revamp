@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+/* Use class-based dark mode (next-themes adds .dark class to <html>) */
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-primary-50: #f0f5f2;
+  --color-primary-100: #dce8e1;
+  --color-primary-200: #bdd4c5;
+  --color-primary-300: #94bba5;
+  --color-primary-400: #6d9e82;
+  --color-primary-500: #4f8568;
+  --color-primary-600: #3d6e55;
+  --color-primary-700: #335a47;
+  --color-primary-800: #2b4a3b;
+  --color-primary-900: #253d32;
+  --color-primary-950: #182820;
+  --color-accent: #f59e0b;
+}
+
+:root {
+  --bg-primary: #f9faf9;
+  --bg-secondary: #f3f6f4;
+  --bg-tertiary: #edf1ee;
+
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-tertiary: #94a3b8;
+
+  --border-color: #e2e8e4;
+}
+
+.dark {
+    --bg-primary: #0f172a;
+    --bg-secondary: #1e293b;
+    --bg-tertiary: #334155;
+
+    --text-primary: #f8fafc;
+    --text-secondary: #cbd5e1;
+    --text-tertiary: #94a3b8;
+
+    --border-color: #334155;
+}
+
+* {
+  @apply border-slate-200 dark:border-slate-700;
+}
+
+html {
+  @apply scroll-smooth;
+}
+
+body {
+  @apply bg-[#f9faf9] dark:bg-slate-950 text-slate-900 dark:text-slate-50;
+  font-feature-settings: "rlig" 1, "calt" 1;
+}
+
+/* Only apply link colors within content areas — not in nav/sidebar/buttons */
+.prose a,
+main a:not([class*="text-"]):not([class*="flex"]):not([class*="inline"]) {
+  @apply text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300;
+}
+
+button {
+  @apply transition-colors duration-200 cursor-pointer;
+}
+
+button:disabled {
+  @apply cursor-not-allowed;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  @apply w-1.5 h-1.5;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 dark:bg-slate-700 rounded-full hover:bg-slate-400 dark:hover:bg-slate-600;
+}
+
+/* Focus ring for accessibility */
+:focus-visible {
+  @apply outline-none ring-2 ring-primary-500 ring-offset-2 dark:ring-offset-slate-950;
+}

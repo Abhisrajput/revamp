@@ -1,0 +1,16 @@
+.gitignore
+.git
+node_modules
+dist
+*.ts
+*.map
+tsconfig.json
+.eslintrc.json
+.prettierrc
+README.md
+.github
+drizzle/
+.env*
+src/
+*.spec.ts
+coverage/

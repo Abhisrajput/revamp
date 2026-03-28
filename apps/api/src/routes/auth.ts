@@ -1,0 +1,596 @@
+import { FastifyInstance } from "fastify";
+import type { UserRole } from "@/plugins/auth.js";
+import { z } from "zod";
+import crypto from "crypto";
+import bcrypt from "bcryptjs";
+import { db } from "@/db/index.js";
+import { users, organizations } from "@/db/schema.js";
+import { eq } from "drizzle-orm";
+
+const BCRYPT_ROUNDS = 12;
+/** OTP validity window in milliseconds (10 minutes) */
+const OTP_EXPIRY_MS = 10 * 60 * 1000;
+/** Password reset token validity window in milliseconds (1 hour) */
+const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000;
+
+const SignInSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+});
+
+const SignUpSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  first_name: z.string(),
+  last_name: z.string(),
+  organization_name: z.string().optional(),
+});
+
+const OTPGenerateSchema = z.object({
+  email: z.string().email(),
+});
+
+const OTPVerifySchema = z.object({
+  email: z.string().email(),
+  otp: z.string().length(6),
+});
+
+const ResetPasswordRequestSchema = z.object({
+  email: z.string().email(),
+});
+
+const ResetPasswordVerifySchema = z.object({
+  email: z.string().email(),
+  token: z.string(),
+});
+
+const ResetPasswordConfirmSchema = z.object({
+  email: z.string().email(),
+  token: z.string(),
+  new_password: z.string().min(8),
+});
+
+// Legacy schema kept for backward compatibility
+const OTPSchema = z.object({
+  email: z.string().email(),
+});
+
+const ResetPasswordSchema = z.object({
+  email: z.string().email(),
+  token: z.string(),
+  new_password: z.string().min(8),
+});
+
+// ─── HELPERS ────────────────────────────────────────────────────
+
+/**
+ * Generate a 6-digit TOTP-like OTP.
+ * Uses HMAC-SHA256 with user's otp_secret and a time-based counter.
+ */
+function generateOTP(secret: string): string {
+  const counter = Math.floor(Date.now() / OTP_EXPIRY_MS);
+  const hmac = crypto.createHmac("sha256", secret);
+  hmac.update(counter.toString());
+  const hash = hmac.digest("hex");
+  // Extract 6-digit code from hash
+  const offset = parseInt(hash.slice(-1), 16);
+  const code = (parseInt(hash.slice(offset * 2, offset * 2 + 8), 16) % 1000000)
+    .toString()
+    .padStart(6, "0");
+  return code;
+}
+
+/**
+ * Verify a 6-digit OTP against the user's secret.
+ * Checks current window and previous window to handle clock drift.
+ */
+function verifyOTP(secret: string, otp: string): boolean {
+  const currentCounter = Math.floor(Date.now() / OTP_EXPIRY_MS);
+
+  // Check current and previous window
+  for (const counter of [currentCounter, currentCounter - 1]) {
+    const hmac = crypto.createHmac("sha256", secret);
+    hmac.update(counter.toString());
+    const hash = hmac.digest("hex");
+    const offset = parseInt(hash.slice(-1), 16);
+    const expectedCode = (parseInt(hash.slice(offset * 2, offset * 2 + 8), 16) % 1000000)
+      .toString()
+      .padStart(6, "0");
+    if (expectedCode === otp) return true;
+  }
+  return false;
+}
+
+/**
+ * Generate a secure random token for password reset.
+ */
+function generateResetToken(): string {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+/**
+ * Try to send an email via the email service. Logs warning if unavailable.
+ */
+async function trySendEmail(
+  type: "otp" | "password_reset",
+  email: string,
+  data: Record<string, string>,
+): Promise<void> {
+  try {
+    const { emailService } = await import("@/services/email.js");
+    if (type === "otp") {
+      await emailService.sendOTP(email, data.otp);
+    } else if (type === "password_reset") {
+      await emailService.sendPasswordReset(email, data.token);
+    }
+  } catch {
+    // Email service not configured — log warning but don't fail
+    console.warn(
+      `[Auth] Email service unavailable — ${type} for ${email} not sent. Data: ${JSON.stringify(data)}`,
+    );
+  }
+}
+
+// Dev-mode fallback users (used when DB is unavailable in development)
+const DEV_USERS: Record<string, { id: string; email: string; password: string; first_name: string; last_name: string; role: UserRole; organization_id: string }> = {
+  "demo@revamp.ai": {
+    id: "00000000-0000-0000-0000-000000000010",
+    email: "demo@revamp.ai",
+    password: "demo1234",
+    first_name: "Demo",
+    last_name: "Admin",
+    role: "admin",
+    organization_id: "00000000-0000-0000-0000-000000000001",
+  },
+  "architect@revamp.ai": {
+    id: "00000000-0000-0000-0000-000000000011",
+    email: "architect@revamp.ai",
+    password: "demo1234",
+    first_name: "Alex",
+    last_name: "Architect",
+    role: "architect",
+    organization_id: "00000000-0000-0000-0000-000000000001",
+  },
+  "developer@revamp.ai": {
+    id: "00000000-0000-0000-0000-000000000012",
+    email: "developer@revamp.ai",
+    password: "demo1234",
+    first_name: "Dev",
+    last_name: "Engineer",
+    role: "developer",
+    organization_id: "00000000-0000-0000-0000-000000000001",
+  },
+};
+
+export async function authRoutes(fastify: FastifyInstance) {
+  fastify.post<{ Body: z.infer<typeof SignInSchema> }>("/auth/login", async (request, reply) => {
+    const validation = SignInSchema.safeParse(request.body);
+    if (!validation.success) {
+      return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+    }
+
+    const { email, password } = validation.data;
+
+    // Try database-backed login first
+    try {
+      const user = await db.query.users.findFirst({
+        where: eq(users.email, email),
+      });
+
+      if (user) {
+        const passwordValid = await bcrypt.compare(password, user.password_hash ?? "");
+        if (!passwordValid) {
+          return reply.status(401).send({ error: "Invalid credentials" });
+        }
+
+        if (!user.is_active) {
+          return reply.status(403).send({ error: "Account is disabled" });
+        }
+
+        await db
+          .update(users)
+          .set({ last_login: new Date() })
+          .where(eq(users.id, user.id));
+
+        const token = fastify.jwt.sign({
+          sub: user.id,
+          email: user.email,
+          role: user.role as UserRole,
+          organization_id: user.organization_id ?? "",
+        });
+
+        return reply.send({
+          token,
+          user: {
+            id: user.id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            role: user.role,
+            organization_id: user.organization_id,
+          },
+        });
+      }
+    } catch (dbError) {
+      // Database unavailable — fall through to dev-mode bypass
+      if (process.env.NODE_ENV === "production") {
+        fastify.log.error(dbError, "Database error during login");
+        return reply.status(500).send({ error: "Internal server error" });
+      }
+      fastify.log.warn("Database unavailable — using dev-mode login fallback");
+    }
+
+    // Dev-mode fallback: accept hardcoded demo credentials when DB is down
+    if (process.env.NODE_ENV !== "production") {
+      const devUser = DEV_USERS[email];
+      if (devUser && devUser.password === password) {
+        const token = fastify.jwt.sign({
+          sub: devUser.id,
+          email: devUser.email,
+          role: devUser.role,
+          organization_id: devUser.organization_id,
+        });
+
+        return reply.send({
+          token,
+          user: {
+            id: devUser.id,
+            email: devUser.email,
+            first_name: devUser.first_name,
+            last_name: devUser.last_name,
+            role: devUser.role,
+            organization_id: devUser.organization_id,
+          },
+        });
+      }
+    }
+
+    return reply.status(401).send({ error: "Invalid credentials" });
+  });
+
+  fastify.post<{ Body: z.infer<typeof SignUpSchema> }>("/auth/signup", async (request, reply) => {
+    const validation = SignUpSchema.safeParse(request.body);
+    if (!validation.success) {
+      return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+    }
+
+    const { email, password, first_name, last_name, organization_name } = validation.data;
+
+    // Check if user exists
+    const existingUser = await db.query.users.findFirst({
+      where: eq(users.email, email),
+    });
+
+    if (existingUser) {
+      return reply.status(409).send({ error: "Email already registered" });
+    }
+
+    // Create organization if provided
+    let organizationId: string | null = null;
+    if (organization_name) {
+      const org = await db
+        .insert(organizations)
+        .values({
+          id: crypto.randomUUID(),
+          name: organization_name,
+          slug: organization_name.toLowerCase().replace(/\s+/g, "-"),
+          owner_id: "", // Will update after user creation
+        })
+        .returning();
+
+      organizationId = org[0]?.id || null;
+    }
+
+    // Create user — hash password with bcrypt before storing
+    const userId = crypto.randomUUID();
+    const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    await db.insert(users).values({
+      id: userId,
+      email,
+      password_hash: hashedPassword,
+      first_name,
+      last_name,
+      organization_id: organizationId,
+      role: "developer",
+    });
+
+    // Update organization owner if created
+    if (organizationId) {
+      await db
+        .update(organizations)
+        .set({ owner_id: userId })
+        .where(eq(organizations.id, organizationId));
+    }
+
+    const token = fastify.jwt.sign({
+      sub: userId,
+      email,
+      role: "developer",
+      organization_id: organizationId ?? "",
+    });
+
+    return reply.status(201).send({
+      token,
+      user: {
+        id: userId,
+        email,
+        first_name,
+        last_name,
+        role: "developer",
+        organization_id: organizationId,
+      },
+    });
+  });
+
+  // ── OTP Generation ─────────────────────────────────────────────
+  // Generates a 6-digit OTP, stores the secret on the user, and sends via email.
+  fastify.post<{ Body: z.infer<typeof OTPGenerateSchema> }>(
+    "/auth/otp/generate",
+    async (request, reply) => {
+      const validation = OTPGenerateSchema.safeParse(request.body);
+      if (!validation.success) {
+        return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+      }
+
+      const { email } = validation.data;
+      const user = await db.query.users.findFirst({
+        where: eq(users.email, email),
+      });
+
+      if (!user) {
+        // Return success even for non-existent users to prevent email enumeration
+        return reply.send({ message: "If the email exists, an OTP has been sent" });
+      }
+
+      // Generate or reuse OTP secret
+      let otpSecret = user.otp_secret;
+      if (!otpSecret) {
+        otpSecret = crypto.randomBytes(32).toString("hex");
+        await db.update(users).set({ otp_secret: otpSecret }).where(eq(users.id, user.id));
+      }
+
+      const otp = generateOTP(otpSecret);
+
+      // Send OTP via email (non-blocking, logs warning if email service unavailable)
+      await trySendEmail("otp", email, { otp });
+
+      return reply.send({ message: "If the email exists, an OTP has been sent" });
+    },
+  );
+
+  // ── OTP Verification ──────────────────────────────────────────
+  // Verifies the OTP and returns a JWT token if valid.
+  fastify.post<{ Body: z.infer<typeof OTPVerifySchema> }>(
+    "/auth/otp/verify",
+    async (request, reply) => {
+      const validation = OTPVerifySchema.safeParse(request.body);
+      if (!validation.success) {
+        return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+      }
+
+      const { email, otp } = validation.data;
+      const user = await db.query.users.findFirst({
+        where: eq(users.email, email),
+      });
+
+      if (!user || !user.otp_secret) {
+        return reply.status(401).send({ error: "Invalid OTP" });
+      }
+
+      if (!user.is_active) {
+        return reply.status(403).send({ error: "Account is disabled" });
+      }
+
+      const isValid = verifyOTP(user.otp_secret, otp);
+      if (!isValid) {
+        return reply.status(401).send({ error: "Invalid or expired OTP" });
+      }
+
+      // Update last login
+      await db.update(users).set({ last_login: new Date() }).where(eq(users.id, user.id));
+
+      const token = fastify.jwt.sign({
+        sub: user.id,
+        email: user.email,
+        role: user.role as UserRole,
+        organization_id: user.organization_id ?? "",
+      });
+
+      return reply.send({
+        token,
+        user: {
+          id: user.id,
+          email: user.email,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          role: user.role,
+          organization_id: user.organization_id,
+        },
+      });
+    },
+  );
+
+  // Legacy OTP endpoint — backward compatible
+  fastify.post<{ Body: z.infer<typeof OTPSchema> }>("/auth/otp", async (request, reply) => {
+    const validation = OTPSchema.safeParse(request.body);
+    if (!validation.success) {
+      return reply.status(400).send({ error: "Invalid input" });
+    }
+
+    // Delegate to /auth/otp/generate
+    const { email } = validation.data;
+    const user = await db.query.users.findFirst({ where: eq(users.email, email) });
+    if (user) {
+      let otpSecret = user.otp_secret;
+      if (!otpSecret) {
+        otpSecret = crypto.randomBytes(32).toString("hex");
+        await db.update(users).set({ otp_secret: otpSecret }).where(eq(users.id, user.id));
+      }
+      const otp = generateOTP(otpSecret);
+      await trySendEmail("otp", email, { otp });
+    }
+    return reply.send({ message: "OTP sent to email" });
+  });
+
+  // ── Password Reset: Request ───────────────────────────────────
+  // Generates a reset token, stores it in otp_secret (base64-encoded JSON), sends email.
+  fastify.post<{ Body: z.infer<typeof ResetPasswordRequestSchema> }>(
+    "/auth/reset-password/request",
+    async (request, reply) => {
+      const validation = ResetPasswordRequestSchema.safeParse(request.body);
+      if (!validation.success) {
+        return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+      }
+
+      const { email } = validation.data;
+      const user = await db.query.users.findFirst({ where: eq(users.email, email) });
+
+      if (!user) {
+        // Prevent email enumeration
+        return reply.send({ message: "If the email exists, a reset link has been sent" });
+      }
+
+      const token = generateResetToken();
+      const expiry = Date.now() + RESET_TOKEN_EXPIRY_MS;
+
+      // Store reset token + expiry in otp_secret field as JSON
+      const resetData = JSON.stringify({ reset_token: token, reset_expiry: expiry });
+      await db
+        .update(users)
+        .set({ otp_secret: resetData, updated_at: new Date() })
+        .where(eq(users.id, user.id));
+
+      await trySendEmail("password_reset", email, { token });
+
+      return reply.send({ message: "If the email exists, a reset link has been sent" });
+    },
+  );
+
+  // ── Password Reset: Verify Token ──────────────────────────────
+  // Validates that the reset token is correct and not expired.
+  fastify.post<{ Body: z.infer<typeof ResetPasswordVerifySchema> }>(
+    "/auth/reset-password/verify",
+    async (request, reply) => {
+      const validation = ResetPasswordVerifySchema.safeParse(request.body);
+      if (!validation.success) {
+        return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+      }
+
+      const { email, token } = validation.data;
+      const user = await db.query.users.findFirst({ where: eq(users.email, email) });
+
+      if (!user || !user.otp_secret) {
+        return reply.status(400).send({ error: "Invalid or expired reset token" });
+      }
+
+      try {
+        const resetData = JSON.parse(user.otp_secret);
+        if (
+          resetData.reset_token !== token ||
+          !resetData.reset_expiry ||
+          Date.now() > resetData.reset_expiry
+        ) {
+          return reply.status(400).send({ error: "Invalid or expired reset token" });
+        }
+      } catch {
+        return reply.status(400).send({ error: "Invalid or expired reset token" });
+      }
+
+      return reply.send({ valid: true });
+    },
+  );
+
+  // ── Password Reset: Confirm ───────────────────────────────────
+  // Validates the token and updates the password.
+  fastify.post<{ Body: z.infer<typeof ResetPasswordConfirmSchema> }>(
+    "/auth/reset-password/confirm",
+    async (request, reply) => {
+      const validation = ResetPasswordConfirmSchema.safeParse(request.body);
+      if (!validation.success) {
+        return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+      }
+
+      const { email, token, new_password } = validation.data;
+      const user = await db.query.users.findFirst({ where: eq(users.email, email) });
+
+      if (!user || !user.otp_secret) {
+        return reply.status(400).send({ error: "Invalid or expired reset token" });
+      }
+
+      try {
+        const resetData = JSON.parse(user.otp_secret);
+        if (
+          resetData.reset_token !== token ||
+          !resetData.reset_expiry ||
+          Date.now() > resetData.reset_expiry
+        ) {
+          return reply.status(400).send({ error: "Invalid or expired reset token" });
+        }
+      } catch {
+        return reply.status(400).send({ error: "Invalid or expired reset token" });
+      }
+
+      // Update password and clear reset token
+      const hashedNewPassword = await bcrypt.hash(new_password, BCRYPT_ROUNDS);
+      await db
+        .update(users)
+        .set({
+          password_hash: hashedNewPassword,
+          otp_secret: null, // Clear the reset token
+          updated_at: new Date(),
+        })
+        .where(eq(users.id, user.id));
+
+      return reply.send({ message: "Password reset successfully" });
+    },
+  );
+
+  // Legacy reset-password endpoint — backward compatible
+  fastify.post<{ Body: z.infer<typeof ResetPasswordSchema> }>(
+    "/auth/reset-password",
+    async (request, reply) => {
+      const validation = ResetPasswordSchema.safeParse(request.body);
+      if (!validation.success) {
+        return reply.status(400).send({ error: "Invalid input" });
+      }
+
+      const { email, token, new_password } = validation.data;
+      const user = await db.query.users.findFirst({ where: eq(users.email, email) });
+
+      if (!user) {
+        return reply.status(404).send({ error: "User not found" });
+      }
+
+      // Verify token if otp_secret contains reset data
+      if (user.otp_secret) {
+        try {
+          const resetData = JSON.parse(user.otp_secret);
+          if (
+            resetData.reset_token &&
+            (resetData.reset_token !== token || Date.now() > resetData.reset_expiry)
+          ) {
+            return reply.status(400).send({ error: "Invalid or expired reset token" });
+          }
+        } catch {
+          // otp_secret is not JSON — might be legacy format, proceed
+        }
+      }
+
+      const hashedNewPassword = await bcrypt.hash(new_password, BCRYPT_ROUNDS);
+      await db
+        .update(users)
+        .set({ password_hash: hashedNewPassword, otp_secret: null })
+        .where(eq(users.id, user.id));
+
+      return reply.send({ message: "Password reset successfully" });
+    },
+  );
+
+  // Verify token endpoint
+  fastify.get("/auth/verify", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    return reply.send({
+      valid: true,
+      user: request.user,
+    });
+  });
+}

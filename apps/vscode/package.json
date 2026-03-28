@@ -1,0 +1,153 @@
+{
+  "name": "revamp-vscode",
+  "displayName": "REVAMP - Legacy Code Modernizer",
+  "description": "AI-powered legacy code modernization directly in VS Code",
+  "version": "1.0.0",
+  "publisher": "revamp",
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=18.0.0"
+  },
+  "categories": [
+    "Other",
+    "Developer Tools",
+    "Debuggers"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:revamp.startProject",
+    "onCommand:revamp.analyzeCode",
+    "onCommand:revamp.runPipeline",
+    "onCommand:revamp.showDashboard",
+    "onCommand:revamp.modernizeFile",
+    "onCommand:revamp.compareVersions"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "revamp.startProject",
+        "title": "REVAMP: Start New Project"
+      },
+      {
+        "command": "revamp.analyzeCode",
+        "title": "REVAMP: Analyze Code"
+      },
+      {
+        "command": "revamp.runPipeline",
+        "title": "REVAMP: Run Modernization Pipeline"
+      },
+      {
+        "command": "revamp.showDashboard",
+        "title": "REVAMP: Show Dashboard"
+      },
+      {
+        "command": "revamp.modernizeFile",
+        "title": "REVAMP: Modernize This File"
+      },
+      {
+        "command": "revamp.compareVersions",
+        "title": "REVAMP: Compare Original & Modernized"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "revamp",
+          "title": "REVAMP",
+          "icon": "resources/revamp.svg"
+        }
+      ]
+    },
+    "views": {
+      "revamp": [
+        {
+          "id": "revampExplorer",
+          "name": "Projects",
+          "when": "revamp.authenticated"
+        },
+        {
+          "id": "pipelineView",
+          "name": "Pipeline Stages",
+          "when": "revamp.authenticated"
+        },
+        {
+          "id": "dashboardPanel",
+          "name": "Dashboard",
+          "type": "webview",
+          "when": "revamp.authenticated"
+        }
+      ]
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "revamp.analyzeCode",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "revamp.modernizeFile",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "revamp.compareVersions",
+          "when": "editorTextFocus"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "revamp.analyzeCode",
+          "group": "revamp@1",
+          "title": "Analyze with REVAMP"
+        },
+        {
+          "command": "revamp.modernizeFile",
+          "group": "revamp@2",
+          "title": "Modernize with REVAMP"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "REVAMP",
+      "properties": {
+        "revamp.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:3000",
+          "description": "URL of the REVAMP API server"
+        },
+        "revamp.defaultModel": {
+          "type": "string",
+          "default": "gpt-4-turbo",
+          "description": "Default LLM model for analysis"
+        },
+        "revamp.autoAnalyze": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-analyze files on open"
+        },
+        "revamp.enableNotifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable toast notifications"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --platform=node --target=node18 --sourcemap",
+    "watch": "npm run build -- --watch",
+    "dev": "npm run build -- --sourcemap",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.19.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "@vscode/webview-ui-toolkit": "^1.2.0",
+    "axios": "^1.6.0"
+  }
+}
