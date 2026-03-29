@@ -108,6 +108,15 @@ func (s *Server) setupRouter() *chi.Mux {
 		r.Get("/providers/health", s.handleProvidersHealth)
 	})
 
+	// API v2 — Engine endpoints (tasks, tools, budget, context)
+	r.Route("/api/v2", func(r chi.Router) {
+		r.Use(s.authMiddleware)
+
+		// Tool execution
+		r.Post("/tools/execute", s.handleToolExecute)
+		r.Get("/tools", s.handleListTools)
+	})
+
 	return r
 }
 
