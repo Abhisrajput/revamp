@@ -1,9 +1,12 @@
 'use client';
 
 import { useState, useMemo, useCallback } from 'react';
+import { useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   Play, Hammer, FileCode, Terminal as TerminalIcon,
   GitBranch, Download, FolderTree as FolderTreeIcon,
+  CheckCircle, XCircle, Minus, Table2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -80,7 +83,8 @@ export default function ForgePanel({
   const stages = usePipelineStore((s) => s.stages);
   const setGithubSyncOpen = useUIPreferencesStore((s) => s.setGithubSyncOpen);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [activePane, setActivePane] = useState<'code' | 'terminal' | 'agent'>('code');
+  const [activePane, setActivePane] = useState<'code' | 'terminal' | 'agent' | 'traceability'>('code');
+  const currentPipelineRunId = usePipelineStore((s) => s.currentPipelineRunId);
 
   const isRunning = stage.status === 'generating' || stage.status === 'validating';
   const hasOutput = !!(stage.output || streamingText);
@@ -108,8 +112,48 @@ export default function ForgePanel({
     }
   }, [selectedFile, updateModernizedFile]);
 
+  // Load modernized files from API on mount (for rehydration after refresh)
+  useEffect(() => {
+    if (!currentPipelineRunId || modernizedFiles.length > 0) return;
+    if (stage.status !== 'completed' && stage.status !== 'approved') return;
+
+    (async () => {
+      try {
+        const res = await apiClient.get(`/pipeline/${currentPipelineRunId}/modernized-files`);
+        const files = res.data?.files || [];
+        if (files.length === 0) return;
+
+        // Fetch content for each file and add to store
+        for (const file of files) {
+          try {
+            const detail = await apiClient.get(`/pipeline/${currentPipelineRunId}/modernized-files/${file.id}`);
+            if (detail.data?.content) {
+              usePipelineStore.getState().addModernizedFile({
+                path: detail.data.file_path,
+                content: detail.data.content,
+                language: detail.data.language,
+                size: detail.data.file_size,
+              });
+            }
+          } catch { /* non-fatal */ }
+        }
+      } catch { /* non-fatal */ }
+    })();
+  }, [currentPipelineRunId, stage.status]);
+
+  // Traceability data
+  const { data: traceabilityData } = useQuery<{ entries: any[] }>({
+    queryKey: ['traceability', currentPipelineRunId],
+    queryFn: async () => (await apiClient.get(`/pipeline/${currentPipelineRunId}/traceability`)).data,
+    enabled: !!currentPipelineRunId && modernizedFiles.length > 0,
+    staleTime: 30_000,
+  });
+
+  const traceability = traceabilityData?.entries || [];
+
   const panes = [
     { key: 'code', label: 'Code', icon: FileCode },
+    { key: 'traceability', label: 'Traceability', icon: Table2 },
     { key: 'terminal', label: 'Build Output', icon: TerminalIcon },
     { key: 'agent', label: 'Agent', icon: Hammer },
   ] as const;
@@ -272,6 +316,56 @@ export default function ForgePanel({
                       Select a file to view
                     </div>
                   )
+                )}
+
+                {activePane === 'traceability' && (
+                  <div className="p-3 overflow-auto h-full">
+                    {traceability.length > 0 ? (
+                      <table className="w-full text-[11px]">
+                        <thead>
+                          <tr className="border-b border-slate-200 dark:border-slate-700">
+                            <th className="text-left py-1.5 px-2 text-slate-500 font-semibold">Rule</th>
+                            <th className="text-left py-1.5 px-2 text-slate-500 font-semibold">Target File</th>
+                            <th className="text-left py-1.5 px-2 text-slate-500 font-semibold">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {traceability.map((entry: any, i: number) => (
+                            <tr key={i} className="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                              <td className="py-1.5 px-2">
+                                <span className="font-mono text-primary-600 dark:text-primary-400">{entry.rule_id}</span>
+                                {entry.rule_text && <p className="text-[9px] text-slate-400 mt-0.5 truncate max-w-[200px]">{entry.rule_text}</p>}
+                              </td>
+                              <td className="py-1.5 px-2">
+                                <button
+                                  onClick={() => { setSelectedFile(entry.target_file_path); setActivePane('code'); }}
+                                  className="text-xs text-blue-600 dark:text-blue-400 hover:underline font-mono"
+                                >
+                                  {entry.target_file_path}
+                                </button>
+                              </td>
+                              <td className="py-1.5 px-2">
+                                <Badge className={cn('text-[9px] px-1.5',
+                                  entry.status === 'implemented' ? 'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400' :
+                                    entry.status === 'partial' ? 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400' :
+                                    'bg-slate-100 dark:bg-slate-700 text-slate-500',
+                                )}>
+                                  {entry.status === 'implemented' && <CheckCircle className="w-2.5 h-2.5 mr-0.5 inline" />}
+                                  {entry.status === 'partial' && <Minus className="w-2.5 h-2.5 mr-0.5 inline" />}
+                                  {entry.status === 'skipped' && <XCircle className="w-2.5 h-2.5 mr-0.5 inline" />}
+                                  {entry.status}
+                                </Badge>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <div className="flex items-center justify-center h-full text-sm text-slate-400">
+                        Run FORGE to generate traceability data
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {activePane === 'terminal' && (
