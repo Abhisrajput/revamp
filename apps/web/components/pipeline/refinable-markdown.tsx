@@ -109,8 +109,9 @@ export const RefinableMarkdown = memo(function RefinableMarkdown({
     [handleRefine],
   );
 
-  // If no sections found or refinement disabled, render as plain output
-  if (disabled || !onRefineRequest || sections.length === 0) {
+  // If no sections found, refinement disabled, or output is very large, render as plain output.
+  // Large outputs (>20K) cause section parsing to produce overlapping fragments.
+  if (disabled || !onRefineRequest || sections.length === 0 || normalizedText.length > 20000) {
     return <StageOutput output={normalizedText} isStreaming={false} />;
   }
 
@@ -267,7 +268,7 @@ function renderSimple(text: string): string {
 
   function flushTable() {
     if (tableRows.length === 0) return;
-    let html = '<table class="w-full border-collapse my-3 text-xs">';
+    let html = '<div class="overflow-x-auto my-3 border border-slate-200 dark:border-slate-700 rounded-md"><table class="w-full border-collapse text-[11px]" style="table-layout:fixed;word-wrap:break-word">';
     for (let r = 0; r < tableRows.length; r++) {
       const tag = r === 0 ? 'th' : 'td';
       if (r === 0) html += '<thead>';
@@ -276,15 +277,15 @@ function renderSimple(text: string): string {
       for (let c = 0; c < tableRows[r].length; c++) {
         const align = tableAlignments[c] ? ` style="text-align:${tableAlignments[c]}"` : '';
         const cls = r === 0
-          ? 'bg-slate-100 dark:bg-slate-800 font-semibold text-left px-3 py-2 border border-slate-200 dark:border-slate-700'
-          : 'px-3 py-2 border border-slate-200 dark:border-slate-700';
+          ? 'bg-slate-100 dark:bg-slate-800 font-semibold text-left px-2 py-1.5 border border-slate-200 dark:border-slate-700 whitespace-nowrap text-[10px]'
+          : 'px-2 py-1.5 border border-slate-200 dark:border-slate-700 break-words align-top';
         html += `<${tag} class="${cls}"${align}>${formatInline(tableRows[r][c].trim())}</${tag}>`;
       }
       html += '</tr>';
       if (r === 0) html += '</thead>';
     }
     if (tableRows.length > 1) html += '</tbody>';
-    html += '</table>';
+    html += '</table></div>';
     result.push(html);
     tableRows = [];
     tableAlignments = [];

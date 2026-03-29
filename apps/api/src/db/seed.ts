@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import bcrypt from "bcryptjs";
 
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL is not set");
@@ -56,6 +57,7 @@ async function seed() {
     ];
 
     for (const user of demoUsers) {
+      const hashedPassword = await bcrypt.hash(user.password, 12);
       await client.query(
         `INSERT INTO users (id, email, password_hash, first_name, last_name, role, organization_id, is_active)
          VALUES ($1, $2, $3, $4, $5, $6, '00000000-0000-0000-0000-000000000001', true)
@@ -65,7 +67,7 @@ async function seed() {
            last_name = $5,
            role = $6,
            is_active = true`,
-        [user.id, user.email, user.password, user.firstName, user.lastName, user.role]
+        [user.id, user.email, hashedPassword, user.firstName, user.lastName, user.role]
       );
     }
 

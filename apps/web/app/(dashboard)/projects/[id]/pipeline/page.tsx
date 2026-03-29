@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { ChevronRight, Command, Download, GitBranch, Settings2 } from 'lucide-react';
+import { ChevronRight, Command, Download, GitBranch, Settings2, PanelRight } from 'lucide-react';
 
 import { MissionControlLayout } from '@/components/pipeline/mission-control/layout';
 import { LeftRail } from '@/components/pipeline/mission-control/left-rail';
@@ -27,12 +27,15 @@ import { useStageExecution } from '@/lib/hooks/use-stage-execution';
 import { usePipelineShortcuts } from '@/lib/hooks/use-keyboard-shortcuts';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
+import { getCachedOutput, setCachedOutput, getCachedOutputsForRun } from '@/lib/pipeline-cache';
 
 // ─── Page Component ─────────────────────────────────────────────
 
 export default function PipelinePage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const projectId = params.id as string;
+  const runIdFromUrl = searchParams.get('run');
 
   // ─── Auth ──────────────────────────────────────────────────
   const user = useAuthStore((s) => s.user);
@@ -82,6 +85,8 @@ export default function PipelinePage() {
     setGithubSyncOpen,
     exportDialogOpen,
     githubSyncOpen,
+    leftRailCollapsed,
+    rightPanelCollapsed,
   } = useUIPreferencesStore();
 
   // ─── Stage Execution ──────────────────────────────────────
@@ -105,6 +110,126 @@ export default function PipelinePage() {
     retry: 1,
   });
 
+  // ─── Seed prompt overrides from project defaults ──────────
+  // Maps numeric DB indices (0-7) to stage names (SCAN, DECODE, etc.)
+  const STAGE_INDEX_TO_NAME = ['SCAN', 'DECODE', 'BLUEPRINT', 'SPEC_LOCK', 'ARCHITECT', 'FORGE', 'SHADOW_RUN', 'EVOLVE'];
+
+  useEffect(() => {
+    if (!project) return;
+    const store = usePipelineStore.getState();
+    const stagePrompts = (project.stage_prompts || {}) as Record<string, string>;
+    const validationPrompts = (project.validation_prompts || {}) as Record<string, string>;
+
+    // Only seed if the store has no overrides yet (don't overwrite user edits)
+    const hasExistingOverrides = Object.keys(store.stagePromptOverrides).length > 0;
+    if (hasExistingOverrides) return;
+
+    for (const [idx, prompt] of Object.entries(stagePrompts)) {
+      const stageName = STAGE_INDEX_TO_NAME[parseInt(idx)];
+      if (stageName && prompt) {
+        store.setStagePromptOverride(stageName, prompt);
+      }
+    }
+    for (const [idx, prompt] of Object.entries(validationPrompts)) {
+      const stageName = STAGE_INDEX_TO_NAME[parseInt(idx)];
+      if (stageName && prompt) {
+        store.setStageValidationPromptOverride(stageName, prompt);
+      }
+    }
+  }, [project]);
+
+  // ─── Sync stage statuses from backend ─────────────────────
+  const syncStagesFromBackend = async (runId: string) => {
+    try {
+      const res = await apiClient.get(`/pipeline/${runId}/status`);
+      const runStatus = res.data?.status;
+      if (runStatus === 'failed' || runStatus === 'cancelled') {
+        return false; // caller should create a new run
+      }
+
+      // Sync ALL stage statuses from DB — authoritative source of truth
+      const stageProgress = res.data?.stage_progress;
+      if (stageProgress) {
+        const s = usePipelineStore.getState();
+        for (let i = 0; i < s.stages.length; i++) {
+          const storeStage = s.stages[i];
+          const dbStatus = stageProgress[storeStage.name]?.status;
+          if (dbStatus && dbStatus !== storeStage.status) {
+            console.warn(
+              `[Rehydrate] Stage ${storeStage.name} "${storeStage.status}" → "${dbStatus}"`,
+            );
+            usePipelineStore.getState().setStageStatus(i, dbStatus as any);
+          }
+          // Sync approval status from stage progress
+          if (dbStatus === 'approved' && storeStage.approvalStatus !== 'approved') {
+            usePipelineStore.getState().setStageApproval(i, 'approved');
+          }
+          if (dbStatus === 'awaiting_approval' && storeStage.approvalStatus !== 'pending') {
+            usePipelineStore.getState().setStageStatus(i, 'completed' as any);
+            usePipelineStore.getState().setStageApproval(i, 'pending');
+          }
+        }
+      }
+
+      // Sync approval gates
+      const approvalGates = res.data?.approval_gates;
+      if (approvalGates) {
+        const s = usePipelineStore.getState();
+        for (const gate of approvalGates) {
+          const stageIdx = s.stages.findIndex((st) => st.name === gate.stage_name);
+          if (stageIdx >= 0) {
+            const currentApproval = s.stages[stageIdx].approvalStatus;
+            if (gate.status !== currentApproval) {
+              usePipelineStore.getState().setStageApproval(stageIdx, gate.status as any);
+            }
+          }
+        }
+      }
+
+      // Load stage outputs — IndexedDB first, then API fallback
+      const updatedStore = usePipelineStore.getState();
+      const stagesToLoad = updatedStore.stages
+        .filter((st) => (st.status === 'completed' || st.status === 'approved') && !st.output)
+        .map((st) => st.name);
+
+      if (stagesToLoad.length > 0) {
+        // Try IndexedDB cache first (instant, no network)
+        const cached = await getCachedOutputsForRun(runId);
+        for (const stageName of stagesToLoad) {
+          const idx = updatedStore.stages.findIndex((st) => st.name === stageName);
+          if (idx < 0) continue;
+
+          if (cached[stageName]) {
+            // Cache hit — instant load
+            usePipelineStore.getState().setStageOutput(idx, cached[stageName]);
+            console.log(`[Cache HIT] ${stageName}: ${cached[stageName].length} chars from IndexedDB`);
+          } else {
+            // Cache miss — fetch from API and store in IndexedDB
+            try {
+              const artRes = await apiClient.get(`/pipeline/${runId}/artifacts/${stageName}`);
+              const rawData = artRes.data;
+              const artifacts = Array.isArray(rawData) ? rawData : rawData?.artifacts || rawData?.data || [];
+              const outputArt = artifacts.find((a: any) => a.artifact_type === 'stage_output');
+              if (outputArt?.metadata?.content) {
+                const content = outputArt.metadata.content;
+                usePipelineStore.getState().setStageOutput(idx, content);
+                // Cache in IndexedDB for next visit
+                setCachedOutput(runId, stageName, content);
+                console.log(`[Cache MISS] ${stageName}: ${content.length} chars fetched → IndexedDB`);
+              }
+            } catch {
+              // Non-fatal
+            }
+          }
+        }
+      }
+
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   // ─── Create pipeline run if needed ────────────────────────
   const startPipeline = useMutation({
     mutationFn: async () => {
@@ -113,8 +238,10 @@ export default function PipelinePage() {
       });
       return res.data as { pipeline_run_id: string };
     },
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       initPipeline(projectId, data.pipeline_run_id);
+      // Immediately sync stages from backend (the run may already have progress)
+      await syncStagesFromBackend(data.pipeline_run_id);
     },
     onError: () => {
       if (!usePipelineStore.getState().currentPipelineRunId) {
@@ -125,6 +252,16 @@ export default function PipelinePage() {
 
   useEffect(() => {
     if (!projectId) return;
+
+    // If a specific run ID is provided via URL (?run=xxx), use it directly
+    if (runIdFromUrl) {
+      initPipeline(projectId, runIdFromUrl);
+      syncStagesFromBackend(runIdFromUrl).then((ok) => {
+        if (!ok) startPipeline.mutate();
+      });
+      return;
+    }
+
     // Always reinitialize when switching to a different project
     if (currentProjectId !== projectId) {
       startPipeline.mutate();
@@ -134,45 +271,12 @@ export default function PipelinePage() {
       startPipeline.mutate();
       return;
     }
-    // Verify the persisted pipeline run still exists and is usable.
-    // If it was cleaned up, DB was reset, or the run is in a terminal
-    // failed state, create a fresh run so the user can start over.
-    // Also sync individual stage statuses from DB in case SSE dropped.
-    apiClient
-      .get(`/pipeline/${currentPipelineRunId}/status`)
-      .then((res) => {
-        const runStatus = res.data?.status;
-        if (runStatus === 'failed' || runStatus === 'cancelled') {
-          startPipeline.mutate();
-          return;
-        }
-        // Sync stuck stages: if DB shows completed but store shows generating,
-        // update the store so the UI reflects reality after SSE drops.
-        const stageProgress = res.data?.stage_progress;
-        if (stageProgress) {
-          const s = usePipelineStore.getState();
-          for (let i = 0; i < s.stages.length; i++) {
-            const storeStage = s.stages[i];
-            const dbStatus = stageProgress[storeStage.name]?.status;
-            if (
-              dbStatus &&
-              dbStatus !== storeStage.status &&
-              (storeStage.status === 'generating' || storeStage.status === 'validating') &&
-              (dbStatus === 'completed' || dbStatus === 'approved' || dbStatus === 'failed')
-            ) {
-              console.warn(
-                `[Rehydrate] Stage ${storeStage.name} stuck as "${storeStage.status}", DB shows "${dbStatus}" — syncing`,
-              );
-              usePipelineStore.getState().setStageStatus(i, dbStatus as any);
-            }
-          }
-        }
-      })
-      .catch(() => {
-        startPipeline.mutate();
-      });
+    // Verify the persisted pipeline run still exists and sync stages
+    syncStagesFromBackend(currentPipelineRunId).then((ok) => {
+      if (!ok) startPipeline.mutate();
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  }, [projectId, runIdFromUrl]);
 
   // ─── Poll for stuck stages (SSE drop recovery) ─────────────
   // If a stage is stuck in 'generating' for 30+ seconds, poll DB to check if it
@@ -218,12 +322,12 @@ export default function PipelinePage() {
 
   // ─── Rehydrate stage outputs from API after page refresh ──────
   // The pipeline store strips outputs on persist (too large for localStorage).
-  // On mount, fetch them back from stage_artifacts for any completed stages.
+  // On mount + when active stage changes, fetch outputs from stage_artifacts.
   useEffect(() => {
     if (!currentPipelineRunId) return;
     const s = usePipelineStore.getState();
     const completedWithoutOutput = s.stages
-      .filter((st) => (st.status === 'completed' || st.status === 'approved' || st.status === 'failed') && !st.output && st.startedAt);
+      .filter((st) => (st.status === 'completed' || st.status === 'approved' || st.status === 'failed') && !st.output);
     if (completedWithoutOutput.length === 0) return;
 
     // Fetch per-stage artifacts directly (skip list endpoint)
@@ -234,7 +338,8 @@ export default function PipelinePage() {
           const stageRes = await apiClient.get(
             `/pipeline/${currentPipelineRunId}/artifacts/${stageName}`,
           );
-          const artifacts = stageRes.data as any[];
+          const rawData = stageRes.data;
+          const artifacts = Array.isArray(rawData) ? rawData : rawData?.artifacts || rawData?.data || [];
           const outputArtifact = artifacts.find((a: any) => a.artifact_type === 'stage_output');
           if (outputArtifact?.metadata?.content) {
             const stageIndex = s.stages.findIndex((st) => st.name === stageName);
@@ -333,7 +438,7 @@ export default function PipelinePage() {
         }
       }
     })();
-  }, [currentPipelineRunId]);
+  }, [currentPipelineRunId, activeStageIndex]);
 
   // Left rail stays open — stages moved to main sidebar, but settings/cost/docs remain here
 
@@ -671,8 +776,8 @@ export default function PipelinePage() {
           Pipeline
         </h1>
 
-        <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 hidden md:inline">
-          {currentPipelineRunId?.slice(0, 7) ?? '—'}
+        <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 hidden md:inline px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded">
+          run:{currentPipelineRunId?.slice(0, 8) ?? '—'}
         </span>
 
         {/* Global token counter */}
@@ -690,13 +795,27 @@ export default function PipelinePage() {
           onClick={toggleLeftRail}
           className={cn(
             'p-1.5 rounded-md transition-colors',
-            useUIPreferencesStore.getState().leftRailCollapsed
+            leftRailCollapsed
               ? 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
               : 'text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-primary-950/30',
           )}
           title="Toggle Settings Panel (Cmd+B)"
         >
           <Settings2 className="w-3.5 h-3.5" />
+        </button>
+
+        {/* Toggle inspector panel (right panel) */}
+        <button
+          onClick={toggleRightPanel}
+          className={cn(
+            'p-1.5 rounded-md transition-colors',
+            rightPanelCollapsed
+              ? 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
+              : 'text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-primary-950/30',
+          )}
+          title="Toggle Inspector Panel"
+        >
+          <PanelRight className="w-3.5 h-3.5" />
         </button>
 
         {/* Command Palette trigger */}

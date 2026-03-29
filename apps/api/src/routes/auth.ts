@@ -110,6 +110,7 @@ function generateResetToken(): string {
 
 /**
  * Try to send an email via the email service. Logs warning if unavailable.
+ * Never logs token/OTP values — only the type and a redacted indicator.
  */
 async function trySendEmail(
   type: "otp" | "password_reset",
@@ -124,46 +125,21 @@ async function trySendEmail(
       await emailService.sendPasswordReset(email, data.token);
     }
   } catch {
-    // Email service not configured — log warning but don't fail
-    console.warn(
-      `[Auth] Email service unavailable — ${type} for ${email} not sent. Data: ${JSON.stringify(data)}`,
-    );
+    // Email service not configured — log warning but never log token/OTP values
+    console.warn(`[Auth] Email service unavailable — ${type} email not sent`);
   }
 }
 
-// Dev-mode fallback users (used when DB is unavailable in development)
-const DEV_USERS: Record<string, { id: string; email: string; password: string; first_name: string; last_name: string; role: UserRole; organization_id: string }> = {
-  "demo@revamp.ai": {
-    id: "00000000-0000-0000-0000-000000000010",
-    email: "demo@revamp.ai",
-    password: "demo1234",
-    first_name: "Demo",
-    last_name: "Admin",
-    role: "admin",
-    organization_id: "00000000-0000-0000-0000-000000000001",
-  },
-  "architect@revamp.ai": {
-    id: "00000000-0000-0000-0000-000000000011",
-    email: "architect@revamp.ai",
-    password: "demo1234",
-    first_name: "Alex",
-    last_name: "Architect",
-    role: "architect",
-    organization_id: "00000000-0000-0000-0000-000000000001",
-  },
-  "developer@revamp.ai": {
-    id: "00000000-0000-0000-0000-000000000012",
-    email: "developer@revamp.ai",
-    password: "demo1234",
-    first_name: "Dev",
-    last_name: "Engineer",
-    role: "developer",
-    organization_id: "00000000-0000-0000-0000-000000000001",
-  },
-};
-
 export async function authRoutes(fastify: FastifyInstance) {
-  fastify.post<{ Body: z.infer<typeof SignInSchema> }>("/auth/login", async (request, reply) => {
+  // Tight per-route rate limits on sensitive auth endpoints.
+  // These override the global rate-limit plugin config for these routes.
+  const isDev = process.env.NODE_ENV !== "production";
+  const loginRateLimit = { config: { rateLimit: { max: isDev ? 200 : 10, timeWindow: "15 minutes" } } };
+  const otpRateLimit = { config: { rateLimit: { max: isDev ? 100 : 5, timeWindow: "15 minutes" } } };
+  const resetRateLimit = { config: { rateLimit: { max: isDev ? 100 : 5, timeWindow: "15 minutes" } } };
+  const signupRateLimit = { config: { rateLimit: { max: isDev ? 200 : 10, timeWindow: "1 hour" } } };
+
+  fastify.post<{ Body: z.infer<typeof SignInSchema> }>("/auth/login", loginRateLimit, async (request, reply) => {
     const validation = SignInSchema.safeParse(request.body);
     if (!validation.success) {
       return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
@@ -171,7 +147,6 @@ export async function authRoutes(fastify: FastifyInstance) {
 
     const { email, password } = validation.data;
 
-    // Try database-backed login first
     try {
       const user = await db.query.users.findFirst({
         where: eq(users.email, email),
@@ -212,43 +187,14 @@ export async function authRoutes(fastify: FastifyInstance) {
         });
       }
     } catch (dbError) {
-      // Database unavailable — fall through to dev-mode bypass
-      if (process.env.NODE_ENV === "production") {
-        fastify.log.error(dbError, "Database error during login");
-        return reply.status(500).send({ error: "Internal server error" });
-      }
-      fastify.log.warn("Database unavailable — using dev-mode login fallback");
-    }
-
-    // Dev-mode fallback: accept hardcoded demo credentials when DB is down
-    if (process.env.NODE_ENV !== "production") {
-      const devUser = DEV_USERS[email];
-      if (devUser && devUser.password === password) {
-        const token = fastify.jwt.sign({
-          sub: devUser.id,
-          email: devUser.email,
-          role: devUser.role,
-          organization_id: devUser.organization_id,
-        });
-
-        return reply.send({
-          token,
-          user: {
-            id: devUser.id,
-            email: devUser.email,
-            first_name: devUser.first_name,
-            last_name: devUser.last_name,
-            role: devUser.role,
-            organization_id: devUser.organization_id,
-          },
-        });
-      }
+      fastify.log.error(dbError, "Database error during login");
+      return reply.status(500).send({ error: "Internal server error" });
     }
 
     return reply.status(401).send({ error: "Invalid credentials" });
   });
 
-  fastify.post<{ Body: z.infer<typeof SignUpSchema> }>("/auth/signup", async (request, reply) => {
+  fastify.post<{ Body: z.infer<typeof SignUpSchema> }>("/auth/signup", signupRateLimit, async (request, reply) => {
     const validation = SignUpSchema.safeParse(request.body);
     if (!validation.success) {
       return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
@@ -265,42 +211,45 @@ export async function authRoutes(fastify: FastifyInstance) {
       return reply.status(409).send({ error: "Email already registered" });
     }
 
-    // Create organization if provided
-    let organizationId: string | null = null;
-    if (organization_name) {
-      const org = await db
-        .insert(organizations)
-        .values({
-          id: crypto.randomUUID(),
-          name: organization_name,
-          slug: organization_name.toLowerCase().replace(/\s+/g, "-"),
-          owner_id: "", // Will update after user creation
-        })
-        .returning();
-
-      organizationId = org[0]?.id || null;
-    }
-
-    // Create user — hash password with bcrypt before storing
+    // Hash password before entering transaction
     const userId = crypto.randomUUID();
     const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    await db.insert(users).values({
-      id: userId,
-      email,
-      password_hash: hashedPassword,
-      first_name,
-      last_name,
-      organization_id: organizationId,
-      role: "developer",
-    });
 
-    // Update organization owner if created
-    if (organizationId) {
-      await db
-        .update(organizations)
-        .set({ owner_id: userId })
-        .where(eq(organizations.id, organizationId));
-    }
+    // Create org + user atomically so a partial failure leaves no orphaned rows
+    let organizationId: string | null = null;
+
+    await db.transaction(async (tx) => {
+      if (organization_name) {
+        const slug = organization_name
+          .toLowerCase()
+          .replace(/[^a-z0-9-]/g, "-")
+          .replace(/-+/g, "-")
+          .replace(/^-|-$/g, "")
+          .substring(0, 63);
+
+        const org = await tx
+          .insert(organizations)
+          .values({
+            id: crypto.randomUUID(),
+            name: organization_name,
+            slug,
+            owner_id: userId,
+          })
+          .returning();
+
+        organizationId = org[0]?.id || null;
+      }
+
+      await tx.insert(users).values({
+        id: userId,
+        email,
+        password_hash: hashedPassword,
+        first_name,
+        last_name,
+        organization_id: organizationId,
+        role: "developer",
+      });
+    });
 
     const token = fastify.jwt.sign({
       sub: userId,
@@ -326,6 +275,7 @@ export async function authRoutes(fastify: FastifyInstance) {
   // Generates a 6-digit OTP, stores the secret on the user, and sends via email.
   fastify.post<{ Body: z.infer<typeof OTPGenerateSchema> }>(
     "/auth/otp/generate",
+    otpRateLimit,
     async (request, reply) => {
       const validation = OTPGenerateSchema.safeParse(request.body);
       if (!validation.success) {
@@ -362,6 +312,7 @@ export async function authRoutes(fastify: FastifyInstance) {
   // Verifies the OTP and returns a JWT token if valid.
   fastify.post<{ Body: z.infer<typeof OTPVerifySchema> }>(
     "/auth/otp/verify",
+    otpRateLimit,
     async (request, reply) => {
       const validation = OTPVerifySchema.safeParse(request.body);
       if (!validation.success) {
@@ -436,6 +387,7 @@ export async function authRoutes(fastify: FastifyInstance) {
   // Generates a reset token, stores it in otp_secret (base64-encoded JSON), sends email.
   fastify.post<{ Body: z.infer<typeof ResetPasswordRequestSchema> }>(
     "/auth/reset-password/request",
+    resetRateLimit,
     async (request, reply) => {
       const validation = ResetPasswordRequestSchema.safeParse(request.body);
       if (!validation.success) {
@@ -504,6 +456,7 @@ export async function authRoutes(fastify: FastifyInstance) {
   // Validates the token and updates the password.
   fastify.post<{ Body: z.infer<typeof ResetPasswordConfirmSchema> }>(
     "/auth/reset-password/confirm",
+    resetRateLimit,
     async (request, reply) => {
       const validation = ResetPasswordConfirmSchema.safeParse(request.body);
       if (!validation.success) {

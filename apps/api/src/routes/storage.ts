@@ -145,11 +145,31 @@ export async function storageRoutes(fastify: FastifyInstance) {
     { onRequest: [fastify.authenticate] },
     async (request, reply) => {
       const { key } = request.params;
-      const decodedKey = decodeURIComponent(key);
 
-      // Block path traversal
-      if (decodedKey.includes("..") || decodedKey.startsWith("/")) {
+      // Decode once — Fastify already decodes route params once, so a single
+      // additional decodeURIComponent handles %2F-style encoding without
+      // enabling double-encoding attacks.
+      let decodedKey: string;
+      try {
+        decodedKey = decodeURIComponent(key);
+      } catch {
         return reply.status(400).send({ error: "Invalid storage key" });
+      }
+
+      // Reject any path traversal sequences and absolute paths
+      if (
+        decodedKey.includes("..") ||
+        decodedKey.startsWith("/") ||
+        decodedKey.includes("%2e") ||
+        decodedKey.includes("%2f") ||
+        decodedKey.includes("\0")
+      ) {
+        return reply.status(400).send({ error: "Invalid storage key" });
+      }
+
+      // Key must start with projects/{uuid}/ — reject anything else
+      if (!extractProjectIdFromKey(decodedKey)) {
+        return reply.status(400).send({ error: "Invalid storage key format" });
       }
 
       // Verify the caller has access to the owning project

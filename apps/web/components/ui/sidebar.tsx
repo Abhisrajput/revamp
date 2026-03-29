@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useRef, memo } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
+import { useTheme } from 'next-themes';
 import {
   FolderOpen,
   Settings,
@@ -27,9 +28,14 @@ import {
   Rocket,
   Bot,
   Cpu,
+  ShieldAlert,
+  Sun,
+  Moon,
+  Monitor,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { useAuth } from '@/lib/hooks/use-auth';
+import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
 import { usePipelineStore, type StageState } from '@/lib/stores/pipeline-store';
 import { cn } from '@/lib/utils';
 
@@ -148,9 +154,14 @@ export const Sidebar = memo(function Sidebar() {
   const router = useRouter();
   const { logout } = useAuth();
   const user = useAuthStore((s) => s.user);
-  const [collapsed, setCollapsed] = useState(false);
+  const { theme, setTheme, resolvedTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+  const { sidebarCollapsed: collapsed, toggleSidebar } = useUIPreferencesStore();
+  const setCollapsed = (v: boolean) => { if (v !== collapsed) toggleSidebar(); };
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+
+  useEffect(() => setMounted(true), []);
   const profileMenuRef = useRef<HTMLDivElement>(null);
 
   // Pipeline state — only subscribe to pipeline store when on a project page
@@ -202,22 +213,29 @@ export const Sidebar = memo(function Sidebar() {
     <aside
       className={cn(
         'h-screen bg-slate-900 dark:bg-slate-950 border-r border-slate-800 flex flex-col transition-all duration-300',
-        collapsed ? 'w-[72px]' : 'w-64',
+        collapsed ? 'w-[52px]' : 'w-64',
       )}
     >
-      {/* Logo */}
-      <div className={cn('border-b border-slate-800', collapsed ? 'px-3 py-6' : 'px-6 py-6')}>
-        <Link href="/projects" className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center shrink-0">
-            <Zap className="w-4.5 h-4.5 text-white" />
-          </div>
-          {!collapsed && (
-            <div className="flex flex-col">
-              <span className="text-lg font-bold text-white tracking-tight leading-none">REVAMP</span>
-              <span className="text-[9px] font-medium text-primary-400 uppercase tracking-widest">10X Platform</span>
+      {/* Header: Toggle + Logo */}
+      <div className={cn('flex items-center border-b border-slate-800 shrink-0', collapsed ? 'justify-center px-2 py-3.5' : 'gap-2.5 px-4 py-3.5')}>
+        <button
+          onClick={toggleSidebar}
+          className="flex items-center justify-center w-8 h-8 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          <Menu className="w-[18px] h-[18px]" />
+        </button>
+        {!collapsed && (
+          <Link href="/projects" className="flex items-center gap-2 min-w-0">
+            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center shrink-0">
+              <Zap className="w-3.5 h-3.5 text-white" />
             </div>
-          )}
-        </Link>
+            <div className="flex flex-col">
+              <span className="text-[15px] font-bold text-white tracking-tight leading-none">REVAMP</span>
+              <span className="text-[8px] font-medium text-primary-400 uppercase tracking-widest">10X Platform</span>
+            </div>
+          </Link>
+        )}
       </div>
 
       {/* Navigation */}
@@ -318,17 +336,6 @@ export const Sidebar = memo(function Sidebar() {
       {/* Spacer when not on pipeline page */}
       {!isPipelinePage && <div className="flex-1" />}
 
-      {/* Collapse Toggle */}
-      <div className={cn('px-3 py-2 hidden lg:block')}>
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          className="w-full flex items-center justify-center p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        >
-          <ChevronRight className={cn('w-4 h-4 transition-transform', collapsed ? '' : 'rotate-180')} />
-        </button>
-      </div>
-
       {/* User Section — claude.ai style with popover */}
       <div ref={profileMenuRef} className="relative">
         {/* Popover menu */}
@@ -356,11 +363,48 @@ export const Sidebar = memo(function Sidebar() {
               <Settings className="w-4 h-4 text-slate-500" />
               <span className="flex-1 text-left">Settings</span>
             </Link>
+            {user?.role === 'admin' && (
+              <Link
+                href="/dashboard"
+                onClick={() => setProfileMenuOpen(false)}
+                className="w-full flex items-center gap-3 px-4 py-2 text-[13px] text-slate-300 hover:bg-slate-700/60 transition-colors"
+              >
+                <ShieldAlert className="w-4 h-4 text-slate-500" />
+                <span className="flex-1 text-left">Admin & Audit</span>
+              </Link>
+            )}
             <button className="w-full flex items-center gap-3 px-4 py-2 text-[13px] text-slate-300 hover:bg-slate-700/60 transition-colors">
               <HelpCircle className="w-4 h-4 text-slate-500" />
               <span className="flex-1 text-left">Get help</span>
             </button>
           </div>
+
+          {/* Theme Switcher */}
+          <div className="border-t border-slate-700 px-4 py-2.5">
+            <p className="text-[10px] font-medium uppercase tracking-wider text-slate-500 mb-2">Theme</p>
+            <div className="flex gap-1 bg-slate-800 rounded-lg p-0.5">
+              {([
+                { value: 'light', icon: Sun, label: 'Light' },
+                { value: 'dark', icon: Moon, label: 'Dark' },
+                { value: 'system', icon: Monitor, label: 'System' },
+              ] as const).map(({ value, icon: Icon, label }) => (
+                <button
+                  key={value}
+                  onClick={() => setTheme(value)}
+                  className={cn(
+                    'flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-medium transition-colors',
+                    (mounted ? theme === value : value === 'system')
+                      ? 'bg-slate-700 text-slate-100 shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200',
+                  )}
+                >
+                  <Icon className="w-3 h-3" />
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="border-t border-slate-700 py-1.5">
             <button
               onClick={handleLogout}

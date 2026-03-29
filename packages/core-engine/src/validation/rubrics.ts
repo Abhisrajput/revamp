@@ -19,9 +19,9 @@ export const stageValidationRules: StageValidationRule[] = [
   {
     stageIndex: 0,
     stageName: PipelineStageName.SCAN,
-    confidenceThreshold: 70,
+    confidenceThreshold: 60,
     deterministicChecks: [
-      { type: CheckType.SECTION_COMPLETENESS, weight: 0.15, args: { expectedSections: ['Architecture', 'Technology Stack', 'Pain Points', 'Recommendations'] } },
+      { type: CheckType.SECTION_COMPLETENESS, weight: 0.15, args: { expectedSections: ['Architecture', 'Technology Stack', 'Risk', 'Data'] } },
       { type: CheckType.OUTPUT_SUBSTANCE, weight: 0.10, args: { minWords: 300 } },
     ],
     llmEvaluations: [

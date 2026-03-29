@@ -10,6 +10,7 @@ import {
   serial,
   index,
   primaryKey,
+  unique,
   numeric,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
@@ -109,7 +110,7 @@ export const projectMembers = pgTable(
     joined_at: timestamp("joined_at").defaultNow().notNull(),
   },
   (table) => ({
-    pk: primaryKey({ columns: [table.project_id, table.user_id] }),
+    projectUserUniq: unique("project_members_project_user_uniq").on(table.project_id, table.user_id),
     projectIdx: index("project_members_project_id_idx").on(table.project_id),
     userIdx: index("project_members_user_id_idx").on(table.user_id),
   })
@@ -977,3 +978,161 @@ export const retrievalTrajectoriesRelations = relations(retrievalTrajectories, (
     references: [agentPersonas.id],
   }),
 }));
+
+// ═══ AGENT ROUTINES — Scheduled recurring agent tasks ═════════════
+
+export const agentRoutines = pgTable(
+  "agent_routines",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organization_id: uuid("organization_id").notNull(),
+    project_id: uuid("project_id"),
+    agent_id: uuid("agent_id"), // assigned agent (null = auto-assign)
+    name: varchar("name", { length: 255 }).notNull(),
+    description: text("description"),
+
+    // Schedule
+    cron_expression: varchar("cron_expression", { length: 100 }), // null = manual/webhook only
+    trigger_type: varchar("trigger_type", { length: 20 }).notNull().default("schedule"), // schedule, webhook, manual
+    webhook_secret: text("webhook_secret"),
+
+    // Execution config
+    task_template: jsonb("task_template").notNull().default({}), // { title, description, priority, stage }
+    concurrency_policy: varchar("concurrency_policy", { length: 30 }).notNull().default("skip_if_active"),
+    // skip_if_active, coalesce_if_active, always_enqueue
+    max_retries: integer("max_retries").notNull().default(1),
+
+    // State
+    enabled: boolean("enabled").notNull().default(true),
+    last_run_at: timestamp("last_run_at"),
+    next_run_at: timestamp("next_run_at"),
+    last_run_status: varchar("last_run_status", { length: 20 }), // completed, failed, skipped
+    run_count: integer("run_count").notNull().default(0),
+
+    created_by: uuid("created_by").notNull(),
+    created_at: timestamp("created_at").defaultNow().notNull(),
+    updated_at: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    orgIdx: index("agent_routines_org_idx").on(table.organization_id),
+    agentIdx: index("agent_routines_agent_idx").on(table.agent_id),
+    nextRunIdx: index("agent_routines_next_run_idx").on(table.enabled, table.next_run_at),
+  })
+);
+
+// ═══ AGENT TASKS — Kanban-style task board for greenfield projects ═══
+
+export const agentTasks = pgTable(
+  "agent_tasks",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organization_id: uuid("organization_id").notNull(),
+    project_id: uuid("project_id"),
+    routine_id: uuid("routine_id"), // null if manually created
+
+    title: varchar("title", { length: 500 }).notNull(),
+    description: text("description"),
+
+    // Kanban status
+    status: varchar("status", { length: 20 }).notNull().default("backlog"),
+    // backlog, todo, in_progress, in_review, blocked, done, cancelled
+
+    priority: varchar("priority", { length: 20 }).notNull().default("medium"),
+    // critical, high, medium, low
+
+    // Assignment
+    assigned_agent_id: uuid("assigned_agent_id"),
+    assigned_user_id: uuid("assigned_user_id"),
+
+    // Execution
+    stage: varchar("stage", { length: 50 }), // pipeline stage if applicable
+    pipeline_run_id: uuid("pipeline_run_id"),
+    progress: integer("progress").notNull().default(0), // 0-100
+
+    // Cost tracking
+    tokens_used: integer("tokens_used").notNull().default(0),
+    cost_cents: integer("cost_cents").notNull().default(0),
+
+    // Metadata
+    labels: jsonb("labels").notNull().default([]),
+    result: jsonb("result"),
+    error_message: text("error_message"),
+
+    // Ordering within status column
+    sort_order: integer("sort_order").notNull().default(0),
+
+    started_at: timestamp("started_at"),
+    completed_at: timestamp("completed_at"),
+    created_by: uuid("created_by").notNull(),
+    created_at: timestamp("created_at").defaultNow().notNull(),
+    updated_at: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    orgStatusIdx: index("agent_tasks_org_status_idx").on(table.organization_id, table.status),
+    projectIdx: index("agent_tasks_project_idx").on(table.project_id),
+    assignedIdx: index("agent_tasks_assigned_idx").on(table.assigned_agent_id, table.status),
+  })
+);
+
+// ═══ APPROVAL COMMENTS — collaborative review threads ═════════
+
+export const approvalComments = pgTable(
+  "approval_comments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    approval_gate_id: uuid("approval_gate_id").notNull(),
+    user_id: uuid("user_id"),
+    agent_id: uuid("agent_id"),
+    content: text("content").notNull(),
+    action: varchar("action", { length: 30 }), // comment, revision_requested, revised, approved, rejected
+    created_at: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    gateIdx: index("approval_comments_gate_idx").on(table.approval_gate_id, table.created_at),
+  })
+);
+
+// ═══ AGENT SKILLS — reusable knowledge modules ═══════════════
+
+export const agentSkills = pgTable(
+  "agent_skills",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organization_id: uuid("organization_id").notNull(),
+    name: varchar("name", { length: 100 }).notNull(),
+    slug: varchar("slug", { length: 50 }).notNull(),
+    description: text("description"),
+    category: varchar("category", { length: 50 }).notNull(), // language, framework, pattern, domain, tool
+    // Content
+    knowledge: text("knowledge").notNull(), // system prompt fragment / knowledge base content
+    examples: jsonb("examples").default([]), // code examples, patterns
+    // Metadata
+    tags: jsonb("tags").notNull().default([]),
+    version: integer("version").notNull().default(1),
+    created_by: uuid("created_by").notNull(),
+    created_at: timestamp("created_at").defaultNow().notNull(),
+    updated_at: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    orgCategoryIdx: index("agent_skills_org_category_idx").on(table.organization_id, table.category),
+    slugIdx: index("agent_skills_slug_idx").on(table.slug),
+  })
+);
+
+// ═══ AGENT SKILL ASSIGNMENTS — many-to-many ══════════════════
+
+export const agentSkillAssignments = pgTable(
+  "agent_skill_assignments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    agent_id: uuid("agent_id").notNull(),
+    skill_id: uuid("skill_id").notNull(),
+    proficiency: varchar("proficiency", { length: 20 }).notNull().default("intermediate"), // beginner, intermediate, expert
+    assigned_at: timestamp("assigned_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    agentIdx: index("agent_skill_assignments_agent_idx").on(table.agent_id),
+    skillIdx: index("agent_skill_assignments_skill_idx").on(table.skill_id),
+    uniqueAssignment: unique("agent_skill_unique").on(table.agent_id, table.skill_id),
+  })
+);

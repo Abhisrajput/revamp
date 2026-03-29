@@ -489,7 +489,10 @@ export async function runStage(options: StageRunnerOptions): Promise<StageRunRes
       pipelineRunId: options.pipelineRunId,
       stageName: options.stageName,
       stageOutput: output,
+      stagePrompt: assembled.systemPrompt || options.promptOverride || '',
+      validationPrompt: (options.project as any)?.validationPrompts?.[String(options.stageIndex)] || '',
       priorStageKeywords: assembled.priorStageKeywords,
+      priorStageOutputs: options.priorOutputs?.map(po => ({ stageName: po.stageName, output: po.output })),
       llmEvalFn: options.llmEvalFn,
       skipLlmEval: options.skipLlmEval,
     });
@@ -541,9 +544,12 @@ export async function runStage(options: StageRunnerOptions): Promise<StageRunRes
         pipelineRunId: options.pipelineRunId,
         stageName: options.stageName,
         stageOutput: output,
+        stagePrompt: assembled.systemPrompt || options.promptOverride || '',
+        validationPrompt: (options.project as any)?.validationPrompts?.[String(options.stageIndex)] || '',
         priorStageKeywords: assembled.priorStageKeywords,
+        priorStageOutputs: options.priorOutputs?.map(po => ({ stageName: po.stageName, output: po.output })),
         llmEvalFn: options.llmEvalFn,
-        skipLlmEval: options.skipLlmEval,
+        skipLlmEval: true, // skip LLM on retry to save cost
       });
     }
 

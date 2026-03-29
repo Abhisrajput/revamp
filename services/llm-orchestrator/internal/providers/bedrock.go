@@ -23,9 +23,23 @@ type BedrockProvider struct {
 // NewBedrockProvider creates a new Bedrock provider
 func NewBedrockProvider(client *bedrockruntime.Client, bedrockClient *bedrock.Client, logger *zap.Logger) *BedrockProvider {
 	models := []string{
+		// Claude 4.6 (cross-region inference)
+		"us.anthropic.claude-sonnet-4-6-20251001-v1:0",
+		"us.anthropic.claude-opus-4-6-20251001-v1:0",
+		"us.anthropic.claude-haiku-4-6-20251001-v1:0",
+		// Claude 4.5 (cross-region inference)
+		"us.anthropic.claude-sonnet-4-5-20251001-v1:0",
+		"us.anthropic.claude-opus-4-5-20251001-v1:0",
+		"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		// Claude 3.7 / 3.5 (cross-region inference)
+		"us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"us.anthropic.claude-3-5-haiku-20241022-v1:0",
+		// Claude 3 (classic)
 		"anthropic.claude-3-opus-20240229-v1:0",
 		"anthropic.claude-3-sonnet-20240229-v1:0",
 		"anthropic.claude-3-haiku-20240307-v1:0",
+		// Meta Llama
 		"meta.llama3-70b-instruct-v1:0",
 		"meta.llama3-8b-instruct-v1:0",
 	}
@@ -213,20 +227,35 @@ func (bp *BedrockProvider) Stream(ctx context.Context, req *CompletionRequest) (
 func buildBedrockPayload(req *CompletionRequest) map[string]interface{} {
 	// Convert messages to Bedrock format
 	messages := make([]map[string]interface{}, 0)
+	var systemPrompt string
 	for _, msg := range req.Messages {
-		if msg.Role != "system" {
+		if msg.Role == "system" {
+			systemPrompt = msg.Content
+		} else {
 			messages = append(messages, map[string]interface{}{
-				"role":    msg.Role,
-				"content": msg.Content,
+				"role": msg.Role,
+				"content": []map[string]interface{}{
+					{"type": "text", "text": msg.Content},
+				},
 			})
 		}
 	}
 
 	payload := map[string]interface{}{
-		"messages":     messages,
-		"max_tokens":   req.MaxTokens,
-		"temperature":  req.Temperature,
-		"top_p":        req.TopP,
+		"anthropic_version": "bedrock-2023-05-31",
+		"messages":          messages,
+		"max_tokens":        req.MaxTokens,
+	}
+
+	// Bedrock Claude does not allow both temperature and top_p simultaneously
+	if req.Temperature > 0 {
+		payload["temperature"] = req.Temperature
+	} else if req.TopP > 0 {
+		payload["top_p"] = req.TopP
+	}
+
+	if systemPrompt != "" {
+		payload["system"] = systemPrompt
 	}
 
 	return payload
@@ -270,6 +299,37 @@ func calculateBedrockCost(model string, inputTokens, outputTokens int) float64 {
 	var inputCost, outputCost float64
 
 	switch model {
+	// Claude 4.6
+	case "us.anthropic.claude-sonnet-4-6-20251001-v1:0":
+		inputCost = 0.003 / 1000
+		outputCost = 0.015 / 1000
+	case "us.anthropic.claude-opus-4-6-20251001-v1:0":
+		inputCost = 0.015 / 1000
+		outputCost = 0.075 / 1000
+	case "us.anthropic.claude-haiku-4-6-20251001-v1:0":
+		inputCost = 0.0008 / 1000
+		outputCost = 0.004 / 1000
+	// Claude 4.5
+	case "us.anthropic.claude-sonnet-4-5-20251001-v1:0":
+		inputCost = 0.003 / 1000
+		outputCost = 0.015 / 1000
+	case "us.anthropic.claude-opus-4-5-20251001-v1:0":
+		inputCost = 0.015 / 1000
+		outputCost = 0.075 / 1000
+	case "us.anthropic.claude-haiku-4-5-20251001-v1:0":
+		inputCost = 0.0008 / 1000
+		outputCost = 0.004 / 1000
+	// Claude 3.7 / 3.5
+	case "us.anthropic.claude-3-7-sonnet-20250219-v1:0":
+		inputCost = 0.003 / 1000
+		outputCost = 0.015 / 1000
+	case "us.anthropic.claude-3-5-sonnet-20241022-v2:0":
+		inputCost = 0.003 / 1000
+		outputCost = 0.015 / 1000
+	case "us.anthropic.claude-3-5-haiku-20241022-v1:0":
+		inputCost = 0.0008 / 1000
+		outputCost = 0.004 / 1000
+	// Claude 3 classic
 	case "anthropic.claude-3-opus-20240229-v1:0":
 		inputCost = 0.015 / 1000
 		outputCost = 0.075 / 1000
@@ -279,6 +339,7 @@ func calculateBedrockCost(model string, inputTokens, outputTokens int) float64 {
 	case "anthropic.claude-3-haiku-20240307-v1:0":
 		inputCost = 0.00025 / 1000
 		outputCost = 0.00125 / 1000
+	// Meta Llama
 	case "meta.llama3-70b-instruct-v1:0":
 		inputCost = 0.00495 / 1000
 		outputCost = 0.0066 / 1000

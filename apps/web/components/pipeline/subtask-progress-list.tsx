@@ -40,9 +40,9 @@ function formatDuration(ms: number | undefined): string {
 }
 
 export function SubtaskProgressList() {
-  const subtasks = usePipelineStore((s) => s.scanSubtasks);
+  const subtasks = usePipelineStore((s) => (s as any).scanSubtasks) ?? [];
 
-  if (subtasks.length === 0) return null;
+  if (!subtasks || subtasks.length === 0) return null;
 
   const completed = subtasks.filter((t) => t.status === 'completed').length;
   const failed = subtasks.filter((t) => t.status === 'failed').length;

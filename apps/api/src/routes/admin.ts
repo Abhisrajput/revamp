@@ -14,8 +14,8 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { db } from "@/db/index.js";
-import { users, auditLogs, llmUsage, projects, pipelineRuns } from "@/db/schema.js";
-import { eq, desc, count, lt } from "drizzle-orm";
+import { users, auditLogs, llmUsage, projects, pipelineRuns, projectMembers } from "@/db/schema.js";
+import { eq, desc, count, lt, inArray } from "drizzle-orm";
 import { checkDatabaseHealth } from "@/db/index.js";
 import { llmProxyService } from "@/services/llm-proxy.js";
 import { calculateCost } from "@revamp/core-engine";
@@ -145,8 +145,37 @@ export async function adminRoutes(fastify: FastifyInstance) {
         .select({ count: count() })
         .from(users);
 
+      // Enrich users with project memberships
+      const userIds = allUsers.map(u => u.id);
+      const memberships = userIds.length > 0
+        ? await db.query.projectMembers.findMany({
+            where: inArray(projectMembers.user_id, userIds),
+            with: {
+              project: { columns: { id: true, name: true } },
+            },
+          })
+        : [];
+
+      const userProjects: Record<string, Array<{ id: string; name: string; role: string }>> = {};
+      for (const m of memberships) {
+        const uid = m.user_id;
+        if (!userProjects[uid]) userProjects[uid] = [];
+        if (m.project) {
+          userProjects[uid].push({
+            id: (m.project as any).id,
+            name: (m.project as any).name,
+            role: m.role,
+          });
+        }
+      }
+
+      const enrichedUsers = allUsers.map(u => ({
+        ...u,
+        projects: userProjects[u.id] || [],
+      }));
+
       return reply.send({
-        users: allUsers,
+        users: enrichedUsers,
         pagination: {
           page,
           limit,
@@ -177,19 +206,21 @@ export async function adminRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ error: "User not found" });
       }
 
-      await db
-        .update(users)
-        .set({ ...validation.data, updated_at: new Date() })
-        .where(eq(users.id, userId));
+      await db.transaction(async (tx) => {
+        await tx
+          .update(users)
+          .set({ ...validation.data, updated_at: new Date() })
+          .where(eq(users.id, userId));
 
-      await db.insert(auditLogs).values({
-        id: crypto.randomUUID(),
-        user_id: request.user.sub,
-        action: "UPDATE_USER",
-        resource_type: "user",
-        resource_id: userId,
-        changes: validation.data,
-        ip_address: request.ip,
+        await tx.insert(auditLogs).values({
+          id: crypto.randomUUID(),
+          user_id: request.user.sub,
+          action: "UPDATE_USER",
+          resource_type: "user",
+          resource_id: userId,
+          changes: validation.data,
+          ip_address: request.ip,
+        });
       });
 
       return reply.send({ message: "User updated" });
@@ -218,9 +249,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
           orderBy: desc(pipelineRuns.created_at),
           columns: {
             id: true,
+            project_id: true,
             status: true,
             current_stage: true,
+            started_at: true,
             created_at: true,
+          },
+          with: {
+            project: {
+              columns: { id: true, name: true },
+            },
           },
         }),
         db.query.llmUsage.findMany({ limit: 1000 }),
@@ -274,8 +312,70 @@ export async function adminRoutes(fastify: FastifyInstance) {
         .select({ count: count() })
         .from(auditLogs);
 
+      // Enrich logs with user emails and project names
+      const userIds = [...new Set(logs.map(l => l.user_id).filter(Boolean))] as string[];
+      const projectIds = [...new Set(logs.map(l => {
+        const changes = l.changes as Record<string, unknown> | null;
+        return changes?.projectId as string | undefined;
+      }).filter(Boolean))] as string[];
+      const resourceProjectIds = [...new Set(logs
+        .filter(l => l.resource_type === "pipeline_run" && l.resource_id)
+        .map(l => l.resource_id)
+      )] as string[];
+
+      // Batch fetch users
+      const userMap: Record<string, string> = {};
+      if (userIds.length > 0) {
+        const userRows = await db.query.users.findMany({
+          where: inArray(users.id, userIds),
+          columns: { id: true, email: true, first_name: true, last_name: true },
+        });
+        for (const u of userRows) {
+          userMap[u.id] = u.first_name && u.last_name
+            ? `${u.first_name} ${u.last_name} (${u.email})`
+            : u.email;
+        }
+      }
+
+      // Batch fetch projects
+      const projectMap: Record<string, string> = {};
+      if (projectIds.length > 0) {
+        const projRows = await db.query.projects.findMany({
+          where: inArray(projects.id, projectIds),
+          columns: { id: true, name: true },
+        });
+        for (const p of projRows) projectMap[p.id] = p.name;
+      }
+
+      // Batch fetch pipeline runs → project names
+      const pipelineProjectMap: Record<string, string> = {};
+      if (resourceProjectIds.length > 0) {
+        const runRows = await db.query.pipelineRuns.findMany({
+          where: inArray(pipelineRuns.id, resourceProjectIds),
+          columns: { id: true, project_id: true },
+          with: { project: { columns: { id: true, name: true } } },
+        });
+        for (const r of runRows) {
+          if (r.project) {
+            pipelineProjectMap[r.id] = (r.project as any).name;
+            projectMap[(r.project as any).id] = (r.project as any).name;
+          }
+        }
+      }
+
+      const enrichedLogs = logs.map(l => {
+        const changes = l.changes as Record<string, unknown> | null;
+        return {
+          ...l,
+          user_display: l.user_id ? (userMap[l.user_id] || l.user_id) : "system",
+          project_name: changes?.projectId
+            ? (projectMap[changes.projectId as string] || null)
+            : (l.resource_id && pipelineProjectMap[l.resource_id]) || null,
+        };
+      });
+
       return reply.send({
-        logs,
+        logs: enrichedLogs,
         pagination: {
           page,
           limit,

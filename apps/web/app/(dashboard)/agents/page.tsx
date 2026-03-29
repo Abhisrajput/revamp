@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { useAgents, useAgentDashboard } from '@/lib/hooks/use-agents';
 import { useOrchestrator } from '@/lib/hooks/use-orchestrator';
 import { AgentCard } from '@/components/agents/agent-card';
@@ -16,8 +17,13 @@ import { Badge } from '@/components/ui/badge';
 import {
   Brain, Hammer, Shield, FileText, Users,
   DollarSign, Activity, AlertTriangle,
-  LayoutGrid, List, Network,
+  LayoutGrid, List, Network, Columns, Clock,
 } from 'lucide-react';
+import { KanbanBoard } from '@/components/agents/kanban-board';
+import { RoutinesView } from '@/components/agents/routines-view';
+import { BudgetsView } from '@/components/agents/budgets-view';
+import { SkillsView } from '@/components/agents/skills-view';
+import { OrgChartView } from '@/components/agents/org-chart-view';
 
 const ROLES = ['all', 'director', 'lead', 'specialist'] as const;
 const STATUSES = ['all', 'idle', 'working', 'paused', 'disabled'] as const;
@@ -29,13 +35,21 @@ const DEPT_ICONS: Record<string, typeof Brain> = {
   pm: FileText,
 };
 
-type ViewMode = 'list' | 'department' | 'orchestrator';
+type ViewMode = 'list' | 'department' | 'orchestrator' | 'kanban' | 'routines' | 'budgets' | 'skills' | 'org-chart';
 
 export default function AgentsPage() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [department, setDepartment] = useState<string>('all');
   const [role, setRole] = useState<string>('all');
   const [status, setStatus] = useState<string>('all');
-  const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const initialView = (searchParams.get('view') as ViewMode) || 'list';
+  const [viewMode, setViewModeState] = useState<ViewMode>(initialView);
+
+  const setViewMode = (mode: ViewMode) => {
+    setViewModeState(mode);
+    router.replace(`/agents?view=${mode}`, { scroll: false });
+  };
 
   const { data: agents, isLoading } = useAgents({
     department: department !== 'all' ? department : undefined,
@@ -65,12 +79,27 @@ export default function AgentsPage() {
         <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 rounded-lg p-1">
           <ViewToggle mode="list" icon={List} label="List" active={viewMode} onSelect={setViewMode} />
           <ViewToggle mode="department" icon={LayoutGrid} label="Departments" active={viewMode} onSelect={setViewMode} />
+          <ViewToggle mode="kanban" icon={Columns} label="Kanban" active={viewMode} onSelect={setViewMode} />
+          <ViewToggle mode="routines" icon={Clock} label="Routines" active={viewMode} onSelect={setViewMode} />
+          <ViewToggle mode="budgets" icon={DollarSign} label="Budgets" active={viewMode} onSelect={setViewMode} />
+          <ViewToggle mode="skills" icon={Brain} label="Skills" active={viewMode} onSelect={setViewMode} />
+          <ViewToggle mode="org-chart" icon={Network} label="Org Chart" active={viewMode} onSelect={setViewMode} />
           <ViewToggle mode="orchestrator" icon={Network} label="Orchestrator" active={viewMode} onSelect={setViewMode} />
         </div>
       </div>
 
-      {/* ═══ ORCHESTRATOR VIEW ═══ */}
-      {viewMode === 'orchestrator' ? (
+      {/* ═══ KANBAN VIEW ═══ */}
+      {viewMode === 'kanban' ? (
+        <KanbanBoard />
+      ) : viewMode === 'routines' ? (
+        <RoutinesView />
+      ) : viewMode === 'budgets' ? (
+        <BudgetsView />
+      ) : viewMode === 'skills' ? (
+        <SkillsView />
+      ) : viewMode === 'org-chart' ? (
+        <OrgChartView />
+      ) : viewMode === 'orchestrator' ? (
         <OrchestratorView orchestrator={orchestrator} />
       ) : (
         <>
@@ -311,37 +340,8 @@ function OrchestratorView({
           </div>
         </Card>
 
-        {/* Orchestrator Core */}
-        <Card className="bg-white dark:bg-slate-800/80 border-slate-200 dark:border-slate-700/50 overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700/50">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                Orchestrator Core
-              </h2>
-              <div className="flex items-center gap-3 text-[10px] text-slate-400">
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-purple-500" />
-                  Discovery
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-blue-500" />
-                  Execution
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                  QA
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-amber-500" />
-                  PM
-                </span>
-              </div>
-            </div>
-          </div>
-          <div className="p-6 flex items-center justify-center min-h-[480px]">
-            <OrchestratorCore agents={agentStates} orchestratorState={state} />
-          </div>
-        </Card>
+        {/* Orchestrator Core — uses all available space */}
+        <OrchestratorCorePanel agents={agentStates} state={state} />
 
         {/* Execution Log — wider column for detailed entries */}
         <Card className="bg-white dark:bg-slate-800/80 border-slate-200 dark:border-slate-700/50 overflow-hidden">
@@ -374,5 +374,67 @@ function OrchestratorView({
         <AgentGrid agents={agentStates} />
       </div>
     </div>
+  );
+}
+
+// ─── ORCHESTRATOR CORE PANEL (full-width with filter) ───────────
+
+function OrchestratorCorePanel({
+  agents,
+  state,
+}: {
+  agents: AgentOrchestratorState[];
+  state: OrchestratorState;
+}) {
+  const [filter, setFilter] = useState<'all' | 'active' | 'idle' | 'paused'>('all');
+
+  const filtered = agents.filter(a => {
+    if (filter === 'all') return true;
+    if (filter === 'active') return a.status === 'working';
+    if (filter === 'idle') return a.status === 'idle';
+    if (filter === 'paused') return a.status === 'paused' || a.status === 'disabled';
+    return true;
+  });
+
+  const counts = {
+    all: agents.length,
+    active: agents.filter(a => a.status === 'working').length,
+    idle: agents.filter(a => a.status === 'idle').length,
+    paused: agents.filter(a => a.status === 'paused' || a.status === 'disabled').length,
+  };
+
+  return (
+    <Card className="bg-white dark:bg-slate-800/80 border-slate-200 dark:border-slate-700/50 overflow-hidden">
+      <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700/50">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+              Neural Network
+            </h2>
+            <div className="flex items-center gap-2 text-[10px] text-slate-400">
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-500" />Discovery</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500" />Execution</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500" />QA</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500" />PM</span>
+            </div>
+          </div>
+
+          {/* Filter dropdown */}
+          <select
+            value={filter}
+            onChange={e => setFilter(e.target.value as any)}
+            className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 cursor-pointer focus:ring-2 focus:ring-primary-500/30 focus:outline-none"
+          >
+            <option value="all">All Agents ({counts.all})</option>
+            <option value="active">Active ({counts.active})</option>
+            <option value="idle">Idle ({counts.idle})</option>
+            <option value="paused">Paused / Disabled ({counts.paused})</option>
+          </select>
+        </div>
+      </div>
+      <div className="w-full min-h-[540px]">
+        <OrchestratorCore agents={filtered} orchestratorState={state} />
+      </div>
+    </Card>
   );
 }

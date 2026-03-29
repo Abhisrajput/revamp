@@ -1,17 +1,24 @@
 'use client';
 
 import { memo, useMemo, useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import {
   ShieldCheck,
   CheckCircle,
   FileBox,
   Route,
+  Play,
+  XCircle,
+  RotateCcw,
+  Clock,
 } from 'lucide-react';
 import { ConfidenceGauge } from '@/components/pipeline/confidence-gauge';
 import { ValidationResults } from '@/components/pipeline/validation-results';
 import { ApprovalGate } from '@/components/pipeline/approval-gate';
+import { apiClient } from '@/lib/api-client';
 import type { StageState } from '@/lib/stores/pipeline-store';
+import { usePipelineStore } from '@/lib/stores/pipeline-store';
 import { useUIPreferencesStore, type InspectorTab } from '@/lib/stores/ui-preferences-store';
 import { useStageTrajectory } from '@/lib/hooks/use-agents';
 import type { RetrievalStep } from '@/lib/hooks/use-agents';
@@ -161,7 +168,7 @@ export const InspectorPanel = memo(function InspectorPanel({
 
         {/* Approval Tab */}
         {inspectorTab === 'approval' && (
-          <div>
+          <div className="space-y-4">
             {stage.approvalStatus !== 'none' ? (
               <ApprovalGate
                 stage={stage.label}
@@ -172,12 +179,14 @@ export const InspectorPanel = memo(function InspectorPanel({
                 userRole={userRole}
               />
             ) : (
-              <div className="flex flex-col items-center justify-center py-8 text-slate-400 dark:text-slate-500">
-                <CheckCircle className="w-8 h-8 mb-2 opacity-50" />
-                <p className="text-xs">No approval required</p>
-                <p className="text-[10px] mt-1">This stage doesn&apos;t have an approval gate</p>
+              <div className="flex flex-col items-center justify-center py-4 text-slate-400 dark:text-slate-500">
+                <CheckCircle className="w-6 h-6 mb-1.5 opacity-50" />
+                <p className="text-xs">No approval gate for this stage</p>
               </div>
             )}
+
+            {/* Execution History Timeline */}
+            <ExecutionTimeline stageName={stage.name} />
           </div>
         )}
 
@@ -276,8 +285,11 @@ function ContextRetrievalTab({
     );
   }
 
-  const pct = trajectory.totalTokenBudget > 0
-    ? Math.round((trajectory.tokensUsed / trajectory.totalTokenBudget) * 100)
+  const tokensUsed = trajectory.tokensUsed ?? 0;
+  const totalTokenBudget = trajectory.totalTokenBudget ?? 0;
+  const buildDurationMs = trajectory.buildDurationMs ?? 0;
+  const pct = totalTokenBudget > 0
+    ? Math.round((tokensUsed / totalTokenBudget) * 100)
     : 0;
   const budgetColor = pct > 90 ? 'bg-red-500' : pct > 70 ? 'bg-amber-500' : 'bg-emerald-500';
 
@@ -288,7 +300,7 @@ function ContextRetrievalTab({
         <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 mb-1">
           <span>Token budget</span>
           <span className="font-mono tabular-nums">
-            {trajectory.tokensUsed.toLocaleString()} / {trajectory.totalTokenBudget.toLocaleString()} ({pct}%)
+            {tokensUsed.toLocaleString()} / {totalTokenBudget.toLocaleString()} ({pct}%)
           </span>
         </div>
         <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
@@ -298,7 +310,7 @@ function ContextRetrievalTab({
 
       {/* Stats row */}
       <div className="flex items-center gap-3 text-[10px] text-slate-400">
-        <span className="font-mono tabular-nums">{trajectory.buildDurationMs}ms build</span>
+        <span className="font-mono tabular-nums">{buildDurationMs}ms build</span>
         {trajectory.evolutionMemoriesLoaded > 0 && (
           <span className="text-amber-500">{trajectory.evolutionMemoriesLoaded} memories loaded</span>
         )}
@@ -306,7 +318,7 @@ function ContextRetrievalTab({
 
       {/* Steps */}
       <div className="space-y-1">
-        {trajectory.trajectory.map((step: RetrievalStep, i: number) => {
+        {(trajectory.trajectory ?? []).map((step: RetrievalStep, i: number) => {
           const isSkipped = step.reason === 'skipped_irrelevant';
           return (
             <div
@@ -331,7 +343,7 @@ function ContextRetrievalTab({
       </div>
 
       {/* L0 previews */}
-      {trajectory.trajectory.some((s: RetrievalStep) => s.l0Preview) && (
+      {(trajectory.trajectory ?? []).some((s: RetrievalStep) => s.l0Preview) && (
         <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-700">
           <p className="text-[10px] text-slate-400 mb-1.5">L0 Summaries</p>
           {trajectory.trajectory
@@ -344,6 +356,115 @@ function ContextRetrievalTab({
             ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Execution Timeline (shown under Approval tab) ─────────────
+
+interface HistoryEntry {
+  type: 'execution' | 'approval' | 'rejection';
+  stage: string;
+  attempt?: number;
+  status: string;
+  user: string;
+  model?: string | null;
+  duration_ms?: number | null;
+  validation_passed?: boolean | null;
+  comment?: string | null;
+  timestamp: string;
+}
+
+const STAGE_LABELS: Record<string, string> = {
+  SCAN: 'Setup & Configuration', DECODE: 'Intent Extraction',
+  BLUEPRINT: 'Business Capability Mining', SPEC_LOCK: 'Behavior Lock-in',
+  ARCHITECT: 'Modernization Approach', FORGE: 'Co-Create',
+  SHADOW_RUN: 'Parallel Run & Cutover', EVOLVE: 'Continuous Modernization',
+};
+
+function ExecutionTimeline({ stageName }: { stageName: string }) {
+  const pipelineRunId = usePipelineStore((s) => s.currentPipelineRunId);
+
+  const { data } = useQuery<{ history: HistoryEntry[] }>({
+    queryKey: ['pipeline-history', pipelineRunId],
+    queryFn: async () => {
+      const res = await apiClient.get(`/pipeline/${pipelineRunId}/history`);
+      return res.data;
+    },
+    staleTime: 10_000,
+    enabled: !!pipelineRunId,
+  });
+
+  // Filter to current stage only
+  const history = (data?.history ?? []).filter(e => e.stage === stageName);
+
+  if (history.length === 0) {
+    return (
+      <div className="px-3 py-4 text-center">
+        <Clock className="w-5 h-5 mx-auto mb-1.5 text-slate-300 dark:text-slate-600" />
+        <p className="text-[10px] text-slate-400">No execution history for this stage</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-3 pb-3">
+      <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium uppercase tracking-wider mb-2">
+        Execution History
+      </p>
+      <div className="relative">
+        <div className="absolute left-[9px] top-2 bottom-2 w-px bg-slate-200 dark:bg-slate-700" />
+        <div className="space-y-1">
+          {history.map((entry, i) => {
+            const isApproval = entry.type === 'approval';
+            const isRejection = entry.type === 'rejection';
+            const isRerun = entry.type === 'execution' && (entry.attempt ?? 1) > 1;
+
+            const Icon = isApproval ? CheckCircle : isRejection ? XCircle : isRerun ? RotateCcw : Play;
+            const iconColor = isApproval ? 'text-emerald-500' : isRejection ? 'text-red-500' : isRerun ? 'text-amber-500' : 'text-blue-500';
+
+            const time = new Date(entry.timestamp);
+            const dur = entry.duration_ms
+              ? entry.duration_ms < 1000 ? `${entry.duration_ms}ms` : `${(entry.duration_ms / 1000).toFixed(1)}s`
+              : null;
+
+            return (
+              <div key={`${entry.type}-${i}`} className="flex items-start gap-2 py-1.5 relative">
+                <div className={cn('w-[18px] h-[18px] rounded-full flex items-center justify-center bg-white dark:bg-slate-900 z-10 ring-1 ring-slate-200 dark:ring-slate-700', iconColor)}>
+                  <Icon className="w-2.5 h-2.5" />
+                </div>
+                <div className="flex-1 min-w-0 pt-px">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                      {isApproval ? 'Approved' : isRejection ? 'Rejected' : isRerun ? `Re-run #${entry.attempt}` : 'Executed'}
+                    </span>
+                    {entry.type === 'execution' && entry.validation_passed === false && (
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400">
+                        validation failed
+                      </span>
+                    )}
+                    {entry.type === 'execution' && entry.validation_passed === true && (
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400">
+                        passed
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500">
+                    {entry.user} · {time.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    {dur && ` · ${dur}`}
+                  </p>
+                  {entry.model && (
+                    <p className="text-[9px] text-slate-400 dark:text-slate-500 font-mono truncate">{entry.model}</p>
+                  )}
+                  {entry.comment && (
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 italic mt-0.5">"{entry.comment}"</p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }

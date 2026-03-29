@@ -14,6 +14,26 @@ import {
 import { apiClient } from '@/lib/api-client';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import Link from 'next/link';
+// Link is used in User Management (project badges) and LivePipelineFeed
+import { MetricCard } from '@/components/dashboard/metric-card';
+import { ServiceHealthGrid } from '@/components/dashboard/service-health-grid';
+import { PipelineActivityChart } from '@/components/dashboard/pipeline-activity-chart';
+import { LivePipelineFeed } from '@/components/dashboard/live-pipeline-feed';
+
+// ─── PIPELINE STAGE MAPS ────────────────────────────────────────
+
+const STAGE_ORDER = ['SCAN', 'DECODE', 'BLUEPRINT', 'SPEC_LOCK', 'ARCHITECT', 'FORGE', 'SHADOW_RUN', 'EVOLVE'];
+
+const STAGE_LABELS: Record<string, string> = {
+  SCAN: 'Setup & Configuration',
+  DECODE: 'Intent Extraction',
+  BLUEPRINT: 'Business Capability Mining',
+  SPEC_LOCK: 'Behavior Lock-in',
+  ARCHITECT: 'Modernization Approach',
+  FORGE: 'Co-Create',
+  SHADOW_RUN: 'Parallel Run & Cutover',
+  EVOLVE: 'Continuous Modernization',
+};
 
 // ─── TYPES ──────────────────────────────────────────────────────
 
@@ -40,9 +60,12 @@ interface PlatformStats {
   total_llm_requests: number;
   recent_pipelines: Array<{
     id: string;
+    project_id?: string;
     status: string;
     current_stage: string | null;
+    started_at?: string;
     created_at: string;
+    project?: { id: string; name: string };
   }>;
 }
 
@@ -73,11 +96,60 @@ interface LLMUsageData {
 interface AuditLog {
   id: string;
   user_id: string | null;
+  user_display: string | null;
+  project_name: string | null;
   action: string;
   resource_type: string;
   resource_id: string | null;
+  changes: Record<string, unknown> | null;
   ip_address: string | null;
+  user_agent: string | null;
   created_at: string;
+}
+
+type AuditCategory = 'All' | 'AI' | 'Pipeline' | 'Auth' | 'File' | 'Settings' | 'Team';
+
+const ACTION_CATEGORY: Record<string, AuditCategory> = {
+  PIPELINE_STARTED: 'Pipeline', STAGE_STARTED: 'AI', STAGE_COMPLETED: 'AI',
+  STAGE_APPROVED: 'Pipeline', STAGE_REJECTED: 'Pipeline',
+  LOGIN: 'Auth', SIGNUP: 'Auth', LOGOUT: 'Auth', PASSWORD_RESET: 'Auth',
+  PROJECT_CREATED: 'Settings', PROJECT_UPDATED: 'Settings', PROJECT_DELETED: 'Settings',
+  FILE_UPLOADED: 'File', FILE_DELETED: 'File',
+  MEMBER_ADDED: 'Team', MEMBER_REMOVED: 'Team', MEMBER_ROLE_CHANGED: 'Team', USER_UPDATED: 'Team',
+};
+const ACTION_COLORS: Record<string, string> = {
+  PIPELINE_STARTED: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
+  STAGE_STARTED: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300',
+  STAGE_COMPLETED: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300',
+  STAGE_APPROVED: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300',
+  STAGE_REJECTED: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300',
+};
+const ACTION_LABELS: Record<string, string> = {
+  PIPELINE_STARTED: 'Pipeline Started', STAGE_STARTED: 'Stage Execution',
+  STAGE_COMPLETED: 'Stage Completed', STAGE_APPROVED: 'Stage Approved', STAGE_REJECTED: 'Stage Rejected',
+};
+const AUDIT_CATEGORIES: AuditCategory[] = ['All', 'AI', 'Pipeline', 'Auth', 'File', 'Settings', 'Team'];
+
+function formatAuditAction(action: string): string {
+  return ACTION_LABELS[action] || action.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+function getAuditActionColor(action: string): string {
+  return ACTION_COLORS[action] || 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300';
+}
+function getAuditCategory(action: string): AuditCategory {
+  return ACTION_CATEGORY[action] || 'Pipeline';
+}
+function formatAuditChanges(log: AuditLog): string {
+  const changes = log.changes;
+  if (!changes || Object.keys(changes).length === 0) return '';
+  const parts: string[] = [];
+  if (changes.stageName) parts.push(`Stage: ${changes.stageName}`);
+  if (log.project_name) parts.push(`Project: ${log.project_name}`);
+  else if (changes.projectId) parts.push(`Project: ${(changes.projectId as string).slice(0, 8)}...`);
+  if (changes.comment) parts.push(`"${(changes.comment as string).slice(0, 60)}"`);
+  if (changes.model) parts.push(`Model: ${changes.model}`);
+  if (parts.length === 0) return Object.entries(changes).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 40) : JSON.stringify(v)}`).join(', ');
+  return parts.join(' · ');
 }
 
 // ─── ROLE-BASED SECTIONS ────────────────────────────────────────
@@ -166,20 +238,14 @@ export default function DashboardPage() {
 function OverviewSection({ userRole }: { userRole: string }) {
   const { data: health } = useQuery<HealthData>({
     queryKey: ['admin', 'health'],
-    queryFn: async () => {
-      const res = await apiClient.get('/admin/health');
-      return res.data;
-    },
+    queryFn: async () => (await apiClient.get('/admin/health')).data,
     refetchInterval: 30_000,
     enabled: userRole === 'admin',
   });
 
   const { data: stats } = useQuery<PlatformStats>({
     queryKey: ['admin', 'stats'],
-    queryFn: async () => {
-      const res = await apiClient.get('/admin/stats');
-      return res.data;
-    },
+    queryFn: async () => (await apiClient.get('/admin/stats')).data,
     staleTime: 15_000,
   });
 
@@ -194,168 +260,83 @@ function OverviewSection({ userRole }: { userRole: string }) {
 
   return (
     <div className="space-y-6">
-      {/* Quick Stats — visible to all */}
+      {/* ─── Metric Cards ──────────────────────────────────────── */}
       {stats && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {userRole === 'admin' && (
-            <Card className="bg-[#f9faf9] dark:bg-slate-800 p-4 border-[#e2e8e4] dark:border-slate-700">
-              <div className="flex items-center gap-2 mb-1">
-                <Users className="w-4 h-4 text-slate-400" />
-                <p className="text-xs text-slate-500 dark:text-slate-400 uppercase">Users</p>
-              </div>
-              <p className="text-3xl font-bold text-primary-600 dark:text-primary-400">
-                {stats.total_users}
-              </p>
-            </Card>
+            <MetricCard
+              title="Users"
+              value={stats.total_users}
+              icon={Users}
+              color="primary"
+              subtitle="Active platform users"
+            />
           )}
-          <Card className="bg-[#f9faf9] dark:bg-slate-800 p-4 border-[#e2e8e4] dark:border-slate-700">
-            <div className="flex items-center gap-2 mb-1">
-              <FolderOpen className="w-4 h-4 text-slate-400" />
-              <p className="text-xs text-slate-500 dark:text-slate-400 uppercase">Projects</p>
-            </div>
-            <p className="text-3xl font-bold text-primary-600 dark:text-primary-400">
-              {stats.total_projects}
-            </p>
-          </Card>
-          <Card className="bg-[#f9faf9] dark:bg-slate-800 p-4 border-[#e2e8e4] dark:border-slate-700">
-            <div className="flex items-center gap-2 mb-1">
-              <Activity className="w-4 h-4 text-slate-400" />
-              <p className="text-xs text-slate-500 dark:text-slate-400 uppercase">Pipeline Runs</p>
-            </div>
-            <p className="text-3xl font-bold text-primary-600 dark:text-primary-400">
-              {stats.total_pipeline_runs}
-            </p>
-          </Card>
-          <Card className="bg-[#f9faf9] dark:bg-slate-800 p-4 border-[#e2e8e4] dark:border-slate-700">
-            <div className="flex items-center gap-2 mb-1">
-              <Coins className="w-4 h-4 text-slate-400" />
-              <p className="text-xs text-slate-500 dark:text-slate-400 uppercase">LLM Cost</p>
-            </div>
-            <p className="text-3xl font-bold text-primary-600 dark:text-primary-400">
-              ${stats.total_llm_cost_usd?.toFixed(2) || '0.00'}
-            </p>
-          </Card>
+          <MetricCard
+            title="Projects"
+            value={stats.total_projects}
+            icon={FolderOpen}
+            color="emerald"
+            subtitle="Modernization projects"
+          />
+          <MetricCard
+            title="Pipeline Runs"
+            value={stats.total_pipeline_runs}
+            icon={Activity}
+            color="cyan"
+            subtitle={`${stats.pipeline_status_breakdown?.running || 0} active`}
+            pulse={(stats.pipeline_status_breakdown?.running || 0) > 0}
+          />
+          <MetricCard
+            title="LLM Cost"
+            value={`$${stats.total_llm_cost_usd?.toFixed(2) || '0.00'}`}
+            icon={Coins}
+            color="amber"
+            subtitle={`${((stats.total_llm_tokens || 0) / 1000).toFixed(0)}K tokens used`}
+          />
         </div>
       )}
 
-      {/* Service Health — admin only */}
+      {/* ─── Service Health (admin only) ───────────────────────── */}
       {userRole === 'admin' && health?.services && (
-        <>
-          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
-            Service Health
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {Object.entries(health.services).map(([name, service]) => {
-              const isOk = service.status === 'ok';
-              const labels: Record<string, { label: string; icon: React.ElementType }> = {
-                database: { label: 'PostgreSQL', icon: Database },
-                redis: { label: 'Redis', icon: Server },
-                llm_orchestrator: { label: 'LLM Orchestrator', icon: Cpu },
-                s3_storage: { label: 'S3/MinIO', icon: HardDrive },
-              };
-              const meta = labels[name] || { label: name, icon: Server };
-              const Icon = meta.icon;
-
-              return (
-                <Card key={name} className="bg-[#f9faf9] dark:bg-slate-800 p-4 border-[#e2e8e4] dark:border-slate-700">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Icon className="w-4 h-4 text-slate-400" />
-                      <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                        {meta.label}
-                      </span>
-                    </div>
-                    <Badge
-                      className={
-                        isOk
-                          ? 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-400'
-                          : 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-400'
-                      }
-                    >
-                      {isOk ? (
-                        <CheckCircle className="w-3 h-3 mr-1" />
-                      ) : (
-                        <AlertCircle className="w-3 h-3 mr-1" />
-                      )}
-                      {service.status}
-                    </Badge>
-                  </div>
-                  {'latency_ms' in service && service.latency_ms !== undefined && (
-                    <p className="text-xs text-slate-400 mt-1">{service.latency_ms}ms latency</p>
-                  )}
-                </Card>
-              );
-            })}
-          </div>
-
-          {/* System Info */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Card className="bg-[#f9faf9] dark:bg-slate-800 p-4 border-[#e2e8e4] dark:border-slate-700">
-              <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Status</p>
-              <p className={`text-2xl font-bold mt-1 capitalize ${
-                health.status === 'healthy' ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'
-              }`}>
-                {health.status}
-              </p>
-            </Card>
-            <Card className="bg-[#f9faf9] dark:bg-slate-800 p-4 border-[#e2e8e4] dark:border-slate-700">
-              <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Uptime</p>
-              <p className="text-2xl font-bold text-slate-900 dark:text-slate-50 mt-1">
-                {formatUptime(health.uptime)}
-              </p>
-            </Card>
-            <Card className="bg-[#f9faf9] dark:bg-slate-800 p-4 border-[#e2e8e4] dark:border-slate-700">
-              <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Memory</p>
-              <p className="text-2xl font-bold text-slate-900 dark:text-slate-50 mt-1">
-                {health.memory.heapUsed}MB / {health.memory.heapTotal}MB
-              </p>
-            </Card>
-          </div>
-        </>
+        <ServiceHealthGrid services={health.services} />
       )}
 
-      {/* Token Usage & Cost — visible to all */}
+      {/* ─── System Info (admin only) ──────────────────────────── */}
+      {userRole === 'admin' && health && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <MetricCard
+            title="Status"
+            value={health.status === 'healthy' ? 'Healthy' : 'Degraded'}
+            icon={CheckCircle}
+            color={health.status === 'healthy' ? 'emerald' : 'red'}
+            pulse={health.status === 'healthy'}
+          />
+          <MetricCard
+            title="Uptime"
+            value={formatUptime(health.uptime)}
+            icon={Clock}
+            color="primary"
+          />
+          <MetricCard
+            title="Memory"
+            value={`${health.memory.heapUsed}MB`}
+            icon={Cpu}
+            color="cyan"
+            subtitle={`of ${health.memory.heapTotal}MB heap`}
+          />
+        </div>
+      )}
+
+      {/* ─── Token Usage & Cost ─────────────────────────────────── */}
       <TokenUsageSummary />
 
-      {/* LLM Usage by Project — placeholder for future component */}
-
-      {/* Recent Pipeline Runs — visible to all */}
+      {/* ─── Pipeline Activity Chart + Live Feed ───────────────── */}
       {stats && stats.recent_pipelines.length > 0 && (
-        <Card className="bg-[#f9faf9] dark:bg-slate-800 p-6 border-[#e2e8e4] dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-50 mb-4">
-            Recent Pipeline Runs
-          </h3>
-          <div className="space-y-2">
-            {stats.recent_pipelines.map((run) => (
-              <div
-                key={run.id}
-                className="flex items-center justify-between p-3 bg-white dark:bg-slate-700/50 rounded-lg border border-[#e2e8e4] dark:border-slate-700"
-              >
-                <div className="flex items-center gap-3">
-                  <Badge
-                    className={
-                      run.status === 'completed'
-                        ? 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-400'
-                        : run.status === 'running'
-                          ? 'bg-blue-100 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400'
-                          : run.status === 'failed'
-                            ? 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-400'
-                            : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-                    }
-                  >
-                    {run.status}
-                  </Badge>
-                  <span className="text-sm font-mono text-slate-600 dark:text-slate-400">
-                    {run.current_stage || 'N/A'}
-                  </span>
-                </div>
-                <span className="text-xs text-slate-400">
-                  {new Date(run.created_at).toLocaleString()}
-                </span>
-              </div>
-            ))}
-          </div>
-        </Card>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <PipelineActivityChart runs={stats.recent_pipelines} />
+          <LivePipelineFeed runs={stats.recent_pipelines} />
+        </div>
       )}
     </div>
   );
@@ -466,9 +447,9 @@ function UsersSection() {
                 <th className="text-left py-3 px-4 text-sm font-medium text-slate-600 dark:text-slate-400">User</th>
                 <th className="text-left py-3 px-4 text-sm font-medium text-slate-600 dark:text-slate-400">Email</th>
                 <th className="text-left py-3 px-4 text-sm font-medium text-slate-600 dark:text-slate-400">Role</th>
+                <th className="text-left py-3 px-4 text-sm font-medium text-slate-600 dark:text-slate-400">Projects</th>
                 <th className="text-left py-3 px-4 text-sm font-medium text-slate-600 dark:text-slate-400">Status</th>
                 <th className="text-left py-3 px-4 text-sm font-medium text-slate-600 dark:text-slate-400">Last Login</th>
-                <th className="text-left py-3 px-4 text-sm font-medium text-slate-600 dark:text-slate-400">Joined</th>
               </tr>
             </thead>
             <tbody>
@@ -497,6 +478,20 @@ function UsersSection() {
                     </Badge>
                   </td>
                   <td className="py-3 px-4 text-sm">
+                    {(u as any).projects?.length > 0 ? (
+                      <div className="flex flex-col gap-1">
+                        {(u as any).projects.map((p: any) => (
+                          <Link key={p.id} href={`/projects/${p.id}`} className="flex items-center gap-1.5 group">
+                            <span className="text-xs text-primary-600 dark:text-primary-400 group-hover:underline">{p.name}</span>
+                            <span className="text-[9px] text-slate-400">({p.role})</span>
+                          </Link>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-slate-400 text-xs">No projects</span>
+                    )}
+                  </td>
+                  <td className="py-3 px-4 text-sm">
                     <Badge
                       className={
                         u.is_active
@@ -509,9 +504,6 @@ function UsersSection() {
                   </td>
                   <td className="py-3 px-4 text-sm text-slate-600 dark:text-slate-400">
                     {u.last_login ? new Date(u.last_login).toLocaleDateString() : 'Never'}
-                  </td>
-                  <td className="py-3 px-4 text-sm text-slate-600 dark:text-slate-400">
-                    {new Date(u.created_at).toLocaleDateString()}
                   </td>
                 </tr>
               ))}
@@ -809,85 +801,125 @@ function UsageSection() {
 // ─── AUDIT SECTION (Admin only) ─────────────────────────────────
 
 function AuditSection() {
+  const [activeFilter, setActiveFilter] = useState<AuditCategory>('All');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
   const { data } = useQuery<{ logs: AuditLog[]; pagination: { total: number } }>({
     queryKey: ['admin', 'audit-logs'],
     queryFn: async () => {
-      const res = await apiClient.get('/admin/audit-logs');
+      const res = await apiClient.get('/admin/audit-logs?limit=100');
       return res.data;
     },
   });
 
-  const logs = data?.logs || [];
+  const allLogs = data?.logs || [];
+  const logs = activeFilter === 'All' ? allLogs : allLogs.filter(l => getAuditCategory(l.action) === activeFilter);
+
+  const categoryCounts: Record<AuditCategory, number> = { All: allLogs.length, AI: 0, Pipeline: 0, Auth: 0, File: 0, Settings: 0, Team: 0 };
+  for (const log of allLogs) {
+    const cat = getAuditCategory(log.action);
+    categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
+  }
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">
-          Audit Logs
-        </h2>
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-2"
-          onClick={() => {
-            const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
-            window.open(`${baseUrl}/admin/export/audit-logs`, '_blank');
-          }}
-        >
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">Audit Logs</h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400">{allLogs.length} events recorded</p>
+        </div>
+        <Button variant="outline" size="sm" className="gap-2" onClick={() => {
+          const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787';
+          window.open(`${baseUrl}/admin/export/audit-logs`, '_blank');
+        }}>
           <Download className="w-4 h-4" />
           Export CSV
         </Button>
       </div>
 
+      {/* Category Filters */}
+      <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg w-fit">
+        {AUDIT_CATEGORIES.map((cat) => (
+          <button
+            key={cat}
+            onClick={() => setActiveFilter(cat)}
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              activeFilter === cat
+                ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+            }`}
+          >
+            {cat}
+            {categoryCounts[cat] > 0 && <span className="ml-1.5 text-[10px] opacity-60">{categoryCounts[cat]}</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* Log Entries */}
       <Card className="bg-[#f9faf9] dark:bg-slate-800 border-[#e2e8e4] dark:border-slate-700">
-        <div className="p-6">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-[#e2e8e4] dark:border-slate-700">
-                  <th className="text-left py-2 text-slate-600 dark:text-slate-400">Action</th>
-                  <th className="text-left py-2 text-slate-600 dark:text-slate-400">Resource</th>
-                  <th className="text-left py-2 text-slate-600 dark:text-slate-400">IP</th>
-                  <th className="text-left py-2 text-slate-600 dark:text-slate-400">Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {logs.map((log) => (
-                  <tr
-                    key={log.id}
-                    className="border-b border-[#e2e8e4]/60 dark:border-slate-700/50 hover:bg-white dark:hover:bg-slate-700/50"
-                  >
-                    <td className="py-2">
-                      <Badge className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-mono text-xs">
-                        {log.action}
-                      </Badge>
-                    </td>
-                    <td className="py-2 text-slate-600 dark:text-slate-400">
-                      {log.resource_type}
-                      {log.resource_id && (
-                        <span className="text-xs text-slate-400 ml-1">
-                          ({log.resource_id.slice(0, 8)}...)
+        <div className="divide-y divide-[#e2e8e4] dark:divide-slate-700/50">
+          {logs.map((log) => {
+            const isExpanded = expandedId === log.id;
+            const details = formatAuditChanges(log);
+            return (
+              <div
+                key={log.id}
+                className="px-4 py-3 hover:bg-white dark:hover:bg-slate-700/30 transition-colors cursor-pointer"
+                onClick={() => setExpandedId(isExpanded ? null : log.id)}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <Badge className={`${getAuditActionColor(log.action)} text-xs font-medium shrink-0`}>
+                      {formatAuditAction(log.action)}
+                    </Badge>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-slate-700 dark:text-slate-300">
+                          {log.project_name || log.resource_type.replace(/_/g, ' ')}
                         </span>
+                        <span className="text-xs text-slate-400 dark:text-slate-500">
+                          by {log.user_display || 'system'}
+                        </span>
+                      </div>
+                      {details && <p className="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">{details}</p>}
+                    </div>
+                  </div>
+                  <span className="text-xs text-slate-400 dark:text-slate-500 tabular-nums shrink-0">
+                    {new Date(log.created_at).toLocaleString()}
+                  </span>
+                </div>
+                {isExpanded && (
+                  <div className="mt-3 p-3 bg-slate-50 dark:bg-slate-900 rounded-md text-xs space-y-1.5">
+                    <div className="grid grid-cols-2 gap-x-6 gap-y-2">
+                      <div><span className="text-slate-400">Performed by:</span> <span className="ml-1 text-slate-600 dark:text-slate-300 font-medium">{log.user_display || 'System'}</span></div>
+                      <div><span className="text-slate-400">Category:</span> <span className="ml-1 text-slate-600 dark:text-slate-300">{getAuditCategory(log.action)}</span></div>
+                      {log.project_name && (
+                        <div><span className="text-slate-400">Project:</span> <span className="ml-1 text-slate-600 dark:text-slate-300 font-medium">{log.project_name}</span></div>
                       )}
-                    </td>
-                    <td className="py-2 text-slate-500 dark:text-slate-400 font-mono text-xs">
-                      {log.ip_address || '-'}
-                    </td>
-                    <td className="py-2 text-slate-500 dark:text-slate-400 text-xs">
-                      {new Date(log.created_at).toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
-                {logs.length === 0 && (
-                  <tr>
-                    <td colSpan={4} className="py-8 text-center text-slate-400">
-                      No audit logs recorded yet.
-                    </td>
-                  </tr>
+                      <div><span className="text-slate-400">IP Address:</span> <span className="ml-1 font-mono text-slate-600 dark:text-slate-300">{log.ip_address || '-'}</span></div>
+                      {(log.changes as any)?.stageName && (
+                        <div><span className="text-slate-400">Stage:</span> <span className="ml-1 text-slate-600 dark:text-slate-300 font-medium">{(log.changes as any).stageName}</span></div>
+                      )}
+                      {(log.changes as any)?.model && (
+                        <div><span className="text-slate-400">Model:</span> <span className="ml-1 font-mono text-slate-600 dark:text-slate-300">{(log.changes as any).model}</span></div>
+                      )}
+                      {(log.changes as any)?.comment && (
+                        <div className="col-span-2"><span className="text-slate-400">Comment:</span> <span className="ml-1 text-slate-600 dark:text-slate-300 italic">"{(log.changes as any).comment}"</span></div>
+                      )}
+                      {log.user_agent && (
+                        <div className="col-span-2"><span className="text-slate-400">Browser:</span> <span className="ml-1 text-slate-500 dark:text-slate-400 text-[11px]">{log.user_agent.replace(/Mozilla\/5\.0\s*/, '').slice(0, 80)}</span></div>
+                      )}
+                    </div>
+                  </div>
                 )}
-              </tbody>
-            </table>
-          </div>
+              </div>
+            );
+          })}
+          {logs.length === 0 && (
+            <div className="py-12 text-center text-slate-400">
+              No audit logs {activeFilter !== 'All' ? `in "${activeFilter}" category` : 'recorded yet'}.
+            </div>
+          )}
         </div>
       </Card>
     </div>

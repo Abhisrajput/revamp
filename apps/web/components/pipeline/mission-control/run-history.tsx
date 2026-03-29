@@ -117,7 +117,7 @@ export const RunHistory = memo(function RunHistory({
             return (
               <tr
                 key={run.id}
-                onClick={() => onSelectRun?.(run.id)}
+                onClick={() => window.open(`/projects/${projectId}/runs/${run.id}`, '_blank')}
                 className={cn(
                   'border-b border-slate-100 dark:border-slate-700/50 cursor-pointer transition-colors',
                   isCurrent

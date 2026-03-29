@@ -23,14 +23,14 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const success = await login(email, password);
-      if (success) {
+      const result = await login(email, password);
+      if (result.success) {
         router.push('/projects');
       } else {
-        setError('Invalid email or password');
+        setError(result.error || 'Invalid email or password');
       }
-    } catch (err) {
-      setError('An error occurred during login');
+    } catch (err: any) {
+      setError(err?.message || 'An error occurred during login');
       console.error(err);
     } finally {
       setLoading(false);

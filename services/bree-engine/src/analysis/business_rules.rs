@@ -134,6 +134,207 @@ pub fn extract_rules(outputs: &[&ParseOutput]) -> BusinessRuleReport {
                 _ => {}
             }
         }
+
+        // ─── AS/400-Specific Rule Extraction ────────────────────────
+
+        // RPG: Indicator-driven logic (*INLR, *IN03, control-level L1-L9)
+        for node in &output.ast_nodes {
+            if let Some(indicators) = node.properties.get("indicators").and_then(|v| v.as_str()) {
+                for ind in indicators.split(',') {
+                    let ind = ind.trim().to_uppercase();
+                    if ind.is_empty() { continue; }
+
+                    let (rule_type, desc, conf) = match ind.as_str() {
+                        "LR" => ("workflow", "End-of-file indicator — triggers program termination and cleanup after last record processed".to_string(), 0.95),
+                        "OF" => ("workflow", "Overflow indicator — triggers page break logic when print output exceeds page length".to_string(), 0.92),
+                        "MR" => ("validation", "Matching record indicator — validates that master and transaction records share the same key".to_string(), 0.90),
+                        "RT" => ("workflow", "Return indicator — signals return to calling program or previous menu".to_string(), 0.88),
+                        _ if ind.starts_with("L") && ind.len() == 2 && ind.chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false) => {
+                            ("workflow", format!("Control-break level {} — triggers subtotal/summary processing when {} grouping field changes value", ind, ind), 0.92)
+                        },
+                        _ if ind.starts_with("K") && ind.len() == 2 => {
+                            let key_num = ind.chars().nth(1).unwrap_or('0');
+                            ("workflow", format!("Function key {} — user pressed F{} on workstation, triggers corresponding action", ind, key_num as u8 - b'A' + 1), 0.90)
+                        },
+                        _ if ind.starts_with("U") && ind.len() == 2 => {
+                            ("constraint", format!("External indicator {} — set by system or calling program to control processing mode", ind), 0.85)
+                        },
+                        _ if ind.starts_with("H") && ind.len() == 2 => {
+                            ("validation", format!("Halt indicator {} — abnormal condition detected, program may terminate", ind), 0.92)
+                        },
+                        _ => continue,
+                    };
+
+                    rule_id += 1;
+                    match rule_type {
+                        "validation" => counts.validation += 1,
+                        "workflow" => counts.workflow += 1,
+                        _ => counts.constraint += 1,
+                    }
+                    rules.push(ExtractedRule {
+                        id: format!("BR-{:04}", rule_id),
+                        name: format!("RPG indicator {} logic", ind),
+                        rule_type: rule_type.to_string(),
+                        description: desc,
+                        source_file: short_file.to_string(),
+                        source_line: node.span.start_line,
+                        condition: format!("*IN{}", ind),
+                        confidence: conf,
+                        complexity: 1,
+                        hardcoded_values: vec![],
+                    });
+                }
+            }
+        }
+
+        // CL: Data area operations (persistent state management)
+        for node in &output.ast_nodes {
+            let name = node.name.as_deref().unwrap_or("");
+            let kind_str = format!("{:?}", node.kind);
+
+            if kind_str.contains("CallStatement") || kind_str.contains("CommandStatement") {
+                let upper_name = name.to_uppercase();
+
+                // Data area control flags
+                if upper_name.contains("CHGDTAARA") || upper_name == "CHGDTAARA" {
+                    rule_id += 1;
+                    counts.workflow += 1;
+                    let dtaara = node.properties.get("dtaara").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    rules.push(ExtractedRule {
+                        id: format!("BR-{:04}", rule_id),
+                        name: "Persistent state change".to_string(),
+                        rule_type: "workflow".to_string(),
+                        description: format!(
+                            "Modify data area {} — this is persistent job-level state visible to other programs in the same job. Changes survive program calls and control batch processing flow.",
+                            dtaara
+                        ),
+                        source_file: short_file.to_string(),
+                        source_line: node.span.start_line,
+                        condition: upper_name.clone(),
+                        confidence: 0.92,
+                        complexity: 2,
+                        hardcoded_values: vec![],
+                    });
+                }
+
+                // Library list security
+                if upper_name.contains("ADDLIBLE") || upper_name == "ADDLIBLE" {
+                    rule_id += 1;
+                    counts.authorization += 1;
+                    let lib = node.properties.get("lib").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    rules.push(ExtractedRule {
+                        id: format!("BR-{:04}", rule_id),
+                        name: "Library list modification".to_string(),
+                        rule_type: "authorization".to_string(),
+                        description: format!(
+                            "Add library {} to job library list — this changes which objects are resolved at runtime. Security-sensitive: controls which program versions and data files are accessed.",
+                            lib
+                        ),
+                        source_file: short_file.to_string(),
+                        source_line: node.span.start_line,
+                        condition: upper_name.clone(),
+                        confidence: 0.90,
+                        complexity: 2,
+                        hardcoded_values: vec![],
+                    });
+                }
+
+                // Job submission (batch dependency chain)
+                if upper_name.contains("SBMJOB") || upper_name == "SBMJOB" {
+                    rule_id += 1;
+                    counts.workflow += 1;
+                    let jobq = node.properties.get("jobq").and_then(|v| v.as_str()).unwrap_or("QBATCH");
+                    let pgm = node.properties.get("cmd_pgm").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    rules.push(ExtractedRule {
+                        id: format!("BR-{:04}", rule_id),
+                        name: "Batch job submission".to_string(),
+                        rule_type: "workflow".to_string(),
+                        description: format!(
+                            "Submit background job to queue {} running program {} — creates async processing dependency. Must complete before downstream jobs can run.",
+                            jobq, pgm
+                        ),
+                        source_file: short_file.to_string(),
+                        source_line: node.span.start_line,
+                        condition: upper_name.clone(),
+                        confidence: 0.93,
+                        complexity: 3,
+                        hardcoded_values: vec![],
+                    });
+                }
+
+                // File override (runtime binding)
+                if upper_name.contains("OVRDBF") || upper_name == "OVRDBF" {
+                    rule_id += 1;
+                    counts.constraint += 1;
+                    let from = node.properties.get("file").and_then(|v| v.as_str()).unwrap_or("logical");
+                    let to = node.properties.get("tofile").and_then(|v| v.as_str()).unwrap_or("physical");
+                    rules.push(ExtractedRule {
+                        id: format!("BR-{:04}", rule_id),
+                        name: "File override binding".to_string(),
+                        rule_type: "constraint".to_string(),
+                        description: format!(
+                            "Override file {} to use {} at runtime — changes which physical data file the program reads. Used for environment switching (test vs prod) or member selection.",
+                            from, to
+                        ),
+                        source_file: short_file.to_string(),
+                        source_line: node.span.start_line,
+                        condition: upper_name,
+                        confidence: 0.90,
+                        complexity: 2,
+                        hardcoded_values: vec![],
+                    });
+                }
+            }
+        }
+
+        // DDS: Field validation rules (CHECK, VALUES, COMP)
+        for node in &output.ast_nodes {
+            if let Some(keywords) = node.properties.get("keywords").and_then(|v| v.as_str()) {
+                let upper_kw = keywords.to_uppercase();
+
+                if upper_kw.contains("CHECK(") {
+                    rule_id += 1;
+                    counts.validation += 1;
+                    let field_name = node.name.as_deref().unwrap_or("field");
+                    rules.push(ExtractedRule {
+                        id: format!("BR-{:04}", rule_id),
+                        name: format!("Field validation: {}", field_name),
+                        rule_type: "validation".to_string(),
+                        description: format!(
+                            "DDS CHECK constraint on {} — enforces input validation at the database/screen level (e.g., mandatory entry, numeric-only, auto-fill)",
+                            field_name
+                        ),
+                        source_file: short_file.to_string(),
+                        source_line: node.span.start_line,
+                        condition: keywords.to_string(),
+                        confidence: 0.93,
+                        complexity: 1,
+                        hardcoded_values: vec![],
+                    });
+                }
+
+                if upper_kw.contains("VALUES(") {
+                    rule_id += 1;
+                    counts.constraint += 1;
+                    let field_name = node.name.as_deref().unwrap_or("field");
+                    rules.push(ExtractedRule {
+                        id: format!("BR-{:04}", rule_id),
+                        name: format!("Allowed values: {}", field_name),
+                        rule_type: "constraint".to_string(),
+                        description: format!(
+                            "DDS VALUES constraint on {} — restricts field to a predefined set of allowed values. This is a domain constraint that must be preserved in the modernized schema.",
+                            field_name
+                        ),
+                        source_file: short_file.to_string(),
+                        source_line: node.span.start_line,
+                        condition: keywords.to_string(),
+                        confidence: 0.95,
+                        complexity: 1,
+                        hardcoded_values: vec![],
+                    });
+                }
+            }
+        }
     }
 
     let high_conf = rules.iter().filter(|r| r.confidence >= 0.8).count();

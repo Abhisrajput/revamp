@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "crypto";
 
@@ -7,14 +7,20 @@ export class StorageService {
   private bucket: string;
 
   constructor() {
+    const accessKeyId = process.env.S3_ACCESS_KEY_ID;
+    const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY;
+
+    if (!accessKeyId || !secretAccessKey) {
+      throw new Error(
+        "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY environment variables must be set",
+      );
+    }
+
     this.s3Client = new S3Client({
       region: process.env.S3_REGION || "us-east-1",
-      credentials: {
-        accessKeyId: process.env.S3_ACCESS_KEY_ID || "",
-        secretAccessKey: process.env.S3_SECRET_ACCESS_KEY || "",
-      },
+      credentials: { accessKeyId, secretAccessKey },
       endpoint: process.env.S3_ENDPOINT,
-      forcePathStyle: process.env.S3_ENDPOINT ? true : false, // Required for MinIO
+      forcePathStyle: !!process.env.S3_ENDPOINT, // Required for MinIO
     });
 
     this.bucket = process.env.S3_BUCKET || "revamp-artifacts";
@@ -53,8 +59,11 @@ export class StorageService {
   }
 
   async deleteObject(key: string): Promise<void> {
-    // Implementation for delete
-    console.log(`Delete object: ${key}`);
+    const command = new DeleteObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+    });
+    await this.s3Client.send(command);
   }
 
   private getContentType(filename: string): string {

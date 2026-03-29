@@ -7,6 +7,7 @@ export * from './validation/types';
 export * from './validation/rubrics';
 export * from './validation/deterministic-checks';
 export * from './validation/stage-contracts';
+export * from './validation/prompt-derived';
 export * from './validation/utils';
 
 // Orchestration

@@ -174,6 +174,8 @@ export async function orchestrateScanStage(
     });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
+    const errStack = err instanceof Error ? err.stack : "";
+    console.error("[SCAN] Scout triage failed:", errMsg, errStack);
     emit("scout_failed", { error: errMsg, message: "Scout triage failed. Please re-run the stage." });
 
     return {
@@ -561,12 +563,26 @@ export async function orchestrateScanStage(
     ? llmProxyService.createEvalFn({ model: wantEvalModel })
     : undefined;
 
+  // Build BREE ground truth for anchoring
+  const breeGroundTruth = opts.fileAnalysis ? {
+    totalFiles: opts.fileAnalysis.totalFiles,
+    totalLines: opts.fileAnalysis.totalLines,
+    languages: opts.fileAnalysis.detectedLanguages?.map((lang: string) => ({ id: lang, fileCount: 0 })) ?? [],
+  } : undefined;
+
+  // Get stage prompt from project context for prompt-derived validation
+  const stagePrompt = (opts.projectContext as any)?.stagePrompts?.['0'] || '';
+  const validationPrompt = (opts.projectContext as any)?.validationPrompts?.['0'] || '';
+
   let validationResult: FullValidationResult = await runValidation({
     pipelineRunId: opts.pipelineRunId,
     stageName: PipelineStageName.SCAN,
     stageOutput: composedOutput,
+    stagePrompt,
+    validationPrompt,
     llmEvalFn,
     skipLlmEval: !hasEvalModel,
+    breeGroundTruth,
   });
 
   // Auto-refine once if contract check failed
@@ -582,7 +598,10 @@ export async function orchestrateScanStage(
         pipelineRunId: opts.pipelineRunId,
         stageName: PipelineStageName.SCAN,
         stageOutput: composedOutput,
+        stagePrompt,
+        validationPrompt,
         skipLlmEval: true,
+        breeGroundTruth,
       });
 
       if (!validationResult.contractResult.passed) {

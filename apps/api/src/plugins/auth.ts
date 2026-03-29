@@ -29,23 +29,19 @@ declare module "@fastify/jwt" {
 }
 
 export const authPlugin = fp(async function authPlugin(fastify: FastifyInstance) {
-  // ─── P1 Fix: Refuse to boot with the default JWT secret in production ───
+  // JWT_SECRET must always be set — no fallback allowed in any environment.
+  // In development, generate one with:
+  //   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
   const jwtSecret = process.env.JWT_SECRET;
-  if (!jwtSecret && process.env.NODE_ENV === "production") {
+  if (!jwtSecret) {
     throw new Error(
       "FATAL: JWT_SECRET environment variable is not set. " +
-      "Refusing to start in production with a default secret."
-    );
-  }
-  if (!jwtSecret) {
-    console.warn(
-      "[auth] WARNING: JWT_SECRET is not set — using insecure default. " +
-      "Set JWT_SECRET in .env before deploying to production."
+      "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
     );
   }
 
   await fastify.register(fastifyJwt, {
-    secret: jwtSecret || "dev-secret-change-in-production",
+    secret: jwtSecret,
     sign: {
       expiresIn: process.env.JWT_EXPIRES_IN || "24h",
     },
@@ -130,22 +126,16 @@ export const authPlugin = fp(async function authPlugin(fastify: FastifyInstance)
           return reply.status(400).send({ error: "Project ID is required" });
         }
 
-        // Check organization match
         const project = await db.query.projects.findFirst({
           where: eq(projects.id, projectId),
-          columns: { organization_id: true, visibility: true },
+          columns: { organization_id: true },
         });
 
         if (!project) {
           return reply.status(404).send({ error: "Project not found" });
         }
 
-        // Same organization → access granted for non-private projects
-        if (project.organization_id === request.user.organization_id && project.visibility !== "private") {
-          return;
-        }
-
-        // Explicit membership required for private projects or cross-org access
+        // Explicit membership is always required — visibility only affects UI discovery
         const membership = await db.query.projectMembers.findFirst({
           where: and(
             eq(projectMembers.project_id, projectId),
@@ -189,20 +179,16 @@ export const authPlugin = fp(async function authPlugin(fastify: FastifyInstance)
           return reply.status(404).send({ error: "Pipeline run not found" });
         }
 
-        // Check project access
         const project = await db.query.projects.findFirst({
           where: eq(projects.id, run.project_id),
-          columns: { organization_id: true, visibility: true },
+          columns: { organization_id: true },
         });
 
         if (!project) {
           return reply.status(404).send({ error: "Project not found" });
         }
 
-        if (project.organization_id === request.user.organization_id && project.visibility !== "private") {
-          return;
-        }
-
+        // Explicit membership is always required
         const membership = await db.query.projectMembers.findFirst({
           where: and(
             eq(projectMembers.project_id, run.project_id),

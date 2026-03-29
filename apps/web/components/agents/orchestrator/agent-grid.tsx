@@ -91,11 +91,11 @@ function AgentOrchestratorCard({ agent }: { agent: AgentOrchestratorState }) {
   return (
     <div
       className={cn(
-        'relative rounded-lg border p-3 transition-all overflow-hidden',
+        'relative rounded-xl border p-3 transition-all duration-300 overflow-hidden',
         'bg-white dark:bg-slate-800/80',
         isWorking
-          ? cn(dept.border, 'shadow-sm')
-          : 'border-slate-200 dark:border-slate-700/50',
+          ? cn(dept.border, 'shadow-[0_8px_30px_rgba(6,182,212,0.08)]')
+          : 'border-slate-200 dark:border-slate-700/50 hover:border-slate-300 dark:hover:border-slate-600',
       )}
     >
       {/* Subtle gradient for working agents */}
@@ -127,7 +127,15 @@ function AgentOrchestratorCard({ agent }: { agent: AgentOrchestratorState }) {
         {/* Status & Role */}
         <div className="flex gap-1 mb-2">
           <Badge className={cn('text-[10px] px-1.5 py-0', STATUS_BADGE[agent.status])}>
-            {agent.status}
+            {isWorking ? (
+              <span className="flex items-center gap-1">
+                <span className="relative w-1.5 h-1.5">
+                  <span className="absolute inset-0 rounded-full bg-cyan-400 animate-ping opacity-75" />
+                  <span className="absolute inset-0 rounded-full bg-cyan-400" />
+                </span>
+                Live
+              </span>
+            ) : agent.status}
           </Badge>
           <Badge className="text-[10px] px-1.5 py-0 bg-slate-50 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300">
             {agent.role}

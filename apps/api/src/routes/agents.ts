@@ -29,6 +29,12 @@ import { db } from "@/db/index.js";
 import { llmUsage, projects } from "@/db/schema.js";
 import { eq } from "drizzle-orm";
 import { PIPELINE_STAGE_ORDER } from "@revamp/shared-types";
+import {
+  listPersonas,
+  getPersona,
+  updatePersona,
+  softDeletePersona,
+} from "@/services/agent-department.js";
 
 // ─── CONSTANTS ──────────────────────────────────────────────────
 
@@ -679,4 +685,112 @@ export async function agentRoutes(fastify: FastifyInstance) {
       max_iterations: MAX_AGENT_ITERATIONS,
     });
   });
+
+  // ─── /agents alias routes — web app uses /agents, data lives in agent_personas ──
+
+  /** GET /agents — list all agent personas */
+  fastify.get<{ Querystring: { department?: string; role?: string; status?: string } }>(
+    "/agents",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const personas = await listPersonas({
+        department: request.query.department,
+        role: request.query.role,
+        status: request.query.status,
+      });
+      return reply.send(personas);
+    }
+  );
+
+  /** GET /agents/dashboard — summary stats across all agents */
+  fastify.get(
+    "/agents/dashboard",
+    { onRequest: [fastify.authenticate] },
+    async (_request, reply) => {
+      const personas = await listPersonas({});
+      const byDept: Record<string, number> = {};
+      const byStatus: Record<string, number> = {};
+      for (const p of personas) {
+        byDept[p.department] = (byDept[p.department] ?? 0) + 1;
+        byStatus[p.status] = (byStatus[p.status] ?? 0) + 1;
+      }
+      return reply.send({
+        total: personas.length,
+        by_department: byDept,
+        by_status: byStatus,
+        agents: personas,
+      });
+    }
+  );
+
+  /** GET /agents/tree — hierarchy tree */
+  fastify.get(
+    "/agents/tree",
+    { onRequest: [fastify.authenticate] },
+    async (_request, reply) => {
+      const personas = await listPersonas({});
+      return reply.send(personas);
+    }
+  );
+
+  /** GET /agents/:id — single agent persona */
+  fastify.get<{ Params: { id: string } }>(
+    "/agents/:id",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const persona = await getPersona(request.params.id);
+      if (!persona) return reply.status(404).send({ error: "Agent not found" });
+      return reply.send(persona);
+    }
+  );
+
+  /** PATCH /agents/:id — update agent persona */
+  fastify.patch<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    "/agents/:id",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const persona = await updatePersona(request.params.id, request.body as any);
+      if (!persona) return reply.status(404).send({ error: "Agent not found" });
+      return reply.send(persona);
+    }
+  );
+
+  /** DELETE /agents/:id — soft-delete agent persona */
+  fastify.delete<{ Params: { id: string } }>(
+    "/agents/:id",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      await softDeletePersona(request.params.id);
+      return reply.status(204).send();
+    }
+  );
+
+  /** GET /agents/:id/budget — agent budget summary */
+  fastify.get<{ Params: { id: string } }>(
+    "/agents/:id/budget",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const persona = await getPersona(request.params.id);
+      if (!persona) return reply.status(404).send({ error: "Agent not found" });
+      return reply.send({
+        agent_id: persona.id,
+        monthly_budget_cents: persona.monthly_budget_cents,
+        spent_monthly_cents: persona.spent_monthly_cents,
+        remaining_cents: (persona.monthly_budget_cents ?? 0) - (persona.spent_monthly_cents ?? 0),
+        hard_stop_enabled: persona.hard_stop_enabled,
+        warning_threshold: persona.warning_threshold,
+      });
+    }
+  );
+
+  /** POST /agents/:id/resume — resume a paused agent */
+  fastify.post<{ Params: { id: string } }>(
+    "/agents/:id/resume",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const persona = await updatePersona(request.params.id, { status: "idle", pause_reason: null } as any);
+      if (!persona) return reply.status(404).send({ error: "Agent not found" });
+      return reply.send(persona);
+    }
+  );
 }

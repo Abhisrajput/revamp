@@ -1,12 +1,17 @@
 'use client';
 
 import { useState, memo, useCallback } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ShieldCheck,
   CheckCircle,
   XCircle,
   Clock,
+  MessageSquare,
+  RotateCcw,
+  Send,
 } from 'lucide-react';
+import { apiClient } from '@/lib/api-client';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -29,6 +34,7 @@ interface ApprovalGateProps {
   onApprove: (comment?: string) => void;
   onReject: (reason: string) => void;
   userRole: string;
+  gateId?: string;
 }
 
 // --- Status Config ---
@@ -48,6 +54,7 @@ export const ApprovalGate = memo(function ApprovalGate({
   onApprove,
   onReject,
   userRole,
+  gateId,
 }: ApprovalGateProps) {
   const [comment, setComment] = useState('');
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
@@ -111,6 +118,23 @@ export const ApprovalGate = memo(function ApprovalGate({
               <div className="flex items-center justify-end gap-2">
                 <Button
                   size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    if (gateId && comment.trim()) {
+                      apiClient.post(`/approval-gates/${gateId}/comments`, {
+                        content: comment.trim(),
+                        action: 'revision_requested',
+                      }).then(() => setComment(''));
+                    }
+                  }}
+                  disabled={!comment.trim()}
+                  className="text-amber-600 border-amber-200 dark:border-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950/20"
+                >
+                  <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                  Request Revision
+                </Button>
+                <Button
+                  size="sm"
                   variant="destructive"
                   onClick={() => setRejectDialogOpen(true)}
                 >
@@ -131,6 +155,9 @@ export const ApprovalGate = memo(function ApprovalGate({
               You do not have the required role ({requiredRole}) to approve or reject this stage.
             </p>
           )}
+
+          {/* Comment Thread */}
+          {gateId && <ApprovalCommentThread gateId={gateId} />}
         </CardContent>
       </Card>
 
@@ -174,3 +201,89 @@ export const ApprovalGate = memo(function ApprovalGate({
     </>
   );
 });
+
+// ─── Comment Thread ─────────────────────────────────────────────
+
+function ApprovalCommentThread({ gateId }: { gateId: string }) {
+  const queryClient = useQueryClient();
+  const [newComment, setNewComment] = useState('');
+
+  const { data } = useQuery<{ comments: Array<{ id: string; content: string; action?: string; user_display?: string; created_at: string }> }>({
+    queryKey: ['approval-comments', gateId],
+    queryFn: async () => (await apiClient.get(`/approval-gates/${gateId}/comments`)).data,
+    staleTime: 10_000,
+  });
+
+  const addComment = useMutation({
+    mutationFn: async () => (await apiClient.post(`/approval-gates/${gateId}/comments`, {
+      content: newComment.trim(),
+      action: 'comment',
+    })).data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['approval-comments', gateId] });
+      setNewComment('');
+    },
+  });
+
+  const comments = data?.comments || [];
+  if (comments.length === 0 && !newComment) return null;
+
+  const ACTION_STYLES: Record<string, string> = {
+    comment: 'text-slate-500',
+    revision_requested: 'text-amber-500',
+    revised: 'text-blue-500',
+    approved: 'text-emerald-500',
+    rejected: 'text-red-500',
+  };
+
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700">
+      <div className="flex items-center gap-1.5 mb-2">
+        <MessageSquare className="w-3.5 h-3.5 text-slate-400" />
+        <span className="text-[10px] font-medium uppercase tracking-wider text-slate-400">Discussion</span>
+        {comments.length > 0 && <Badge className="text-[8px] px-1 py-0 bg-slate-100 dark:bg-slate-700 text-slate-500">{comments.length}</Badge>}
+      </div>
+
+      {comments.length > 0 && (
+        <div className="space-y-2 mb-2 max-h-40 overflow-y-auto">
+          {comments.map(c => (
+            <div key={c.id} className="text-xs bg-slate-50 dark:bg-slate-900 rounded-lg p-2">
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="font-medium text-slate-700 dark:text-slate-300">{c.user_display || 'Unknown'}</span>
+                <div className="flex items-center gap-1.5">
+                  {c.action && c.action !== 'comment' && (
+                    <Badge className={cn('text-[8px] px-1 py-0 bg-transparent', ACTION_STYLES[c.action] || '')}>
+                      {c.action.replace('_', ' ')}
+                    </Badge>
+                  )}
+                  <span className="text-[9px] text-slate-400">
+                    {new Date(c.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+              </div>
+              <p className="text-slate-600 dark:text-slate-400">{c.content}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* New comment input */}
+      <div className="flex gap-1.5">
+        <input
+          value={newComment}
+          onChange={e => setNewComment(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && newComment.trim()) addComment.mutate(); }}
+          placeholder="Add a comment..."
+          className="flex-1 text-xs px-2.5 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200"
+        />
+        <button
+          onClick={() => newComment.trim() && addComment.mutate()}
+          disabled={!newComment.trim() || addComment.isPending}
+          className="p-1.5 text-primary-600 hover:text-primary-700 disabled:text-slate-300 transition-colors"
+        >
+          <Send className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}

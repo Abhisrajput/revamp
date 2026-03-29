@@ -1,10 +1,12 @@
 'use client';
 
-import { Play, Brain, Eye, Lightbulb, Target, Sparkles } from 'lucide-react';
+import { useState } from 'react';
+import { Play, Brain, Eye, Lightbulb, Target, Sparkles, Cpu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge as _Badge } from '@/components/ui/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
+import { BreeOutputTab } from '@/components/pipeline/bree-output-tab';
 import { RefinableMarkdown } from '@/components/pipeline/refinable-markdown';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { SubtaskProgressList } from '@/components/pipeline/subtask-progress-list';
@@ -37,7 +39,7 @@ export default function DecodePanel({
   const isRunning = stage.status === 'generating' || stage.status === 'validating';
   const hasOutput = !!(stage.output || streamingText);
   const canExecute = (stage.status === 'pending' || stage.status === 'failed') && !isExecuting && canExecuteStage(stages, stageIndex);
-  const deepAnalysis = (stageDrafts['DECODE']?.deepAnalysis as boolean) ?? project?.deep_analysis ?? false;
+  const deepAnalysis = (stageDrafts?.['DECODE']?.deepAnalysis as boolean) ?? project?.deep_analysis ?? false;
 
   return (
     <div className="space-y-4">
@@ -117,17 +119,59 @@ export default function DecodePanel({
 
       {/* After execution */}
       {stage.output && !isRunning && (
-        <>
-          {/* Refinable output */}
-          <RefinableMarkdown
-            text={stage.output}
-            onSectionRefined={(updated) => {
-              usePipelineStore.getState().setStageOutput(1, updated);
-            }}
-            onRefineRequest={onRefineRequest}
-          />
-        </>
+        <DecodeOutputWithBree
+          output={stage.output}
+          onRefineRequest={onRefineRequest}
+        />
       )}
     </div>
+  );
+}
+
+function DecodeOutputWithBree({ output, onRefineRequest }: { output: string; onRefineRequest?: any }) {
+  const [tab, setTab] = useState<'output' | 'bree'>('output');
+
+  return (
+    <>
+      <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg w-fit">
+        <button
+          onClick={() => setTab('output')}
+          className={cn(
+            'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+            tab === 'output'
+              ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
+              : 'text-slate-500 dark:text-slate-400 hover:text-slate-700',
+          )}
+        >
+          Stage Output
+        </button>
+        <button
+          onClick={() => setTab('bree')}
+          className={cn(
+            'px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5',
+            tab === 'bree'
+              ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
+              : 'text-slate-500 dark:text-slate-400 hover:text-slate-700',
+          )}
+        >
+          <Cpu className="w-3 h-3" />
+          BREE Analysis
+        </button>
+      </div>
+
+      {tab === 'output' && (
+        <RefinableMarkdown
+          text={output}
+          onSectionRefined={(updated) => {
+            usePipelineStore.getState().setStageOutput(1, updated);
+          }}
+          onRefineRequest={onRefineRequest}
+        />
+      )}
+
+      {tab === 'bree' && (
+        <BreeOutputTab stageName="DECODE" />
+      )}
+    </>
   );
 }

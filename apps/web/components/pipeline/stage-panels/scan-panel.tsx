@@ -4,12 +4,13 @@ import { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import {
   FolderGit2, Play, FileText, Cloud,
   Code2, GitBranch, CheckCircle2, Loader2,
-  Eye, EyeOff, Trash2, Upload, FolderOpen, X,
+  Eye, EyeOff, Trash2, Upload, FolderOpen, X, Cpu,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
+import { BreeOutputTab } from '@/components/pipeline/bree-output-tab';
 import { RefinableMarkdown } from '@/components/pipeline/refinable-markdown';
 import { SubtaskProgressList } from '@/components/pipeline/subtask-progress-list';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
@@ -246,11 +247,19 @@ export default function ScanPanel({
   const isRunning = stage.status === 'generating' || stage.status === 'validating';
   const hasOutput = !!(stage.output || streamingText);
   const isCompleted = stage.status === 'completed' || stage.status === 'approved';
-  // Stage was executed if it has a startedAt (even if validation failed)
-  const wasExecuted = !!(stage.startedAt) && (isCompleted || stage.status === 'failed');
+  // Stage was executed if it's completed/approved, has a startedAt, OR the project already has folder_structure (codebase was cloned)
+  const projectHasFiles = !!(project?.folder_structure && (project.folder_structure as any[]).length > 0);
+  const wasExecuted = isCompleted || stage.status === 'failed' || !!(stage.startedAt) || projectHasFiles;
   const canExecute = (stage.status === 'pending' || stage.status === 'failed' || stage.status === 'completed') && !isExecuting && canExecuteStage(stages, stageIndex);
   // Show post-clone view if stage was executed (even if output is still loading from API)
   const [showForm, setShowForm] = useState(!wasExecuted);
+
+  // Sync showForm when stage status changes (e.g. after rehydration from backend)
+  useEffect(() => {
+    if (wasExecuted && showForm) {
+      setShowForm(false);
+    }
+  }, [wasExecuted]);
 
   // --- Form state ---
   const [sourceTab, setSourceTab] = useState<SourceTab>(
@@ -263,6 +272,7 @@ export default function ScanPanel({
   const [localPath, setLocalPath] = useState(project?.source_type === 'local' ? (project?.source_url || '') : '');
   const [destinationUrl, setDestinationUrl] = useState(project?.repository_url || '');
   const [isSaving, setIsSaving] = useState(false);
+  const [outputTab, setOutputTab] = useState<'output' | 'bree'>('output');
   const [uploadedDocs, setUploadedDocs] = useState<any[]>(project?.supportingDocuments || []);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -953,19 +963,53 @@ export default function ScanPanel({
             </Card>
           )}
 
-          {/* ─── Scan Output ────────────────────────────────── */}
-          {stage.output ? (
-            <RefinableMarkdown
-              text={stage.output}
-              onSectionRefined={(updated) => {
-                usePipelineStore.getState().setStageOutput(0, updated);
-              }}
-              onRefineRequest={onRefineRequest}
-              disabled={!stage.output}
-            />
-          ) : wasExecuted ? (
-            <ScanOutputLoader stageIndex={stageIndex} />
-          ) : null}
+          {/* ─── Output Tabs (Output / BREE) ──────────────── */}
+          <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg w-fit">
+            <button
+              onClick={() => setOutputTab('output')}
+              className={cn(
+                'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+                outputTab === 'output'
+                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700',
+              )}
+            >
+              Stage Output
+            </button>
+            <button
+              onClick={() => setOutputTab('bree')}
+              className={cn(
+                'px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5',
+                outputTab === 'bree'
+                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700',
+              )}
+            >
+              <Cpu className="w-3 h-3" />
+              BREE Analysis
+            </button>
+          </div>
+
+          {outputTab === 'output' && (
+            <>
+              {stage.output ? (
+                <RefinableMarkdown
+                  text={stage.output}
+                  onSectionRefined={(updated) => {
+                    usePipelineStore.getState().setStageOutput(0, updated);
+                  }}
+                  onRefineRequest={onRefineRequest}
+                  disabled={!stage.output}
+                />
+              ) : wasExecuted ? (
+                <ScanOutputLoader stageIndex={stageIndex} />
+              ) : null}
+            </>
+          )}
+
+          {outputTab === 'bree' && (
+            <BreeOutputTab stageName="SCAN" />
+          )}
         </>
       )}
     </div>

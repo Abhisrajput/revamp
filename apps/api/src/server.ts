@@ -22,6 +22,8 @@ import { usageRoutes } from "@/routes/usage.js";
 import { exportRoutes } from "@/routes/export.js";
 import { agentDepartmentRoutes } from "@/routes/agent-department.js";
 import { agentEventsRoutes } from "@/routes/agent-events.js";
+import { agentTaskRoutes } from "@/routes/agent-tasks.js";
+import { agentFeatureRoutes } from "@/routes/agent-features.js";
 
 import { closeDatabaseConnection } from "@/db/index.js";
 // Lazy-import lsp-manager — it's a 65KB module with 63 language server configs
@@ -52,6 +54,22 @@ async function bootstrap() {
             }
           : undefined,
     },
+  });
+
+  // Security headers on every response
+  fastify.addHook("onSend", async (_request, reply) => {
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("X-XSS-Protection", "0"); // Modern browsers use CSP; legacy header is misleading
+    reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
+    reply.header(
+      "Content-Security-Policy",
+      "default-src 'none'; frame-ancestors 'none'",
+    );
+    reply.header(
+      "Strict-Transport-Security",
+      "max-age=31536000; includeSubDomains",
+    );
   });
 
   // Register plugins
@@ -94,6 +112,8 @@ async function bootstrap() {
   await fastify.register(exportRoutes);
   await fastify.register(agentDepartmentRoutes);
   await fastify.register(agentEventsRoutes);
+  await fastify.register(agentTaskRoutes);
+  await fastify.register(agentFeatureRoutes);
 
   // Health check endpoint (includes BREE Engine status)
   fastify.get("/health", async (request, reply) => {
@@ -133,6 +153,94 @@ async function bootstrap() {
     const { breeAnalyze } = await import("@/services/bree-client.js");
     const body = req.body as { files: Array<{ path: string; content: string }> };
     return reply.send(await breeAnalyze(body.files));
+  });
+
+  // Deep BREE analysis — reads files from cloned codebase on server disk
+  fastify.post("/bree/deep-analyze", async (req, reply) => {
+    const body = req.body as { pipeline_run_id: string; stage_name: string };
+    if (!body.pipeline_run_id) {
+      return reply.status(400).send({ error: "pipeline_run_id required" });
+    }
+
+    const { db } = await import("@/db/index.js");
+    const { stageArtifacts } = await import("@/db/schema.js");
+    const { eq, and } = await import("drizzle-orm");
+
+    // Find the cloned codebase path
+    const artifact = await db.query.stageArtifacts.findFirst({
+      where: and(
+        eq(stageArtifacts.pipeline_run_id, body.pipeline_run_id),
+        eq(stageArtifacts.artifact_type, "cloned_codebase"),
+      ),
+    });
+
+    const codebasePath = artifact?.storage_path;
+    if (!codebasePath) {
+      return reply.status(404).send({ error: "Cloned codebase not found" });
+    }
+
+    // Read files from disk
+    const { promises: fs } = await import("fs");
+    const path = await import("path");
+
+    const SKIP_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.next', 'target', 'dist', 'build']);
+    const BINARY_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'ico', 'svg', 'woff', 'woff2', 'ttf', 'eot', 'pdf', 'zip', 'tar', 'gz', 'exe', 'dll', 'so']);
+
+    async function readDir(dir: string): Promise<Array<{ path: string; content: string }>> {
+      const files: Array<{ path: string; content: string }> = [];
+      try {
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (SKIP_DIRS.has(entry.name)) continue;
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            files.push(...await readDir(fullPath));
+          } else {
+            const ext = entry.name.split('.').pop()?.toLowerCase() || '';
+            if (BINARY_EXTS.has(ext)) continue;
+            try {
+              const content = await fs.readFile(fullPath, 'utf-8');
+              if (content.length < 500_000) { // skip files > 500KB
+                files.push({ path: path.relative(codebasePath, fullPath), content });
+              }
+            } catch { /* skip unreadable */ }
+          }
+        }
+      } catch { /* skip unreadable dirs */ }
+      return files;
+    }
+
+    const files = await readDir(codebasePath);
+
+    if (files.length === 0) {
+      return reply.status(404).send({ error: "No readable files found in codebase" });
+    }
+
+    // Run all BREE analyses in parallel
+    const {
+      breeAnalyze: breeAnalyzeFn,
+      breeAnalyzeGraph,
+      breeAnalyzeRequirements,
+      breeDetect,
+      breeLlmStrategy,
+    } = await import("@/services/bree-client.js");
+
+    const [analyzeRes, graphRes, reqsRes, detectRes, strategyRes] = await Promise.allSettled([
+      breeAnalyzeFn(files),
+      breeAnalyzeGraph({ files }),
+      breeAnalyzeRequirements({ files }),
+      breeDetect(files),
+      breeLlmStrategy(files),
+    ]);
+
+    return reply.send({
+      analysisReport: analyzeRes.status === 'fulfilled' ? analyzeRes.value : null,
+      graphAnalysis: graphRes.status === 'fulfilled' ? graphRes.value : null,
+      requirements: reqsRes.status === 'fulfilled' ? reqsRes.value : null,
+      languageProfile: detectRes.status === 'fulfilled' ? detectRes.value : null,
+      llmStrategy: strategyRes.status === 'fulfilled' ? strategyRes.value : null,
+      filesAnalyzed: files.length,
+    });
   });
 
   // Start background cleanup scheduler (dev only)

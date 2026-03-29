@@ -115,8 +115,8 @@ export const TerminalLog = memo(function TerminalLog({
           {logs.length === 0 ? (
             <p className="text-slate-600 text-center py-4">Waiting for activity...</p>
           ) : (
-            logs.map((log) => (
-              <div key={log.id} className="flex items-start gap-2 py-0.5 hover:bg-slate-900/50 px-1 rounded">
+            logs.map((log, idx) => (
+              <div key={log.id ?? idx} className="flex items-start gap-2 py-0.5 hover:bg-slate-900/50 px-1 rounded">
                 <span className="text-slate-600 shrink-0 tabular-nums">
                   {formatTime(log.timestamp)}
                 </span>

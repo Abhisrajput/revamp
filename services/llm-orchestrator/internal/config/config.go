@@ -80,9 +80,10 @@ func Load() (*Config, error) {
 
 	// Validate: at least one LLM provider must be configured
 	hasCloudProvider := cfg.OpenAIAPIKey != "" || cfg.AnthropicAPIKey != "" || cfg.GeminiAPIKey != ""
+	hasBedrock := cfg.AWSAccessKeyID != ""
 	hasOllama := cfg.OllamaEndpoint != ""
 
-	if !hasCloudProvider && !hasOllama {
+	if !hasCloudProvider && !hasBedrock && !hasOllama {
 		return nil, fmt.Errorf("at least one LLM provider must be configured (set API keys or OLLAMA_ENDPOINT)")
 	}
 

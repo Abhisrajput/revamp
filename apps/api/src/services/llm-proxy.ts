@@ -409,7 +409,12 @@ export class LLMProxyService {
    */
   async listModels(): Promise<Array<{ id: string; provider: string; contextWindow: number }>> {
     const response = await this.client.get("/api/v1/models");
-    return response.data.models || [];
+    const raw = response.data.models;
+    // The Go orchestrator returns models as a map {id: modelInfo}, convert to array
+    if (raw && !Array.isArray(raw)) {
+      return Object.values(raw) as Array<{ id: string; provider: string; contextWindow: number }>;
+    }
+    return raw || [];
   }
 
   /**
@@ -445,10 +450,6 @@ export class LLMProxyService {
 
       // No evaluator configured at all
       if (!this.config.evaluatorModel) return false;
-
-      // Evaluator is the same as generator — not truly separate
-      // (still usable, but not ideal for avoiding self-validation bias)
-      if (this.config.evaluatorModel === this.config.defaultModel) return false;
 
       // Verify the evaluator model is actually resolvable by the orchestrator
       const models = await this.listModels();

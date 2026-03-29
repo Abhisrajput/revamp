@@ -80,7 +80,7 @@ export const MissionControlLayout = memo(function MissionControlLayout({
   const effectiveLeftWidth = leftRailCollapsed ? 0 : leftRailWidth;
   const effectiveRightWidth = rightPanelCollapsed ? 0 : rightPanelWidth;
   const effectiveBottomHeight = bottomDockCollapsed
-    ? PANEL_CONSTRAINTS.bottomDock.collapsed
+    ? 32
     : bottomDockHeight;
 
   return (

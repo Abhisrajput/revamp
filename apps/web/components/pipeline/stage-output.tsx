@@ -62,7 +62,9 @@ function escapeHtml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
 }
 
 function renderMarkdown(text: string): string {
@@ -77,7 +79,7 @@ function renderMarkdown(text: string): string {
 
   function flushTable() {
     if (tableRows.length === 0) return;
-    let html = '<table>';
+    let html = '<div class="table-wrapper"><table>';
     for (let r = 0; r < tableRows.length; r++) {
       const tag = r === 0 ? 'th' : 'td';
       if (r === 0) html += '<thead>';
@@ -91,7 +93,7 @@ function renderMarkdown(text: string): string {
       if (r === 0) html += '</thead>';
     }
     if (tableRows.length > 1) html += '</tbody>';
-    html += '</table>';
+    html += '</table></div>';
     result.push(html);
     tableRows = [];
     tableAlignments = [];
@@ -109,10 +111,18 @@ function renderMarkdown(text: string): string {
 
     if (line.startsWith('```') && inCodeBlock) {
       inCodeBlock = false;
-      const langLabel = codeLanguage ? `<span class="code-lang">${escapeHtml(codeLanguage)}</span>` : '';
-      result.push(
-        `<div class="code-block">${langLabel}<pre><code>${codeLines.join('\n')}</code></pre></div>`
-      );
+      if (codeLanguage === 'mermaid') {
+        // Mark mermaid blocks for client-side rendering
+        const mermaidCode = codeLines.map(l => l.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'")).join('\n');
+        result.push(
+          `<div class="mermaid-block" data-chart="${escapeHtml(mermaidCode)}"><pre class="mermaid">${codeLines.join('\n')}</pre></div>`
+        );
+      } else {
+        const langLabel = codeLanguage ? `<span class="code-lang">${escapeHtml(codeLanguage)}</span>` : '';
+        result.push(
+          `<div class="code-block">${langLabel}<pre><code>${codeLines.join('\n')}</code></pre></div>`
+        );
+      }
       continue;
     }
 
@@ -217,22 +227,61 @@ export const StageOutput = memo(function StageOutput({ output, isStreaming }: St
     }
   }, [output, isStreaming]);
 
+  const contentRef = useRef<HTMLDivElement>(null);
   const html = useMemo(() => renderMarkdown(normalizeMarkdown(output)), [output]);
+
+  // Render mermaid diagrams after HTML is mounted
+  useEffect(() => {
+    if (!contentRef.current) return;
+    const mermaidBlocks = contentRef.current.querySelectorAll('.mermaid-block');
+    if (mermaidBlocks.length === 0) return;
+
+    (async () => {
+      try {
+        const mermaid = (await import('mermaid')).default;
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default',
+          securityLevel: 'loose',
+          flowchart: { htmlLabels: true, curve: 'basis' },
+          fontSize: 11,
+        });
+
+        for (const block of mermaidBlocks) {
+          if (block.getAttribute('data-rendered')) continue;
+          const chart = block.getAttribute('data-chart');
+          if (!chart) continue;
+          try {
+            const id = `mermaid-so-${Math.random().toString(36).slice(2, 7)}`;
+            const { svg } = await mermaid.render(id, chart);
+            block.innerHTML = svg;
+            block.setAttribute('data-rendered', 'true');
+            (block as HTMLElement).style.cssText = 'overflow: auto; background: white; border-radius: 0.5rem; border: 1px solid #e2e8f0; padding: 0.5rem; margin: 0.75rem 0;';
+          } catch {
+            // leave raw code if render fails
+          }
+        }
+      } catch {
+        // mermaid import failed
+      }
+    })();
+  }, [html]);
 
   return (
     <div
       ref={containerRef}
       className={cn(
-        'relative max-h-[600px] overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 p-4',
+        'relative overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 p-4',
         isStreaming && 'scroll-smooth'
       )}
     >
       <style>{`
-        .stage-output h1 { font-size: 1.25rem; font-weight: 700; margin: 1rem 0 0.5rem; color: var(--heading-color, #0f172a); }
-        .stage-output h2 { font-size: 1.125rem; font-weight: 600; margin: 0.75rem 0 0.375rem; color: var(--heading-color, #0f172a); }
-        .stage-output h3 { font-size: 1rem; font-weight: 600; margin: 0.5rem 0 0.25rem; color: var(--heading-color, #0f172a); }
-        .stage-output p { margin: 0.25rem 0; line-height: 1.625; }
-        .stage-output li { margin-left: 1.5rem; list-style-type: disc; line-height: 1.625; }
+        .stage-output { overflow-wrap: break-word; word-break: break-word; overflow: hidden; }
+        .stage-output h1 { font-size: 1.25rem; font-weight: 700; margin: 1rem 0 0.5rem; color: var(--heading-color, #0f172a); clear: both; }
+        .stage-output h2 { font-size: 1.125rem; font-weight: 600; margin: 0.75rem 0 0.375rem; color: var(--heading-color, #0f172a); clear: both; }
+        .stage-output h3 { font-size: 1rem; font-weight: 600; margin: 0.5rem 0 0.25rem; color: var(--heading-color, #0f172a); clear: both; }
+        .stage-output p { margin: 0.25rem 0; line-height: 1.625; overflow-wrap: break-word; }
+        .stage-output li { margin-left: 1.5rem; list-style-type: disc; line-height: 1.625; overflow-wrap: break-word; }
         .stage-output hr { border: none; border-top: 1px solid #e2e8f0; margin: 0.75rem 0; }
         .stage-output strong { font-weight: 600; }
         .stage-output em { font-style: italic; }
@@ -255,19 +304,28 @@ export const StageOutput = memo(function StageOutput({ output, isStreaming }: St
           font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
           font-size: 0.8125rem; line-height: 1.625; color: #e2e8f0; white-space: pre;
         }
+        .stage-output .table-wrapper {
+          overflow-x: auto; margin: 0.75rem 0; border-radius: 0.375rem;
+          border: 1px solid #e2e8f0;
+        }
         .stage-output table {
-          width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.8125rem;
+          width: 100%; border-collapse: collapse; font-size: 0.75rem;
+          table-layout: fixed; word-wrap: break-word;
         }
         .stage-output th {
           background: #f1f5f9; font-weight: 600; text-align: left;
-          padding: 0.5rem 0.75rem; border: 1px solid #e2e8f0;
+          padding: 0.375rem 0.5rem; border: 1px solid #e2e8f0;
+          font-size: 0.7rem; white-space: nowrap;
         }
         .stage-output td {
-          padding: 0.5rem 0.75rem; border: 1px solid #e2e8f0;
+          padding: 0.375rem 0.5rem; border: 1px solid #e2e8f0;
+          vertical-align: top; word-break: break-word; font-size: 0.7rem;
+          max-width: 200px; overflow-wrap: break-word;
         }
         .stage-output tbody tr:nth-child(even) { background: #f8fafc; }
+        .dark .stage-output .table-wrapper { border-color: #334155; }
         .dark .stage-output th { background: #1e293b; border-color: #334155; color: #f1f5f9; }
-        .dark .stage-output td { border-color: #334155; }
+        .dark .stage-output td { border-color: #334155; color: #cbd5e1; }
         .dark .stage-output tbody tr:nth-child(even) { background: #0f172a; }
         .dark .stage-output h1, .dark .stage-output h2, .dark .stage-output h3 { color: #f1f5f9; }
         .dark .stage-output .inline-code { background: #334155; color: #e2e8f0; }
@@ -275,6 +333,7 @@ export const StageOutput = memo(function StageOutput({ output, isStreaming }: St
       `}</style>
 
       <div
+        ref={contentRef}
         className="stage-output text-sm text-slate-700 dark:text-slate-300"
         dangerouslySetInnerHTML={{ __html: html }}
       />

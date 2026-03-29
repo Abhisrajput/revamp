@@ -154,13 +154,24 @@ export class PipelineService {
   }
 
   /**
-   * Create a new pipeline run for a project.
+   * Create a new pipeline run for a project, or return existing active run.
    */
   async createRun(
     projectId: string,
     initiatedBy: string,
     options?: { budgetCents?: number },
   ): Promise<string> {
+    // Return most recent existing run (prevents duplicate runs on page refresh)
+    // Returns running/pending first, then completed — only creates new if none exist
+    const existingRun = await db.query.pipelineRuns.findFirst({
+      where: eq(pipelineRuns.project_id, projectId),
+      orderBy: (table, { desc }) => [desc(table.started_at)],
+    });
+
+    if (existingRun) {
+      return existingRun.id;
+    }
+
     const runId = crypto.randomUUID();
     const stageProgress: Record<string, unknown> = {};
 
@@ -1310,6 +1321,20 @@ export class PipelineService {
 
     // Mark stage as approved (gate is on the completed stage, not the next one)
     await this.updateStageProgress(pipelineRunId, stageName, "approved", 100);
+
+    // Advance current_stage to the next stage in the pipeline
+    const nextStage = this.getNextStage(stageName);
+    if (nextStage) {
+      await db.update(pipelineRuns).set({
+        current_stage: nextStage,
+      }).where(eq(pipelineRuns.id, pipelineRunId));
+    } else {
+      // All stages approved — mark pipeline as completed
+      await db.update(pipelineRuns).set({
+        status: "completed",
+        completed_at: new Date(),
+      }).where(eq(pipelineRuns.id, pipelineRunId));
+    }
   }
 
   /**

@@ -73,7 +73,7 @@ export const PromptTemplateSelector = memo(function PromptTemplateSelector({
       )}
       <div className="relative">
         <select
-          value={value}
+          value={value ?? ''}
           onChange={(e) => onChange(e.target.value)}
           className={cn(
             'w-full appearance-none rounded-md border border-slate-200 dark:border-slate-600',

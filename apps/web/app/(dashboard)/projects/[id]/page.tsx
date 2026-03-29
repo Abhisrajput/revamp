@@ -20,7 +20,7 @@ import {
   Users, Layers, Download, MoreVertical, Trash2, Archive,
   Copy, ExternalLink, Calendar, FileText, Shield,
   Activity, Zap, Coins, ArrowUpRight, ArrowDownRight,
-  TrendingUp, Cpu, Radio,
+  TrendingUp, Cpu, Radio, ChevronRight,
 } from 'lucide-react';
 import Link from 'next/link';
 import { apiClient } from '@/lib/api-client';
@@ -351,7 +351,7 @@ export default function ProjectDetailPage() {
             <div className="flex items-center justify-between">
               <CardTitle className="text-base flex items-center gap-2">
                 <Activity className="w-4 h-4 text-slate-400" />
-                Pipeline Runs
+                Pipeline Runs — {project.name}
               </CardTitle>
               {hasPipelineRuns && (
                 <Badge variant="outline" className="text-xs">
@@ -362,22 +362,30 @@ export default function ProjectDetailPage() {
           </CardHeader>
           <CardContent>
             {hasPipelineRuns ? (
-              <div className="space-y-3">
+              <div className="space-y-2">
                 {project.pipelineRuns.slice(0, 5).map((run: any) => (
-                  <div key={run.id} className="flex items-center justify-between text-sm">
+                  <Link
+                    key={run.id}
+                    href={`/projects/${projectId}/runs/${run.id}`}
+                    target="_blank"
+                    className="flex items-center justify-between text-sm p-2 -mx-2 rounded-md hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors group cursor-pointer"
+                  >
                     <div className="flex items-center gap-2.5">
                       <div className={`w-2 h-2 rounded-full ${getRunStatusColor(run.status)}`} />
-                      <span className="text-slate-900 dark:text-slate-50">
+                      <span className="text-slate-900 dark:text-slate-50 group-hover:text-primary-600 dark:group-hover:text-primary-400 transition-colors">
                         {run.current_stage ? STAGE_LABELS[run.current_stage] || run.current_stage : 'Starting'}
                       </span>
                       <Badge variant="outline" className="text-[10px] px-1.5 py-0">
                         {run.status}
                       </Badge>
                     </div>
-                    <span className="text-xs text-slate-500 dark:text-slate-400">
-                      {timeAgo(run.created_at)}
-                    </span>
-                  </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500 dark:text-slate-400">
+                        {run.started_at ? new Date(run.started_at).toLocaleString() : timeAgo(run.created_at)}
+                      </span>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600 group-hover:text-primary-500 transition-colors" />
+                    </div>
+                  </Link>
                 ))}
               </div>
             ) : (
@@ -502,6 +510,9 @@ export default function ProjectDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Audit Logs */}
+      <ProjectAuditSection projectId={projectId} />
 
       {/* Live Token Tracker (visible during active pipeline execution) */}
       <LiveTokenTracker projectId={projectId} />
@@ -1164,3 +1175,142 @@ const DetailRow = memo(function DetailRow({ label, icon, children }: { label: st
     </div>
   );
 });
+
+// ─── PROJECT AUDIT SECTION ─────────────────────────────────────
+
+const AUDIT_STAGE_LABELS: Record<string, string> = {
+  SCAN: 'Setup & Configuration', DECODE: 'Intent Extraction',
+  BLUEPRINT: 'Business Capability Mining', SPEC_LOCK: 'Behavior Lock-in',
+  ARCHITECT: 'Modernization Approach', FORGE: 'Co-Create',
+  SHADOW_RUN: 'Parallel Run & Cutover', EVOLVE: 'Continuous Modernization',
+};
+
+const AUDIT_ICONS: Record<string, { icon: string; color: string }> = {
+  PIPELINE_STARTED: { icon: '🚀', color: 'text-blue-500' },
+  STAGE_STARTED: { icon: '⚡', color: 'text-amber-500' },
+  STAGE_COMPLETED: { icon: '✅', color: 'text-green-500' },
+  STAGE_APPROVED: { icon: '👍', color: 'text-emerald-500' },
+  STAGE_REJECTED: { icon: '❌', color: 'text-red-500' },
+};
+
+function formatAuditEntry(log: any): { title: string; description: string; icon: string; color: string } {
+  const changes = log.changes || {};
+  const stageName = changes.stageName as string | undefined;
+  const stageLabel = stageName ? (AUDIT_STAGE_LABELS[stageName] || stageName) : '';
+  const user = log.user_display || 'System';
+  const model = changes.model as string | undefined;
+  const comment = changes.comment as string | undefined;
+  const evalModel = changes.evaluatorModel as string | undefined;
+  const cfg = AUDIT_ICONS[log.action] || { icon: '📋', color: 'text-slate-400' };
+
+  switch (log.action) {
+    case 'PIPELINE_STARTED':
+      return {
+        title: `${user} started a new pipeline run`,
+        description: 'Initiated the 8-stage modernization pipeline for this project',
+        ...cfg,
+      };
+    case 'STAGE_STARTED':
+      return {
+        title: `${user} executed Stage: ${stageLabel}`,
+        description: model
+          ? `Model: ${model}${evalModel ? ` · Evaluator: ${evalModel}` : ''}`
+          : `Started ${stageLabel} analysis`,
+        ...cfg,
+      };
+    case 'STAGE_COMPLETED':
+      return {
+        title: `Stage ${stageLabel} completed`,
+        description: `Output generated and validation run · Ready for review`,
+        ...cfg,
+      };
+    case 'STAGE_APPROVED':
+      return {
+        title: `${user} approved Stage: ${stageLabel}`,
+        description: comment ? `"${comment}"` : 'Approved and advanced to next stage',
+        ...cfg,
+      };
+    case 'STAGE_REJECTED':
+      return {
+        title: `${user} rejected Stage: ${stageLabel}`,
+        description: comment ? `Reason: "${comment}"` : 'Requires revision before proceeding',
+        ...cfg,
+      };
+    default:
+      return {
+        title: `${log.action.replace(/_/g, ' ')} by ${user}`,
+        description: Object.entries(changes).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 40) : v}`).join(' · '),
+        ...cfg,
+      };
+  }
+}
+
+function ProjectAuditSection({ projectId }: { projectId: string }) {
+  const { data, isLoading } = useQuery<{ logs: any[] }>({
+    queryKey: ['project-audit', projectId],
+    queryFn: async () => {
+      const res = await apiClient.get(`/admin/audit-logs?limit=50`);
+      const logs = (res.data?.logs ?? []).filter((l: any) => {
+        const changes = l.changes as Record<string, unknown> | null;
+        return changes?.projectId === projectId || l.project_name;
+      });
+      return { logs };
+    },
+    staleTime: 15_000,
+  });
+
+  const logs = data?.logs ?? [];
+  if (isLoading) return null;
+  if (logs.length === 0) return null;
+
+  return (
+    <Card className="bg-white dark:bg-slate-800 mb-6">
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Activity className="w-4 h-4 text-slate-400" />
+            Activity Timeline
+          </CardTitle>
+          <Badge variant="outline" className="text-xs">{logs.length} events</Badge>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="relative">
+          {/* Timeline line */}
+          <div className="absolute left-[11px] top-2 bottom-2 w-px bg-slate-200 dark:bg-slate-700" />
+
+          <div className="space-y-3">
+            {logs.slice(0, 15).map((log: any) => {
+              const entry = formatAuditEntry(log);
+              return (
+                <div key={log.id} className="flex items-start gap-3 relative">
+                  {/* Timeline dot */}
+                  <div className="w-[22px] h-[22px] rounded-full flex items-center justify-center bg-white dark:bg-slate-800 z-10 ring-2 ring-slate-100 dark:ring-slate-700 text-[10px] shrink-0">
+                    {entry.icon}
+                  </div>
+
+                  {/* Content */}
+                  <div className="flex-1 min-w-0 pt-0.5">
+                    <p className="text-sm text-slate-800 dark:text-slate-200 leading-snug">
+                      {entry.title}
+                    </p>
+                    {entry.description && (
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                        {entry.description}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Timestamp */}
+                  <span className="text-[10px] text-slate-400 shrink-0 tabular-nums pt-1">
+                    {new Date(log.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}

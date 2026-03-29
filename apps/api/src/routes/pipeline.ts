@@ -18,8 +18,8 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { db } from "@/db/index.js";
-import { stageArtifacts, approvalGates, auditLogs, stageRuns, stageExecutionLogs, projectMembers } from "@/db/schema.js";
-import { eq, and, desc } from "drizzle-orm";
+import { stageArtifacts, approvalGates, auditLogs, stageRuns, stageExecutionLogs, projectMembers, pipelineRuns, users, projects } from "@/db/schema.js";
+import { eq, and, desc, inArray } from "drizzle-orm";
 import { PipelineStageName } from "@revamp/shared-types/pipeline";
 import { getStageOrder, classifyError } from "@revamp/core-engine";
 import { pipelineService } from "@/services/pipeline.js";
@@ -106,6 +106,99 @@ const validStageNames = Object.values(PipelineStageName);
 // ─── ROUTES ─────────────────────────────────────────────────────
 
 export async function pipelineRoutes(fastify: FastifyInstance) {
+  /**
+   * GET /pipeline/:pipelineRunId/history — Execution history, approvals, prompt changes
+   */
+  fastify.get<{ Params: { pipelineRunId: string } }>(
+    "/pipeline/:pipelineRunId/history",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const { pipelineRunId } = request.params;
+
+      // Fetch stage runs, approval gates, and user info in parallel
+      const [runs, gates] = await Promise.all([
+        db.query.stageRuns.findMany({
+          where: eq(stageRuns.pipeline_run_id, pipelineRunId),
+          orderBy: desc(stageRuns.created_at),
+        }),
+        db.query.approvalGates.findMany({
+          where: eq(approvalGates.pipeline_run_id, pipelineRunId),
+          orderBy: desc(approvalGates.created_at),
+        }),
+      ]);
+
+      // Collect all user IDs to resolve names
+      const userIds = [...new Set([
+        ...runs.map(r => (r as any).initiated_by).filter(Boolean),
+        ...gates.map(g => g.approved_by).filter(Boolean),
+      ])] as string[];
+
+      // Also include the pipeline initiator
+      const run = await db.query.pipelineRuns.findFirst({
+        where: eq(pipelineRuns.id, pipelineRunId),
+        columns: { initiated_by: true },
+      });
+      if (run?.initiated_by) userIds.push(run.initiated_by);
+
+      const userMap: Record<string, string> = {};
+      if (userIds.length > 0) {
+        const userRows = await db.query.users.findMany({
+          where: inArray(users.id, [...new Set(userIds)]),
+          columns: { id: true, email: true, first_name: true, last_name: true },
+        });
+        for (const u of userRows) {
+          userMap[u.id] = u.first_name && u.last_name
+            ? `${u.first_name} ${u.last_name}`
+            : u.email;
+        }
+      }
+
+      // Build timeline entries
+      const timeline: Array<{
+        type: 'execution' | 'approval' | 'rejection';
+        stage: string;
+        attempt?: number;
+        status: string;
+        user: string;
+        model?: string | null;
+        duration_ms?: number | null;
+        validation_passed?: boolean | null;
+        comment?: string | null;
+        timestamp: string;
+      }> = [];
+
+      for (const r of runs) {
+        timeline.push({
+          type: 'execution',
+          stage: r.stage_name,
+          attempt: r.attempt,
+          status: r.status,
+          user: userMap[(r as any).initiated_by] || userMap[run?.initiated_by || ''] || 'Unknown',
+          model: r.model,
+          duration_ms: r.duration_ms,
+          validation_passed: r.validation_passed,
+          timestamp: r.created_at?.toISOString() || new Date().toISOString(),
+        });
+      }
+
+      for (const g of gates) {
+        timeline.push({
+          type: g.status === 'approved' ? 'approval' : 'rejection',
+          stage: g.stage_name,
+          status: g.status,
+          user: g.approved_by ? (userMap[g.approved_by] || 'Unknown') : 'Pending',
+          comment: g.approval_comment,
+          timestamp: g.approved_at?.toISOString() || g.created_at?.toISOString() || new Date().toISOString(),
+        });
+      }
+
+      // Sort by timestamp descending (most recent first)
+      timeline.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      return reply.send({ history: timeline });
+    },
+  );
+
   /**
    * POST /pipeline/start — Create a new pipeline run
    */

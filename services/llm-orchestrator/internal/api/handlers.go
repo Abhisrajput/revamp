@@ -73,11 +73,36 @@ type CompletionResponseBody struct {
 	Error           string  `json:"error,omitempty"`
 }
 
+const (
+	maxRequestBodyBytes = 50 * 1024 * 1024 // 50 MB
+	maxAllowedTokens    = 200_000
+)
+
+// requireJSON rejects requests that are not application/json.
+func requireJSON(w http.ResponseWriter, r *http.Request) bool {
+	ct := r.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return false
+	}
+	return true
+}
+
 // handleCompletion handles completion requests
 func (s *Server) handleCompletion(w http.ResponseWriter, r *http.Request) {
+	if !requireJSON(w, r) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+
 	var reqBody CompletionRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if reqBody.MaxTokens > maxAllowedTokens {
+		http.Error(w, fmt.Sprintf("max_tokens exceeds limit of %d", maxAllowedTokens), http.StatusBadRequest)
 		return
 	}
 
@@ -134,9 +159,19 @@ func (s *Server) handleCompletion(w http.ResponseWriter, r *http.Request) {
 
 // handleStreamCompletion handles streaming completion requests
 func (s *Server) handleStreamCompletion(w http.ResponseWriter, r *http.Request) {
+	if !requireJSON(w, r) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+
 	var reqBody CompletionRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if reqBody.MaxTokens > maxAllowedTokens {
+		http.Error(w, fmt.Sprintf("max_tokens exceeds limit of %d", maxAllowedTokens), http.StatusBadRequest)
 		return
 	}
 
@@ -218,16 +253,21 @@ func (s *Server) handleChatStreamCompletion(w http.ResponseWriter, r *http.Reque
 
 // handleBatch handles batch job submission
 func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
+	if !requireJSON(w, r) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+
 	var reqBody struct {
 		Jobs []struct {
-			Model    string                `json:"model"`
-			Messages []CompletionMessage   `json:"messages"`
-			Priority int                   `json:"priority"`
+			Model    string              `json:"model"`
+			Messages []CompletionMessage `json:"messages"`
+			Priority int                 `json:"priority"`
 		} `json:"jobs"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
