@@ -153,10 +153,13 @@ func (s *Server) runStage(
 	onDelta stages.OnDelta,
 ) (*stages.StageRunResult, error) {
 	switch config.StageName {
+	case "SCAN":
+		return stages.RunScanStage(ctx, s.engine, config, onEvent, onDelta, s.logger)
+	case "DECODE":
+		return stages.RunDecodeStage(ctx, s.engine, config, onEvent, onDelta, s.logger)
 	case "FORGE":
 		return stages.RunForgeStage(ctx, s.engine, config, onEvent, onDelta, s.logger)
 	default:
-		// All other stages use the generic runner
 		return stages.RunGenericStage(ctx, s.engine, config, onEvent, onDelta, s.logger)
 	}
 }
