@@ -112,6 +112,9 @@ func (s *Server) setupRouter() *chi.Mux {
 	r.Route("/api/v2", func(r chi.Router) {
 		r.Use(s.authMiddleware)
 
+		// Task execution (stage orchestration)
+		r.Post("/tasks/execute", s.handleTaskExecute)
+
 		// Tool execution
 		r.Post("/tools/execute", s.handleToolExecute)
 		r.Post("/tools/loop", s.handleToolLoop)
