@@ -119,6 +119,14 @@ func (s *Server) setupRouter() *chi.Mux {
 		r.Post("/tools/execute", s.handleToolExecute)
 		r.Post("/tools/loop", s.handleToolLoop)
 		r.Get("/tools", s.handleListTools)
+
+		// Budget enforcement
+		r.Post("/budget/check", s.handleBudgetCheck)
+		r.Post("/budget/record", s.handleBudgetRecord)
+
+		// Context management
+		r.Post("/context/build", s.handleContextBuild)
+		r.Post("/context/summarize", s.handleContextSummarize)
 	})
 
 	return r
