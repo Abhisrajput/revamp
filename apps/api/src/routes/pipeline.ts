@@ -18,7 +18,7 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { db } from "@/db/index.js";
-import { stageArtifacts, approvalGates, auditLogs, stageRuns, stageExecutionLogs, projectMembers, pipelineRuns, users, projects } from "@/db/schema.js";
+import { stageArtifacts, approvalGates, auditLogs, stageRuns, stageExecutionLogs, projectMembers, pipelineRuns, users, projects, modernizedFiles, traceabilityEntries } from "@/db/schema.js";
 import { eq, and, desc, inArray } from "drizzle-orm";
 import { PipelineStageName } from "@revamp/shared-types/pipeline";
 import { getStageOrder, classifyError } from "@revamp/core-engine";
@@ -1104,6 +1104,50 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       });
 
       return reply.send(logs);
+    },
+  );
+
+  // ═══ MODERNIZED FILES ══════════════════════════════════════════
+
+  fastify.get<{ Params: { pipelineRunId: string } }>(
+    "/pipeline/:pipelineRunId/modernized-files",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const files = await db.query.modernizedFiles.findMany({
+        where: eq(modernizedFiles.pipeline_run_id, request.params.pipelineRunId),
+        columns: { id: true, file_path: true, file_name: true, language: true, file_size: true, is_new: true, created_at: true },
+        orderBy: modernizedFiles.file_path,
+      });
+      return reply.send({ files });
+    },
+  );
+
+  fastify.get<{ Params: { pipelineRunId: string; fileId: string } }>(
+    "/pipeline/:pipelineRunId/modernized-files/:fileId",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const file = await db.query.modernizedFiles.findFirst({
+        where: and(
+          eq(modernizedFiles.id, request.params.fileId),
+          eq(modernizedFiles.pipeline_run_id, request.params.pipelineRunId),
+        ),
+      });
+      if (!file) return reply.status(404).send({ error: "File not found" });
+      return reply.send(file);
+    },
+  );
+
+  // ═══ TRACEABILITY MATRIX ═══════════════════════════════════════
+
+  fastify.get<{ Params: { pipelineRunId: string } }>(
+    "/pipeline/:pipelineRunId/traceability",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const entries = await db.query.traceabilityEntries.findMany({
+        where: eq(traceabilityEntries.pipeline_run_id, request.params.pipelineRunId),
+        orderBy: traceabilityEntries.rule_id,
+      });
+      return reply.send({ entries });
     },
   );
 }

@@ -44,6 +44,7 @@ import {
   loadTieredPriorContext,
 } from "./context-tiering.js";
 import { orchestrateScanStage } from "./scan-orchestrator.js";
+import { orchestrateForgeStage } from "./forge-orchestrator.js";
 import { orchestrateDecodeStage, loadScanOutput } from "./decode-orchestrator.js";
 import {
   checkPipelineBudget,
@@ -818,6 +819,46 @@ export class PipelineService {
       }
 
       return decodeResult;
+    }
+
+    // ─── FORGE CODE GENERATION ORCHESTRATION ────────────────────
+    if (stageName === PipelineStageName.FORGE) {
+      const forgeResult = await orchestrateForgeStage({
+        pipelineRunId,
+        projectContext,
+        priorOutputs,
+        feedback,
+        onEvent: options?.onEvent,
+        onDelta: options?.onDelta,
+        signal: options?.signal,
+        model: modelName,
+      });
+
+      if (forgeResult.output) {
+        await this.storeStageOutput(pipelineRunId, stageName, forgeResult);
+      }
+
+      if (agentCtx && forgeResult.output) {
+        try {
+          await recordAgentCompletion(agentCtx, forgeResult.output, forgeResult.duration, forgeResult.validation?.confidenceScore);
+        } catch { /* non-fatal */ }
+      }
+
+      if (forgeResult.output) {
+        await this.updateStageProgress(pipelineRunId, stageName, "completed", 100);
+        emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: forgeResult.duration, confidenceScore: forgeResult.validation?.confidenceScore });
+
+        const forgeConfig = this.getStageConfig(stageName);
+        if (forgeConfig.requiresApproval) {
+          await this.createApprovalGate(pipelineRunId, stageName, forgeConfig.requiredRole || "admin");
+          await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100);
+        }
+      } else {
+        await this.updateStageProgress(pipelineRunId, stageName, "failed", 0);
+        emitStageFailed({ pipelineRunId, projectId: run.project.id, stageName, error: "FORGE produced no output" });
+      }
+
+      return forgeResult;
     }
 
     // Execute stage — with fallback chain.

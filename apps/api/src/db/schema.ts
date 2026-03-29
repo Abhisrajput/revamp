@@ -289,6 +289,31 @@ export const modernizedFiles = pgTable(
   })
 );
 
+// Traceability entries — maps DECODE business rules to generated files
+export const traceabilityEntries = pgTable(
+  "traceability_entries",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    project_id: uuid("project_id").notNull(),
+    pipeline_run_id: uuid("pipeline_run_id"),
+    rule_id: varchar("rule_id", { length: 50 }).notNull(),
+    rule_text: text("rule_text").notNull(),
+    source_file: text("source_file"), // legacy file the rule came from
+    target_file_path: text("target_file_path").notNull(), // modernized file
+    target_file_id: uuid("target_file_id"),
+    status: varchar("status", { length: 30 }).notNull().default("pending"), // pending, implemented, partial, skipped
+    confidence: numeric("confidence", { precision: 3, scale: 2 }).default("0.00"),
+    notes: text("notes"),
+    created_at: timestamp("created_at").defaultNow().notNull(),
+    updated_at: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    projectIdx: index("traceability_project_idx").on(table.project_id),
+    pipelineIdx: index("traceability_pipeline_idx").on(table.pipeline_run_id),
+    ruleIdx: index("traceability_rule_idx").on(table.rule_id),
+  })
+);
+
 // Stage run history — one row per stage execution attempt
 export const stageRuns = pgTable(
   "stage_runs",
