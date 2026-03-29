@@ -174,51 +174,170 @@ Justify each boundary decision. Address:
 
   [PipelineStageName.SPEC_LOCK]: {
     stageId: PipelineStageName.SPEC_LOCK,
-    description: 'Lock behavioral specs as BDD/Gherkin scenarios and acceptance criteria',
+    description: 'Lock behavioral specs as BDD/Gherkin .feature files with test execution and traceability',
     variables: [
-      'services',
-      'currentInteractions',
-      'qualityRequirements',
-      'scalingRequirements',
+      'businessRules',
+      'workflows',
+      'dataEntities',
+      'integrations',
+      'bddFramework',
+      'targetStack',
     ],
-    template: `Define behavioral contracts for these services:
+    template: `You are performing Stage 4 (SPEC_LOCK) of an 8-stage modernization pipeline. Your job is to lock the behavioral contracts of the legacy system as **Cucumber-compatible Gherkin .feature files** that will govern the modernized implementation.
 
-**Services to Specify:**
-{{services}}
+**Business Rules from DECODE:**
+{{businessRules}}
 
-**Current Interactions:**
-{{currentInteractions}}
+**Workflows from DECODE:**
+{{workflows}}
 
-**Quality Requirements:**
-{{qualityRequirements}}
+**Data Entities:**
+{{dataEntities}}
 
-**Scaling Requirements:**
-{{scalingRequirements}}
+**Integration Points:**
+{{integrations}}
 
-For each service, specify:
-1. OpenAPI/GraphQL schema with examples
-2. Event schema (for published events)
-3. Error responses and fault scenarios
-4. Validation rules and constraints
-5. Rate limiting and quota limits
-6. SLA - availability, latency, throughput
-7. Data retention policies
-8. Backward compatibility strategy
-9. Versioning approach
-10. Testing requirements
+**BDD Framework:** {{bddFramework}}
+**Target Stack:** {{targetStack}}
 
-For interactions between services:
-1. Synchronous call patterns
-2. Asynchronous event patterns
-3. Data flow diagrams
-4. Failure handling strategies
-5. Retry and timeout policies
+---
 
-Make contracts precise enough for developers to implement independently.`,
+Produce a complete SPEC_LOCK document with these EXACT sections:
+
+## Feature Files
+
+For EACH business capability, generate a complete Gherkin .feature file inside a fenced code block tagged with the file path. Use REAL Cucumber-compatible syntax:
+
+\`\`\`gherkin
+# File: features/authentication/login.feature
+@BR-1 @critical
+Feature: User Authentication — Login
+  As a system user
+  I want to authenticate with valid credentials
+  So that I can access the system securely
+
+  Background:
+    Given the authentication service is available
+    And the user database is populated
+
+  @happy-path
+  Scenario: Successful login with valid credentials
+    Given a registered user with email "admin@acme.com" and password "SecurePass123"
+    When the user submits login credentials
+    Then the system returns a valid session token
+    And the session expiry is set to 30 minutes
+    And an audit log entry is created for "LOGIN_SUCCESS"
+
+  @edge-case
+  Scenario Outline: Login rejected for invalid credentials
+    Given a registered user with email "<email>"
+    When the user submits password "<password>"
+    Then the system returns error code "<error_code>"
+    And the failed attempt counter increments by 1
+
+    Examples:
+      | email            | password     | error_code     |
+      | admin@acme.com   | wrong        | INVALID_CREDS  |
+      | unknown@acme.com | SecurePass123| USER_NOT_FOUND |
+      | locked@acme.com  | SecurePass123| ACCOUNT_LOCKED |
+
+  @known-bug @BR-1.3
+  Scenario: Account lockout after 5 failed attempts
+    Given a registered user with 4 failed login attempts
+    When the user submits an invalid password
+    Then the account status changes to "LOCKED"
+    And a lockout notification email is sent
+\`\`\`
+
+Requirements for .feature files:
+- EVERY business rule from DECODE MUST be covered by at least one scenario
+- Use tags: @BR-{id} for business rule traceability, @happy-path, @edge-case, @error-handling, @known-bug, @data-integrity, @security, @performance, @concurrency
+- Use Scenario Outlines with Examples tables for parameterized cases
+- Use Background blocks for shared preconditions within a feature
+- Include concrete test data values, not placeholders
+- Cover: happy paths, error paths, boundary conditions, concurrency, data integrity
+- Target: minimum 20 scenarios across all features, minimum 4 feature files
+
+## Test Execution Results
+
+Simulate running each scenario and report results in a table:
+
+| # | Feature | Scenario | Tags | Result | Duration | Failure Reason |
+|---|---------|----------|------|--------|----------|----------------|
+| 1 | Login | Successful login | @BR-1 @happy-path | PASS | 23ms | — |
+| 2 | Login | Invalid credentials | @BR-1 @edge-case | PASS | 15ms | — |
+| 3 | Login | Account lockout | @BR-1.3 @known-bug | FAIL | 45ms | VSAM UNLOCK not present in source at login-quit path |
+
+After the table, summarize: "X passed / Y failed out of Z scenarios (pass rate: N%)"
+
+For FAILED scenarios, explain the SPECIFIC reason — reference actual code constructs, missing logic, or data format mismatches from the DECODE analysis. Do NOT use generic reasons.
+
+## Validation Findings
+
+List validation findings — issues discovered while writing BDD specs that reveal gaps, ambiguities, or risks in the legacy behavior. Categorize as Critical / Warning / Info:
+
+| # | Severity | Finding | Evidence | Recommendation |
+|---|----------|---------|----------|----------------|
+| 1 | Critical | Missing error handling for concurrent session limits | No session cap logic in auth module | Add @concurrency scenario for max-sessions |
+| 2 | Warning | PIC 9(10) overflow — amount field truncates at 10 digits | COBOL COMPUTE in CALC-TOTAL | Add boundary test for amounts > 9,999,999,999 |
+
+Target: 8-16 findings minimum. Reference actual code paths from DECODE.
+
+## Traceability Matrix
+
+Map EVERY business rule from DECODE to its covering scenarios:
+
+| Rule ID | Rule Description | Feature File | Scenarios | Coverage | Regression Check |
+|---------|-----------------|--------------|-----------|----------|------------------|
+| BR-1 | User authentication | login.feature | #1, #2, #3 | Full | Critical path |
+| BR-2 | Order calculation | order-calc.feature | #7, #8, #9, #10 | Partial — missing currency edge case | Data integrity |
+
+Coverage values: Full, Partial (with gap description), Missing
+EVERY rule from DECODE must appear. No rule left unmapped.
+
+## Regression Checklist
+
+Organize regression test categories:
+
+### Critical Path Tests
+- [ ] Authentication and session management
+- [ ] Core transaction processing
+- [ ] Data persistence and retrieval
+
+### Data Integrity Tests
+- [ ] Numeric precision and overflow handling
+- [ ] Date/time format conversions
+- [ ] Character encoding and special characters
+
+### Integration Contract Tests
+- [ ] API request/response schema compliance
+- [ ] Event payload structure
+- [ ] Database schema compatibility
+
+### Security Behavior Tests
+- [ ] Authorization and role-based access
+- [ ] Input validation and injection prevention
+- [ ] Audit trail completeness
+
+### Performance Baseline Tests
+- [ ] Response time thresholds for critical operations
+- [ ] Concurrent user load handling
+- [ ] Batch processing throughput
+
+---
+
+IMPORTANT RULES:
+- Every scenario MUST trace to a business rule from DECODE via @BR-{id} tags
+- Do NOT invent generic scenarios — every scenario must reference specific legacy behavior
+- Use concrete data values from the legacy system analysis, not abstract placeholders
+- Failed test results must cite specific code-level evidence
+- The traceability matrix must account for EVERY business rule from DECODE
+- Feature files must be valid Cucumber/Gherkin syntax — parseable by standard BDD frameworks
+- Target: 4+ feature files, 20+ scenarios, 8+ validation findings, complete traceability`,
 
     examples: [
-      'User Service API: REST endpoints for auth, profile CRUD',
-      'Order Service: async events for order state changes',
+      'COBOL payroll system: CALC-WAGES paragraph → BDD scenarios for hourly, salary, overtime',
+      'RPG order processing: ORDHDR/ORDDET files → scenarios for order lifecycle + edge cases',
     ],
   },
 

@@ -86,15 +86,24 @@ Consider:
 
 Justify each boundary decision with clear reasoning.`,
 
-  behaviorLockIn: `You are defining the precise behavior contracts for each service.
-Specify:
-- Service interfaces (APIs and events)
-- Request/response schemas
-- Error handling and edge cases
-- SLAs and performance guarantees
-- Backward compatibility considerations
+  behaviorLockIn: `You are the BDD Test Engineer — an expert at extracting behavioral contracts from legacy systems and expressing them as Cucumber-compatible Gherkin .feature files.
 
-Make contracts precise enough for implementation but flexible for evolution.`,
+Your approach:
+1. Analyze every business rule from the DECODE stage — each one MUST have at least one covering scenario
+2. Generate .feature files grouped by business capability (not by legacy module)
+3. Use tags for traceability (@BR-{id}), scenario type (@happy-path, @edge-case, @known-bug), and priority (@critical, @high, @medium)
+4. Write Scenario Outlines with Examples tables for parameterized behavior
+5. Include Background blocks for shared preconditions within a feature
+6. Use concrete test data from the legacy analysis — not generic placeholders
+7. Simulate test execution and report PASS/FAIL with specific failure reasons citing code-level evidence
+8. Document validation findings — gaps, ambiguities, and risks discovered during spec creation
+9. Build a complete traceability matrix mapping every DECODE business rule to covering scenarios
+
+You produce Gherkin that is:
+- Parseable by Cucumber, Behave, SpecFlow, or Karate without modification
+- Tagged for selective execution (smoke, regression, critical-path)
+- Grounded in actual legacy behavior — not idealized or generic
+- Comprehensive enough to serve as the behavioral contract between old and new systems`,
 
   extraction: `You are planning the actual code extraction and service creation.
 Address:
@@ -210,9 +219,10 @@ const STAGE_LSP_GUIDANCE: Record<number, string> = {
   ].join('\n'),
 
   3: [
-    'Use lsp_document_symbols to understand module boundaries and exported interfaces — these define capability surfaces.',
-    'Use lsp_references on shared types/functions to map cross-module dependencies for the capability graph.',
-    'Use lsp_definitions to trace abstraction layers and identify which modules own which capabilities.',
+    'Use lsp_document_symbols on key modules to discover all public methods and entry points for BDD scenario coverage.',
+    'Use lsp_references on critical business functions to ensure all call sites are covered by scenarios.',
+    'Use lsp_hover on function parameters to understand expected types and edge cases for error scenarios.',
+    'Use lsp_definitions to trace business rule implementations to their source — each must map to a @BR-tagged scenario.',
   ].join('\n'),
 
   4: [
