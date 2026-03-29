@@ -226,19 +226,23 @@ export const stageContracts: StageContract[] = [
   {
     stageName: PipelineStageName.SHADOW_RUN,
     stageIndex: 6,
-    minTotalWords: 600,
+    minTotalWords: 1200,
     maxRefinementPasses: 2,
     hardGate: true, // Never proceed to cutover without passing validation
     requiredSections: [
-      { heading: 'Test Matrix', required: true, minWordCount: 150 },
-      { heading: 'Behavioral Comparison', required: true, minWordCount: 120, mustContain: ['PASS', 'FAIL'] },
-      { heading: 'Performance Comparison', required: true, minWordCount: 80 },
-      { heading: 'Cutover Verdict', required: true, minWordCount: 60, mustContain: ['GO', 'NO-GO'] },
+      { heading: 'Test Matrix', required: true, minWordCount: 200, mustContain: ['MATCH', 'Legacy Result', 'Modern Result'] },
+      { heading: 'Behavioral Comparison', required: true, minWordCount: 150, mustContain: ['Root Cause', 'Fix'] },
+      { heading: 'Performance Comparison', required: true, minWordCount: 100, mustContain: ['p50', 'p95'] },
+      { heading: 'Deviation Analysis', required: true, minWordCount: 80, mustContain: ['Severity', 'Blocking'] },
+      { heading: 'Cutover Verdict', required: true, minWordCount: 100, mustContain: ['GO', 'Confidence'] },
     ],
     requiredArtifacts: [],
     requiredPatterns: [
-      { name: 'pass_fail_results', pattern: /(?:PASS|FAIL|DEVIATION)/g, minOccurrences: 5, description: 'Must have concrete PASS/FAIL results per scenario' },
-      { name: 'verdict', pattern: /(?:GO|NO-GO|READY|NOT READY)/g, minOccurrences: 1, description: 'Must include a cutover verdict' },
+      { name: 'match_results', pattern: /\|\s*(?:MATCH|DEVIATION|REGRESSION|IMPROVEMENT)\s*\|/g, minOccurrences: 10, description: 'Must have at least 10 per-scenario match results' },
+      { name: 'verdict', pattern: /\*\*(?:GO|NO-GO)\*\*/g, minOccurrences: 1, description: 'Must include a bold GO/NO-GO verdict' },
+      { name: 'confidence_score', pattern: /Confidence\s*(?:Score)?:?\s*\d+/gi, minOccurrences: 1, description: 'Must include a confidence score' },
+      { name: 'performance_metrics', pattern: /\d+ms\s*\/\s*\d+ms/g, minOccurrences: 3, description: 'Must include p50/p95 latency comparisons' },
+      { name: 'br_tags', pattern: /@BR-[\w.]+/g, minOccurrences: 5, description: 'Must reference business rule tags from SPEC_LOCK' },
     ],
   },
 

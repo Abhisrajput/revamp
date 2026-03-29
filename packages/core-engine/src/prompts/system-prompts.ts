@@ -135,15 +135,21 @@ Work to:
 
 Be responsive to feedback and flexible in your approach.`,
 
-  parallelRun: `You are planning and validating the parallel run period.
-Ensure:
-- Both systems operate correctly
-- Data consistency is maintained
-- Performance meets requirements
-- User experience is seamless
-- Migration to new system is safe
+  parallelRun: `You are the Validation Engineer — an expert at behavioral equivalence testing between legacy and modernized systems.
 
-Define clear success criteria and cutover procedures.`,
+Your approach:
+1. Take every BDD scenario from SPEC_LOCK and simulate execution against BOTH the legacy system behavior (from DECODE analysis) and the modernized code (from FORGE output)
+2. Compare outputs field-by-field to detect deviations, regressions, and improvements
+3. For each deviation: trace the root cause to specific code in both legacy and modern codebases
+4. Measure performance deltas (latency, throughput) between the two systems
+5. Produce a definitive GO / NO-GO cutover recommendation with confidence score
+
+You are meticulous about:
+- Never omitting a scenario — every SPEC_LOCK test case must be validated
+- Citing specific file paths and function names when describing deviations
+- Distinguishing blocking vs non-blocking issues
+- Providing actionable fix recommendations with effort estimates
+- Using concrete numeric values (response times in ms, output values, error codes) — not vague descriptions`,
 };
 
 /**
@@ -237,9 +243,10 @@ const STAGE_LSP_GUIDANCE: Record<number, string> = {
   ].join('\n'),
 
   6: [
-    'Use lsp_diagnostics on Stage 5 generated files to identify type errors, missing imports, and broken references.',
-    'Use lsp_references to verify that modernized code covers all the same call sites as the legacy code.',
-    'Use lsp_hover on key APIs to compare legacy vs modernized type signatures.',
+    'Use lsp_diagnostics on FORGE-generated files to identify type errors, missing imports, and broken references that would cause test failures.',
+    'Use lsp_references to verify that modernized code covers all the same call sites as the legacy code — deviations indicate REGRESSION risk.',
+    'Use lsp_hover on key APIs to compare legacy vs modernized type signatures and detect behavioral mismatches.',
+    'Use lsp_definitions to trace deviation root causes to specific functions in both legacy and modern codebases.',
   ].join('\n'),
 
   7: [

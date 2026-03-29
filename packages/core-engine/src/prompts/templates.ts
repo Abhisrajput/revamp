@@ -459,66 +459,137 @@ Ensure all code is:
   [PipelineStageName.SHADOW_RUN]: {
     stageId: PipelineStageName.SHADOW_RUN,
     description:
-      'Run legacy and modern systems in parallel — validate behavioral equivalence',
+      'Run SPEC_LOCK BDD scenarios against both legacy and modernized systems — validate behavioral equivalence',
     variables: [
-      'serviceMigrationPlan',
-      'currentSystemState',
-      'validationStrategy',
-      'cutoverPlan',
+      'bddScenarios',
+      'forgeOutput',
+      'targetStack',
+      'targetCloud',
     ],
-    template: `Plan parallel run validation:
+    template: `You are performing Stage 7 (SHADOW_RUN) of an 8-stage modernization pipeline. Your job is to simulate running EVERY BDD scenario from SPEC_LOCK against both the legacy system and the FORGE-generated modernized code, then produce a behavioral equivalence report.
 
-**Service Migration Plan:**
-{{serviceMigrationPlan}}
+**BDD Scenarios from SPEC_LOCK:**
+{{bddScenarios}}
 
-**Current System State:**
-{{currentSystemState}}
+**FORGE Generated Code:**
+{{forgeOutput}}
 
-**Validation Strategy:**
-{{validationStrategy}}
+**Target Stack:** {{targetStack}}
+**Target Cloud:** {{targetCloud}}
 
-**Cutover Plan:**
-{{cutoverPlan}}
+---
 
-For the parallel run period, define:
+Produce a complete SHADOW_RUN validation report with these EXACT sections:
 
-1. Dual-Write Strategy:
-   - How to keep both systems in sync
-   - Conflict resolution approach
-   - Eventual consistency handling
-   - Data validation procedures
+## Test Matrix
 
-2. Traffic Routing:
-   - Shadow traffic approach
-   - Canary deployment steps
-   - Rollback triggers
-   - Monitoring and alerting
+For EVERY scenario from SPEC_LOCK, simulate execution against both systems and report results:
 
-3. Validation Plan:
-   - Functional equivalence tests
-   - Performance comparisons
-   - Data consistency checks
-   - User acceptance testing
-   - Security validation
+| # | Scenario | Tags | Legacy Result | Modern Result | Match | Duration (L/M) | Notes |
+|---|----------|------|---------------|---------------|-------|-----------------|-------|
+| 1 | Successful login | @BR-1 @happy-path | PASS | PASS | MATCH | 23ms / 12ms | — |
+| 2 | Invalid credentials | @BR-1 @edge-case | PASS | PASS | MATCH | 15ms / 8ms | — |
+| 3 | Account lockout after 5 attempts | @BR-1.3 @known-bug | PASS | FAIL | DEVIATION | 45ms / — | Modern code missing lockout counter reset on successful login |
+| 4 | Concurrent session limit | @BR-2 @concurrency | PASS | PASS | MATCH | 92ms / 55ms | Modern uses Redis-backed sessions |
+| 5 | Order total with tax | @BR-5 @data-integrity | PASS (1042.57) | PASS (1042.56) | DEVIATION | 18ms / 9ms | Rounding difference: legacy COBOL COMPUTE rounds half-up, modern IEEE 754 rounds half-even |
 
-4. Cutover Procedures:
-   - Final data synchronization
-   - Traffic cutover schedule
-   - Rollback procedures
-   - Communication timeline
-   - Stakeholder notifications
+Requirements:
+- EVERY scenario from SPEC_LOCK must appear — no omissions
+- Match values: MATCH (identical behavior), DEVIATION (different result), REGRESSION (modern fails where legacy passes), IMPROVEMENT (modern passes where legacy had known bug)
+- For DEVIATION/REGRESSION: include specific output values or error messages
+- Duration column shows both legacy and modern execution times
+- Notes explain WHY deviations occur, citing specific code
 
-5. Success Criteria:
-   - System stability metrics
-   - Performance metrics
-   - Error rates
-   - User satisfaction
+After the table, summarize: "X MATCH / Y DEVIATION / Z REGRESSION / W IMPROVEMENT out of N scenarios"
 
-Define clear go/no-go decision points at each stage.`,
+## Behavioral Comparison
+
+For each DEVIATION and REGRESSION, provide detailed side-by-side analysis:
+
+### DEVIATION #1: Account lockout after 5 attempts
+**Scenario:** @BR-1.3 — Account lockout after 5 failed attempts
+**Severity:** BLOCKING
+
+| Aspect | Legacy System | Modern System |
+|--------|--------------|---------------|
+| Input | 5th failed login for user "admin@acme.com" | 5th failed login for user "admin@acme.com" |
+| Expected Output | Account status → LOCKED, notification sent | Account status → LOCKED, notification sent |
+| Actual Output | Account status → LOCKED, email queued | Account status → ACTIVE, no notification |
+| Root Cause | Legacy resets counter in COBOL paragraph RESET-LOGIN-CTR | Modern \`AuthService.validateCredentials()\` missing counter logic |
+| Fix Required | Add failed attempt tracking to \`src/services/auth.ts:validateCredentials()\` |
+
+Provide one comparison block per DEVIATION/REGRESSION. Include:
+- Exact input/output values
+- Root cause referencing specific legacy code AND modern generated code
+- Specific fix required (file path + function name)
+
+## Performance Comparison
+
+Compare response times and throughput:
+
+| Operation | Legacy (p50/p95/p99) | Modern (p50/p95/p99) | Delta | Status |
+|-----------|---------------------|---------------------|-------|--------|
+| User login | 23ms / 45ms / 120ms | 12ms / 22ms / 55ms | -48% | FASTER |
+| Order creation | 150ms / 280ms / 500ms | 85ms / 140ms / 250ms | -43% | FASTER |
+| Report generation | 2.1s / 4.5s / 8.0s | 3.2s / 6.1s / 12.0s | +52% | SLOWER |
+| Batch processing (1K records) | 45s | 12s | -73% | FASTER |
+
+After the table, provide:
+- Overall performance verdict: "Modern system is X% faster/slower on average"
+- Any operations that are SLOWER and why (e.g., "Report generation slower due to N+1 query in modern ORM — fixable")
+- Resource utilization comparison (CPU, memory, DB connections)
+
+## Deviation Analysis
+
+Summarize all deviations with severity and recommended actions:
+
+| # | Deviation | Severity | Category | Root Cause | Fix Effort | Blocking? |
+|---|-----------|----------|----------|------------|------------|-----------|
+| 1 | Lockout counter missing | Critical | Logic gap | Auth migration incomplete | 2h | YES |
+| 2 | Rounding difference (0.01) | Warning | Numeric precision | IEEE 754 vs COBOL arithmetic | 4h | NO |
+| 3 | Report generation slower | Warning | Performance | N+1 query pattern | 3h | NO |
+
+Severity levels: Critical (behavior change affecting correctness), Warning (minor difference, non-blocking), Info (cosmetic/logging difference)
+
+## Cutover Verdict
+
+Provide a clear GO / NO-GO recommendation:
+
+### Verdict: **NO-GO** (with conditions)
+
+**Summary Metrics:**
+- Scenarios tested: 28
+- MATCH: 24 (85.7%)
+- DEVIATION: 3 (10.7%)
+- REGRESSION: 1 (3.6%)
+- Blocking issues: 1
+- Estimated fix effort: 9 hours
+
+**Blocking Issues (must fix before cutover):**
+1. BR-1.3: Account lockout counter missing — users won't be locked after failed attempts
+
+**Non-Blocking Issues (fix post-cutover):**
+1. Rounding difference in order totals (0.01 tolerance acceptable for Phase 1)
+2. Report generation performance (optimize queries in sprint 2)
+
+**Confidence Score:** 72/100
+
+**Recommendation:**
+Fix the 1 blocking issue (estimated 2h), re-run shadow validation, then proceed to cutover with GO decision. Non-blocking deviations can be addressed in the first maintenance sprint.
+
+---
+
+IMPORTANT RULES:
+- Every SPEC_LOCK scenario MUST appear in the test matrix — no omissions
+- DEVIATION/REGRESSION entries need specific code-level root causes, not generic descriptions
+- Performance data must include p50/p95/p99 percentiles, not just averages
+- The cutover verdict must be definitive: GO, NO-GO, or NO-GO WITH CONDITIONS
+- Reference actual file paths from FORGE output when describing fixes
+- Confidence score 0-100 based on: match rate, severity of deviations, fix complexity`,
 
     examples: [
-      'Shadow all user transactions to validate new order service',
-      'Gradual traffic shift: 10% -> 50% -> 100%',
+      'COBOL payroll system: 43 scenarios, 38 MATCH, 4 DEVIATION, 1 REGRESSION → NO-GO (1 blocking)',
+      'RPG order processing: 26 scenarios, 26 MATCH → GO with 92/100 confidence',
     ],
   },
 
