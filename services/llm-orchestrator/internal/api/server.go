@@ -114,6 +114,7 @@ func (s *Server) setupRouter() *chi.Mux {
 
 		// Tool execution
 		r.Post("/tools/execute", s.handleToolExecute)
+		r.Post("/tools/loop", s.handleToolLoop)
 		r.Get("/tools", s.handleListTools)
 	})
 

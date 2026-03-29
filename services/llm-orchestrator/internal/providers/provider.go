@@ -30,6 +30,48 @@ type ResponseFormat struct {
 	JSONSchema interface{} `json:"json_schema,omitempty"` // OpenAI strict structured outputs
 }
 
+// ToolDefinition describes a tool the LLM can call.
+type ToolDefinition struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	InputSchema interface{} `json:"input_schema"`
+}
+
+// ToolCall represents a tool call from the LLM response.
+type ToolCall struct {
+	ID    string      `json:"id"`
+	Name  string      `json:"name"`
+	Input interface{} `json:"input"`
+}
+
+// ToolResultMessage is a message containing tool execution results.
+type ToolResultMessage struct {
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
+	IsError   bool   `json:"is_error,omitempty"`
+}
+
+// ContentBlock represents a content block in a multi-part message (text or tool_use).
+type ContentBlock struct {
+	Type  string      `json:"type"`            // "text" or "tool_use" or "tool_result"
+	Text  string      `json:"text,omitempty"`
+	ID    string      `json:"id,omitempty"`    // tool_use block ID
+	Name  string      `json:"name,omitempty"`  // tool name
+	Input interface{} `json:"input,omitempty"` // tool input
+	// For tool_result
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Content   string `json:"content,omitempty"`
+	IsError   bool   `json:"is_error,omitempty"`
+}
+
+// RichMessage supports both simple text and multi-part content (tool calls/results).
+type RichMessage struct {
+	Role    string         `json:"role"`
+	Content []ContentBlock `json:"content,omitempty"`
+	// For simple text messages, use TextContent
+	TextContent string `json:"text_content,omitempty"`
+}
+
 // CompletionRequest represents an LLM completion request
 type CompletionRequest struct {
 	Model       string     `json:"model"`
@@ -41,14 +83,19 @@ type CompletionRequest struct {
 	Stream      bool       `json:"stream"`
 	Timeout     time.Duration
 
+	// Tool calling
+	Tools      []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice string           `json:"tool_choice,omitempty"` // "auto", "any", "none", or specific tool name
+
+	// Rich messages (for tool_result turns)
+	RichMessages []RichMessage `json:"rich_messages,omitempty"`
+
 	// Structured output
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 
 	// Extended thinking / reasoning (Anthropic extended thinking, OpenAI o-series)
-	// When true, the model uses a thinking phase before responding.
-	// Requires temperature=1 on Anthropic.
 	ExtendedThinking bool `json:"extended_thinking,omitempty"`
-	ThinkingBudget   int  `json:"thinking_budget,omitempty"` // max thinking tokens
+	ThinkingBudget   int  `json:"thinking_budget,omitempty"`
 
 	// Metadata
 	ProjectID string                 `json:"project_id"`
@@ -62,7 +109,10 @@ type CompletionResponse struct {
 	Model        string `json:"model"`
 	Provider     string `json:"provider"`
 	Content      string `json:"content"`
-	FinishReason string `json:"finish_reason"`
+	FinishReason string `json:"finish_reason"` // "end_turn", "tool_use", "stop", "max_tokens"
+
+	// Tool calls (when finish_reason = "tool_use")
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 
 	// Token usage
 	InputTokens  int `json:"input_tokens"`
