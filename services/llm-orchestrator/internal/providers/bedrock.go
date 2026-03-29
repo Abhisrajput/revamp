@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/bedrock"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	brdocument "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"go.uber.org/zap"
 )
@@ -66,81 +67,212 @@ func (bp *BedrockProvider) SupportsModel(model string) bool {
 	return false
 }
 
-// Complete sends a completion request to Bedrock
+// Complete sends a completion request to Bedrock.
+// Uses the Converse API when tools are provided, InvokeModel otherwise.
 func (bp *BedrockProvider) Complete(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
+	// If tools are provided, use the Converse API for native tool calling
+	if len(req.Tools) > 0 {
+		return bp.completeWithConverse(ctx, req)
+	}
+	return bp.completeWithInvokeModel(ctx, req)
+}
+
+// completeWithInvokeModel uses the legacy InvokeModel API (no tool support)
+func (bp *BedrockProvider) completeWithInvokeModel(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
 	start := time.Now()
 
-	// Set timeout if provided
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
 		defer cancel()
 	}
 
-	// Build Bedrock request payload
 	payload := buildBedrockPayload(req)
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		bp.RecordError(err)
-		return &CompletionResponse{
-			Provider: "bedrock",
-			Model:    req.Model,
-			Error:    err.Error(),
-			Latency:  time.Since(start),
-		}, err
+		return &CompletionResponse{Provider: "bedrock", Model: req.Model, Error: err.Error(), Latency: time.Since(start)}, err
 	}
 
-	// Call Bedrock InvokeModel API
 	response, err := bp.client.InvokeModel(ctx, &bedrockruntime.InvokeModelInput{
-		ModelId:     &req.Model,
-		Body:        payloadBytes,
-		ContentType: stringPtr("application/json"),
-		Accept:      stringPtr("application/json"),
+		ModelId: &req.Model, Body: payloadBytes,
+		ContentType: stringPtr("application/json"), Accept: stringPtr("application/json"),
 	})
 	if err != nil {
 		bp.RecordError(err)
-		bp.logger.Error("Bedrock completion failed",
-			zap.Error(err),
-			zap.String("model", req.Model),
-			zap.Duration("latency", time.Since(start)),
-		)
-		return &CompletionResponse{
-			Provider: "bedrock",
-			Model:    req.Model,
-			Error:    err.Error(),
-			Latency:  time.Since(start),
-		}, err
+		bp.logger.Error("Bedrock InvokeModel failed", zap.Error(err), zap.String("model", req.Model))
+		return &CompletionResponse{Provider: "bedrock", Model: req.Model, Error: err.Error(), Latency: time.Since(start)}, err
+	}
+
+	bp.RecordSuccess()
+	latency := time.Since(start)
+	content, inputTokens, outputTokens := parseBedrockResponse(response.Body, req.Model)
+	cost := calculateBedrockCost(req.Model, inputTokens, outputTokens)
+
+	return &CompletionResponse{
+		ID: fmt.Sprintf("bedrock-%d", time.Now().UnixNano()), Model: req.Model, Provider: "bedrock",
+		Content: content, FinishReason: "stop",
+		InputTokens: inputTokens, OutputTokens: outputTokens, TotalTokens: inputTokens + outputTokens,
+		Cost: cost, Latency: latency,
+	}, nil
+}
+
+// completeWithConverse uses the Bedrock Converse API with native tool calling.
+func (bp *BedrockProvider) completeWithConverse(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
+	start := time.Now()
+
+	if req.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
+		defer cancel()
+	}
+
+	// Build Converse messages
+	var converseMessages []types.Message
+	var systemPrompts []types.SystemContentBlock
+
+	for _, msg := range req.Messages {
+		if msg.Role == "system" {
+			systemPrompts = append(systemPrompts, &types.SystemContentBlockMemberText{Value: msg.Content})
+			continue
+		}
+
+		role := types.ConversationRoleUser
+		if msg.Role == "assistant" {
+			role = types.ConversationRoleAssistant
+		}
+
+		converseMessages = append(converseMessages, types.Message{
+			Role:    role,
+			Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: msg.Content}},
+		})
+	}
+
+	// Build tool config
+	var toolConfig *types.ToolConfiguration
+	if len(req.Tools) > 0 {
+		var toolDefs []types.Tool
+		for _, t := range req.Tools {
+			// Convert InputSchema to a Go map for the Smithy document
+			var schemaMap map[string]interface{}
+			schemaBytes, _ := json.Marshal(t.InputSchema)
+			json.Unmarshal(schemaBytes, &schemaMap)
+
+			toolDefs = append(toolDefs, &types.ToolMemberToolSpec{
+				Value: types.ToolSpecification{
+					Name:        stringPtr(t.Name),
+					Description: stringPtr(t.Description),
+					InputSchema: &types.ToolInputSchemaMemberJson{Value: brdocument.NewLazyDocument(schemaMap)},
+				},
+			})
+		}
+		toolConfig = &types.ToolConfiguration{Tools: toolDefs}
+	}
+
+	// Build Converse input
+	input := &bedrockruntime.ConverseInput{
+		ModelId:  &req.Model,
+		Messages: converseMessages,
+		InferenceConfig: &types.InferenceConfiguration{
+			MaxTokens:   int32Ptr(int32(req.MaxTokens)),
+		},
+	}
+
+	if len(systemPrompts) > 0 {
+		input.System = systemPrompts
+	}
+	if toolConfig != nil {
+		input.ToolConfig = toolConfig
+	}
+
+	// Only set temperature if > 0 (Bedrock rejects temp+top_p together)
+	if req.Temperature > 0 {
+		input.InferenceConfig.Temperature = float32Ptr(req.Temperature)
+	}
+
+	// Call Converse API
+	response, err := bp.client.Converse(ctx, input)
+	if err != nil {
+		bp.RecordError(err)
+		bp.logger.Error("Bedrock Converse failed", zap.Error(err), zap.String("model", req.Model))
+		return &CompletionResponse{Provider: "bedrock", Model: req.Model, Error: err.Error(), Latency: time.Since(start)}, err
 	}
 
 	bp.RecordSuccess()
 	latency := time.Since(start)
 
-	// Parse response
-	content, inputTokens, outputTokens := parseBedrockResponse(response.Body, req.Model)
-	cost := calculateBedrockCost(req.Model, inputTokens, outputTokens)
-
+	// Parse Converse response
 	result := &CompletionResponse{
-		ID:           fmt.Sprintf("bedrock-%d", time.Now().UnixNano()),
-		Model:        req.Model,
-		Provider:     "bedrock",
-		Content:      content,
-		FinishReason: "stop",
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		TotalTokens:  inputTokens + outputTokens,
-		Cost:         cost,
-		Latency:      latency,
+		ID:       fmt.Sprintf("bedrock-%d", time.Now().UnixNano()),
+		Model:    req.Model,
+		Provider: "bedrock",
+		Latency:  latency,
 	}
 
-	bp.logger.Debug("Bedrock completion succeeded",
+	// Extract stop reason
+	switch response.StopReason {
+	case types.StopReasonToolUse:
+		result.FinishReason = "tool_use"
+	case types.StopReasonEndTurn:
+		result.FinishReason = "end_turn"
+	case types.StopReasonMaxTokens:
+		result.FinishReason = "max_tokens"
+	default:
+		result.FinishReason = string(response.StopReason)
+	}
+
+	// Parse output content blocks
+	if response.Output != nil {
+		if msgOutput, ok := response.Output.(*types.ConverseOutputMemberMessage); ok {
+			for _, block := range msgOutput.Value.Content {
+				switch b := block.(type) {
+				case *types.ContentBlockMemberText:
+					result.Content += b.Value
+				case *types.ContentBlockMemberToolUse:
+					// Parse tool input from Smithy document
+					var toolInput interface{}
+					if b.Value.Input != nil {
+						b.Value.Input.UnmarshalSmithyDocument(&toolInput)
+					}
+					result.ToolCalls = append(result.ToolCalls, ToolCall{
+						ID:    *b.Value.ToolUseId,
+						Name:  *b.Value.Name,
+						Input: toolInput,
+					})
+				}
+			}
+		}
+	}
+
+	// Parse token usage
+	if response.Usage != nil {
+		if response.Usage.InputTokens != nil {
+			result.InputTokens = int(*response.Usage.InputTokens)
+		}
+		if response.Usage.OutputTokens != nil {
+			result.OutputTokens = int(*response.Usage.OutputTokens)
+		}
+		if response.Usage.TotalTokens != nil {
+			result.TotalTokens = int(*response.Usage.TotalTokens)
+		}
+	}
+
+	result.Cost = calculateBedrockCost(req.Model, result.InputTokens, result.OutputTokens)
+
+	bp.logger.Debug("Bedrock Converse succeeded",
 		zap.String("model", req.Model),
-		zap.Int("input_tokens", inputTokens),
-		zap.Int("output_tokens", outputTokens),
+		zap.String("stop_reason", result.FinishReason),
+		zap.Int("tool_calls", len(result.ToolCalls)),
+		zap.Int("input_tokens", result.InputTokens),
+		zap.Int("output_tokens", result.OutputTokens),
 		zap.Duration("latency", latency),
 	)
 
 	return result, nil
 }
+
+func int32Ptr(v int32) *int32       { return &v }
+func float32Ptr(v float32) *float32 { return &v }
 
 // Stream sends a streaming completion request to Bedrock
 func (bp *BedrockProvider) Stream(ctx context.Context, req *CompletionRequest) (<-chan *StreamChunk, error) {
