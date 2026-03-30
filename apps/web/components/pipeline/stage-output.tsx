@@ -276,7 +276,7 @@ export const StageOutput = memo(function StageOutput({ output, isStreaming }: St
       )}
     >
       <style>{`
-        .stage-output { overflow-wrap: break-word; word-break: break-word; overflow: hidden; }
+        .stage-output { overflow-wrap: break-word; word-break: break-word; overflow: visible; position: relative; }
         .stage-output h1 { font-size: 1.25rem; font-weight: 700; margin: 1rem 0 0.5rem; color: var(--heading-color, #0f172a); clear: both; }
         .stage-output h2 { font-size: 1.125rem; font-weight: 600; margin: 0.75rem 0 0.375rem; color: var(--heading-color, #0f172a); clear: both; }
         .stage-output h3 { font-size: 1rem; font-weight: 600; margin: 0.5rem 0 0.25rem; color: var(--heading-color, #0f172a); clear: both; }
@@ -306,21 +306,20 @@ export const StageOutput = memo(function StageOutput({ output, isStreaming }: St
         }
         .stage-output .table-wrapper {
           overflow-x: auto; margin: 0.75rem 0; border-radius: 0.375rem;
-          border: 1px solid #e2e8f0;
+          border: 1px solid #e2e8f0; max-width: 100%; clear: both;
         }
         .stage-output table {
-          width: 100%; border-collapse: collapse; font-size: 0.75rem;
-          table-layout: auto;
+          border-collapse: collapse; font-size: 0.75rem;
+          table-layout: auto; min-width: 100%;
         }
         .stage-output th {
           background: #f1f5f9; font-weight: 600; text-align: left;
           padding: 0.375rem 0.5rem; border: 1px solid #e2e8f0;
-          font-size: 0.7rem; white-space: nowrap;
+          font-size: 0.7rem;
         }
         .stage-output td {
           padding: 0.375rem 0.5rem; border: 1px solid #e2e8f0;
           vertical-align: top; font-size: 0.7rem;
-          overflow-wrap: break-word;
         }
         .stage-output tbody tr:nth-child(even) { background: #f8fafc; }
         .dark .stage-output .table-wrapper { border-color: #334155; }

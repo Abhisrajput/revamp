@@ -207,7 +207,7 @@ export const RefinableMarkdown = memo(function RefinableMarkdown({
 
               {/* Section content */}
               <div
-                className="stage-output text-sm text-slate-700 dark:text-slate-300"
+                className="stage-output text-sm text-slate-700 dark:text-slate-300 overflow-x-auto"
                 dangerouslySetInnerHTML={{ __html: renderSimple(section.content) }}
               />
             </div>
@@ -277,7 +277,7 @@ function renderSimple(text: string): string {
       for (let c = 0; c < tableRows[r].length; c++) {
         const align = tableAlignments[c] ? ` style="text-align:${tableAlignments[c]}"` : '';
         const cls = r === 0
-          ? 'bg-slate-100 dark:bg-slate-800 font-semibold text-left px-2 py-1.5 border border-slate-200 dark:border-slate-700 whitespace-nowrap text-[10px]'
+          ? 'bg-slate-100 dark:bg-slate-800 font-semibold text-left px-2 py-1.5 border border-slate-200 dark:border-slate-700 text-[10px]'
           : 'px-2 py-1.5 border border-slate-200 dark:border-slate-700 break-words align-top';
         html += `<${tag} class="${cls}"${align}>${formatInline(tableRows[r][c].trim())}</${tag}>`;
       }
