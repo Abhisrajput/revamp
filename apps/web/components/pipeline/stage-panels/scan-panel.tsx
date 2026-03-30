@@ -993,14 +993,7 @@ export default function ScanPanel({
           {outputTab === 'output' && (
             <>
               {stage.output ? (
-                <RefinableMarkdown
-                  text={stage.output}
-                  onSectionRefined={(updated) => {
-                    usePipelineStore.getState().setStageOutput(0, updated);
-                  }}
-                  onRefineRequest={onRefineRequest}
-                  disabled={!stage.output}
-                />
+                <StageOutput output={stage.output} isStreaming={false} />
               ) : wasExecuted ? (
                 <ScanOutputLoader stageIndex={stageIndex} />
               ) : null}
