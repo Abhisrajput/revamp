@@ -387,7 +387,7 @@ export default function EvolvePanel({
 
           {/* ── Tab: IDE (File Tree + Code Editor + Chat) ─────────── */}
           {activeTab === 'ide' && (
-            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden" style={{ height: 'calc(100vh - 280px)', minHeight: '400px' }}>
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden" style={{ height: 'calc(100vh - 320px)', minHeight: '350px', maxHeight: 'calc(100vh - 320px)' }}>
               <div className="grid h-full overflow-hidden" style={{ gridTemplateColumns: '180px minmax(0, 1fr) 300px' }}>
                 {/* File Tree */}
                 <div className="border-r border-slate-200 dark:border-slate-700 overflow-y-auto bg-white dark:bg-slate-900">
@@ -397,7 +397,7 @@ export default function EvolvePanel({
                       selectedPath={selectedFile || undefined}
                       onFileClick={handleFileClick}
                       showSearch
-                      maxHeight="calc(100vh - 280px)"
+                      maxHeight="calc(100vh - 320px)"
                       className="border-0 rounded-none"
                     />
                   ) : (
@@ -419,7 +419,7 @@ export default function EvolvePanel({
                       value={currentFile.content}
                       onChange={handleCodeChange}
                       language={inferLanguage(currentFile.name || currentFile.path)}
-                      height="calc(100vh - 310px)"
+                      height="calc(100vh - 350px)"
                     />
                   ) : (
                     <div className="flex items-center justify-center h-full text-sm text-slate-400">

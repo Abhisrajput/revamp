@@ -224,23 +224,6 @@ export default function PipelinePage() {
         }
       }
 
-      // Restore activeStageIndex only if persisted value is stale (points to unreachable stage)
-      const finalStore = usePipelineStore.getState();
-      const persisted = finalStore.activeStageIndex;
-      const canReach = persisted === 0 || finalStore.stages.slice(0, persisted).every(
-        (st) => st.status === 'completed' || st.status === 'approved',
-      );
-      if (!canReach) {
-        // Persisted index is unreachable — find the last completed stage
-        let last = 0;
-        for (let i = 0; i < finalStore.stages.length; i++) {
-          if (finalStore.stages[i].status === 'completed' || finalStore.stages[i].status === 'approved') {
-            last = i;
-          }
-        }
-        usePipelineStore.getState().setActiveStage(last);
-      }
-
       return true;
     } catch {
       return false;
@@ -272,7 +255,10 @@ export default function PipelinePage() {
 
     // If a specific run ID is provided via URL (?run=xxx), use it directly
     if (runIdFromUrl) {
-      initPipeline(projectId, runIdFromUrl);
+      // Only reset if it's a different run — preserve activeStageIndex on refresh
+      if (currentPipelineRunId !== runIdFromUrl) {
+        initPipeline(projectId, runIdFromUrl);
+      }
       syncStagesFromBackend(runIdFromUrl).then((ok) => {
         if (!ok) startPipeline.mutate();
       });
