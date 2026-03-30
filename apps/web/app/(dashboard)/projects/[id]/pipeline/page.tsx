@@ -224,22 +224,21 @@ export default function PipelinePage() {
         }
       }
 
-      // Restore activeStageIndex to the furthest completed/approved stage
+      // Restore activeStageIndex only if persisted value is stale (points to unreachable stage)
       const finalStore = usePipelineStore.getState();
-      let furthestIndex = 0;
-      for (let i = 0; i < finalStore.stages.length; i++) {
-        const st = finalStore.stages[i].status;
-        if (st === 'completed' || st === 'approved') {
-          furthestIndex = i;
+      const persisted = finalStore.activeStageIndex;
+      const canReach = persisted === 0 || finalStore.stages.slice(0, persisted).every(
+        (st) => st.status === 'completed' || st.status === 'approved',
+      );
+      if (!canReach) {
+        // Persisted index is unreachable — find the last completed stage
+        let last = 0;
+        for (let i = 0; i < finalStore.stages.length; i++) {
+          if (finalStore.stages[i].status === 'completed' || finalStore.stages[i].status === 'approved') {
+            last = i;
+          }
         }
-      }
-      // Show the furthest stage (or the next pending one)
-      const nextPending = furthestIndex + 1 < finalStore.stages.length ? furthestIndex + 1 : furthestIndex;
-      const targetIndex = finalStore.stages[nextPending]?.status === 'idle' || finalStore.stages[nextPending]?.status === 'pending'
-        ? furthestIndex
-        : nextPending;
-      if (targetIndex !== finalStore.activeStageIndex) {
-        usePipelineStore.getState().setActiveStage(targetIndex);
+        usePipelineStore.getState().setActiveStage(last);
       }
 
       return true;
