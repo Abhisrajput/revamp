@@ -26,7 +26,8 @@ import type { StagePanelProps } from './types';
 
 // --- Language detection ---
 
-function inferLanguage(filename: string): string {
+function inferLanguage(filename: string | undefined): string {
+  if (!filename) return 'plaintext';
   const ext = filename.split('.').pop()?.toLowerCase() || '';
   const langMap: Record<string, string> = {
     ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
@@ -41,7 +42,7 @@ function inferLanguage(filename: string): string {
 
 // --- Build FileNode tree from modernized files ---
 
-function buildFileTree(files: { path: string; name: string }[]): FileNode[] {
+function buildFileTree(files: { path: string; name?: string }[]): FileNode[] {
   const root: FileNode[] = [];
 
   for (const file of files) {
@@ -216,7 +217,7 @@ export default function ForgePanel({
               </span>
               <span className="flex items-center gap-1.5 text-slate-500">
                 <FolderTreeIcon className="w-3.5 h-3.5" />
-                {(modernizedFiles.reduce((sum, f) => sum + f.size, 0) / 1024).toFixed(1)} KB total
+                {(modernizedFiles.reduce((sum, f) => sum + (f.size || 0), 0) / 1024).toFixed(1)} KB total
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -308,7 +309,7 @@ export default function ForgePanel({
                     <CodeEditor
                       value={currentFile.content}
                       onChange={handleCodeChange}
-                      language={inferLanguage(currentFile.name)}
+                      language={inferLanguage(currentFile.name || currentFile.path)}
                       height="100%"
                     />
                   ) : (
