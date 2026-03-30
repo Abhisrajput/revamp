@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Play, TrendingUp, MessageSquare, Send, FileCode,
-  BarChart3, Rocket, Loader2, Trash2, User, Bot,
+  BarChart3, Rocket, Loader2, User, Bot,
   Calendar, ClipboardList, Target,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -129,15 +129,14 @@ function extractDecommission(text: string): DecommissionPhase[] {
 
 // ─── Component ────────────────────────────────────────────────────
 
-type TabKey = 'kpis' | 'code' | 'backlog' | 'decommission' | 'runbook' | 'chat' | 'output';
+type TabKey = 'ide' | 'kpis' | 'backlog' | 'decommission' | 'runbook' | 'output';
 
 const TABS: Array<{ key: TabKey; label: string; icon: typeof Target }> = [
+  { key: 'ide', label: 'IDE', icon: FileCode },
   { key: 'kpis', label: 'KPI Dashboard', icon: Target },
-  { key: 'code', label: 'Code', icon: FileCode },
   { key: 'backlog', label: 'Backlog', icon: ClipboardList },
   { key: 'decommission', label: 'Decommission', icon: Calendar },
   { key: 'runbook', label: 'Runbook', icon: FileCode },
-  { key: 'chat', label: 'Chat', icon: MessageSquare },
   { key: 'output', label: 'Full Output', icon: BarChart3 },
 ];
 
@@ -190,7 +189,7 @@ export default function EvolvePanel({
   const stages = usePipelineStore((s) => s.stages);
   const modernizedFiles = usePipelineStore((s) => s.modernizedFiles);
   const updateModernizedFile = usePipelineStore((s) => s.updateModernizedFile);
-  const [activeTab, setActiveTab] = useState<TabKey>('kpis');
+  const [activeTab, setActiveTab] = useState<TabKey>('ide');
   const [chatInput, setChatInput] = useState('');
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -217,7 +216,7 @@ export default function EvolvePanel({
   const handleFileClick = useCallback((node: FileNode) => {
     if (node.type === 'file') {
       setSelectedFile(node.path || null);
-      setActiveTab('code');
+      setActiveTab('ide');
     }
   }, []);
 
@@ -238,11 +237,6 @@ export default function EvolvePanel({
       setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
     }
   }, [chatHistory.length, chatHistory[chatHistory.length - 1]?.content]);
-
-  const formatTimestamp = (ts: string) => {
-    try { return new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); }
-    catch { return ''; }
-  };
 
   // Stats
   const p0Items = backlog.filter((b) => b.priority === 'P0').length;
@@ -345,7 +339,7 @@ export default function EvolvePanel({
               >
                 <Icon className="w-3.5 h-3.5" />
                 {label}
-                {key === 'chat' && chatHistory.length > 0 && (
+                {key === 'ide' && chatHistory.length > 0 && (
                   <span className="text-[9px] ml-0.5 opacity-70">({chatHistory.length})</span>
                 )}
                 {key === 'backlog' && backlog.length > 0 && (
@@ -391,45 +385,167 @@ export default function EvolvePanel({
             </div>
           )}
 
-          {/* ── Tab: Backlog ────────────────────────────────────────── */}
-          {/* ── Tab: Code Editor ──────────────────────────────────── */}
-          {activeTab === 'code' && (
-            <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-0 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden" style={{ height: '460px' }}>
-              <div className="border-r border-slate-200 dark:border-slate-700 overflow-hidden">
-                {modernizedFiles.length > 0 ? (
-                  <FileTree
-                    nodes={fileTree}
-                    selectedPath={selectedFile || undefined}
-                    onFileClick={handleFileClick}
-                    showSearch
-                    maxHeight="460px"
-                    className="border-0 rounded-none"
-                  />
-                ) : (
-                  <div className="flex items-center justify-center h-full text-xs text-slate-400 p-4 text-center">
-                    Run FORGE first to generate code files
-                  </div>
-                )}
-              </div>
-              <div className="flex flex-col h-full min-h-0">
-                <div className="flex-1 min-h-0">
-                  {currentFile ? (
-                    <CodeEditor
-                      value={currentFile.content}
-                      onChange={handleCodeChange}
-                      language={inferLanguage(currentFile.name || currentFile.path)}
-                      height="460px"
+          {/* ── Tab: IDE (File Tree + Code Editor + Chat) ─────────── */}
+          {activeTab === 'ide' && (
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden" style={{ height: '520px' }}>
+              <div className="grid h-full" style={{ gridTemplateColumns: '180px 1fr 320px' }}>
+                {/* File Tree */}
+                <div className="border-r border-slate-200 dark:border-slate-700 overflow-hidden bg-white dark:bg-slate-900">
+                  {modernizedFiles.length > 0 ? (
+                    <FileTree
+                      nodes={fileTree}
+                      selectedPath={selectedFile || undefined}
+                      onFileClick={handleFileClick}
+                      showSearch
+                      maxHeight="520px"
+                      className="border-0 rounded-none"
                     />
                   ) : (
-                    <div className="flex items-center justify-center h-full text-sm text-slate-400">
-                      {modernizedFiles.length > 0 ? 'Select a file to edit' : 'No files generated yet'}
+                    <div className="flex items-center justify-center h-full text-xs text-slate-400 p-3 text-center">
+                      Run FORGE first to generate code
                     </div>
                   )}
+                </div>
+
+                {/* Code Editor */}
+                <div className="flex flex-col h-full min-h-0 border-r border-slate-200 dark:border-slate-700">
+                  {/* File path breadcrumb */}
+                  {currentFile && (
+                    <div className="flex-shrink-0 px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 text-[10px] font-mono text-slate-500 truncate">
+                      {currentFile.path}
+                    </div>
+                  )}
+                  <div className="flex-1 min-h-0">
+                    {currentFile ? (
+                      <CodeEditor
+                        value={currentFile.content}
+                        onChange={handleCodeChange}
+                        language={inferLanguage(currentFile.name || currentFile.path)}
+                        height="100%"
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center h-full text-sm text-slate-400">
+                        {modernizedFiles.length > 0 ? 'Select a file to edit' : 'No files yet'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Chat Panel */}
+                <div className="flex flex-col h-full bg-slate-50 dark:bg-slate-900">
+                  {/* Chat Header */}
+                  <div className="flex-shrink-0 flex items-center justify-between px-3 py-2 border-b border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+                    <div className="flex items-center gap-1.5">
+                      <Bot className="w-3.5 h-3.5 text-primary-600" />
+                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">AI Assistant</span>
+                    </div>
+                    {chatHistory.length > 0 && (
+                      <button
+                        onClick={clearHistory}
+                        disabled={isChatStreaming}
+                        className="text-[10px] text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Messages */}
+                  <div className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
+                    {chatHistory.length === 0 ? (
+                      <div className="text-center py-8">
+                        <MessageSquare className="w-6 h-6 text-slate-300 dark:text-slate-600 mx-auto mb-2" />
+                        <p className="text-[11px] text-slate-500 mb-3">
+                          Ask about the code or request changes
+                        </p>
+                        <div className="flex flex-col gap-1.5">
+                          {[
+                            'Refactor this function',
+                            'Add error handling',
+                            'Explain this logic',
+                            'Add unit tests',
+                          ].map((suggestion) => (
+                            <button
+                              key={suggestion}
+                              onClick={() => setChatInput(suggestion)}
+                              className="text-[10px] px-2.5 py-1.5 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-primary-300 hover:text-primary-600 transition-colors text-left"
+                            >
+                              {suggestion}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      chatHistory.map((msg) => (
+                        <div key={msg.id} className={cn('flex gap-2', msg.role === 'user' ? 'justify-end' : 'justify-start')}>
+                          {msg.role === 'assistant' && (
+                            <div className="w-5 h-5 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center shrink-0 mt-0.5">
+                              <Bot className="w-3 h-3 text-primary-600 dark:text-primary-400" />
+                            </div>
+                          )}
+                          <div className={cn(
+                            'rounded-lg px-2.5 py-1.5 text-[11px] max-w-[85%] whitespace-pre-wrap',
+                            msg.role === 'user'
+                              ? 'bg-primary-600 text-white rounded-br-sm'
+                              : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-bl-sm',
+                          )}>
+                            {msg.content || (
+                              isChatStreaming && msg.role === 'assistant' ? (
+                                <span className="flex items-center gap-1.5 text-slate-400">
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                  Thinking...
+                                </span>
+                              ) : null
+                            )}
+                          </div>
+                          {msg.role === 'user' && (
+                            <div className="w-5 h-5 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center shrink-0 mt-0.5">
+                              <User className="w-3 h-3 text-slate-500" />
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    )}
+                    {isChatStreaming && chatHistory.length > 0 && chatHistory[chatHistory.length - 1]?.content && (
+                      <div className="flex items-center gap-1.5 pl-7">
+                        <span className="w-1 h-1 rounded-full bg-primary-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-1 h-1 rounded-full bg-primary-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-1 h-1 rounded-full bg-primary-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </div>
+                    )}
+                    <div ref={chatEndRef} />
+                  </div>
+
+                  {/* Input */}
+                  <div className="flex-shrink-0 border-t border-slate-200 dark:border-slate-700 p-2 bg-white dark:bg-slate-800">
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendChat(); }
+                        }}
+                        placeholder="Ask or request changes..."
+                        disabled={isChatStreaming}
+                        className="flex-1 text-[11px] rounded border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-slate-900 dark:text-slate-50 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-primary-500 disabled:opacity-50"
+                      />
+                      <Button
+                        size="sm"
+                        className="h-7 w-7 p-0"
+                        onClick={handleSendChat}
+                        disabled={!chatInput.trim() || isChatStreaming}
+                      >
+                        {isChatStreaming ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
           )}
 
+          {/* ── Tab: Backlog ────────────────────────────────────────── */}
           {activeTab === 'backlog' && (
             <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto" style={{ maxHeight: '460px' }}>
               {backlog.length > 0 ? (
@@ -534,123 +650,6 @@ export default function EvolvePanel({
                 </div>
               )}
             </div>
-          )}
-
-          {/* ── Tab: Chat ────────────────────────────────────────────── */}
-          {activeTab === 'chat' && (
-            <Card className="bg-slate-50 dark:bg-slate-900">
-              <CardContent className="p-0">
-                {chatHistory.length > 0 && (
-                  <div className="flex items-center justify-between px-4 py-2 border-b border-slate-200 dark:border-slate-700">
-                    <span className="text-xs text-slate-500">
-                      {chatHistory.filter((m) => m.role === 'user').length} messages
-                    </span>
-                    <button
-                      onClick={clearHistory}
-                      disabled={isChatStreaming}
-                      className="flex items-center gap-1 text-xs text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                      Clear
-                    </button>
-                  </div>
-                )}
-
-                <div className="h-[380px] overflow-y-auto p-4 space-y-4">
-                  {chatHistory.length === 0 ? (
-                    <div className="text-center py-12">
-                      <MessageSquare className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto mb-2" />
-                      <p className="text-sm text-slate-500">
-                        Refine the operations plan through conversation
-                      </p>
-                      <div className="flex flex-wrap gap-2 justify-center mt-3">
-                        {[
-                          'Tighten the decommission timeline',
-                          'Add P0 items for security hardening',
-                          'What monitoring alerts should fire first?',
-                          'Reduce cloud cost estimates by 20%',
-                        ].map((suggestion) => (
-                          <button
-                            key={suggestion}
-                            onClick={() => setChatInput(suggestion)}
-                            className="text-xs px-2.5 py-1.5 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-primary-300 hover:text-primary-600 transition-colors"
-                          >
-                            {suggestion}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                    chatHistory.map((msg) => (
-                      <div key={msg.id} className={cn('flex gap-2.5', msg.role === 'user' ? 'justify-end' : 'justify-start')}>
-                        {msg.role === 'assistant' && (
-                          <div className="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center shrink-0 mt-0.5">
-                            <Bot className="w-3.5 h-3.5 text-primary-600 dark:text-primary-400" />
-                          </div>
-                        )}
-                        <div className="flex flex-col max-w-[80%]">
-                          <div className={cn(
-                            'rounded-lg px-3 py-2 text-sm whitespace-pre-wrap',
-                            msg.role === 'user'
-                              ? 'bg-primary-600 text-white rounded-br-sm'
-                              : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-bl-sm',
-                          )}>
-                            {msg.content || (
-                              isChatStreaming && msg.role === 'assistant' ? (
-                                <span className="flex items-center gap-1.5 text-slate-400">
-                                  <Loader2 className="w-3 h-3 animate-spin" />
-                                  Thinking...
-                                </span>
-                              ) : null
-                            )}
-                          </div>
-                          <span className={cn('text-[10px] text-slate-400 mt-0.5 px-1', msg.role === 'user' ? 'text-right' : 'text-left')}>
-                            {formatTimestamp(msg.timestamp)}
-                          </span>
-                        </div>
-                        {msg.role === 'user' && (
-                          <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center shrink-0 mt-0.5">
-                            <User className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
-                          </div>
-                        )}
-                      </div>
-                    ))
-                  )}
-
-                  {isChatStreaming && chatHistory.length > 0 && chatHistory[chatHistory.length - 1]?.content && (
-                    <div className="flex items-center gap-2 pl-8">
-                      <div className="flex gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                        <span className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                        <span className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-                      </div>
-                      <span className="text-[10px] text-slate-400">Streaming...</span>
-                    </div>
-                  )}
-                  <div ref={chatEndRef} />
-                </div>
-
-                <div className="border-t border-slate-200 dark:border-slate-700 p-3">
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendChat(); }
-                      }}
-                      placeholder="Ask about the operations plan..."
-                      disabled={isChatStreaming}
-                      className="flex-1 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-950 px-3 py-2 text-slate-900 dark:text-slate-50 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50"
-                    />
-                    <Button size="sm" onClick={handleSendChat} disabled={!chatInput.trim() || isChatStreaming}>
-                      {isChatStreaming ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                    </Button>
-                  </div>
-                  <p className="text-[10px] text-slate-400 mt-1 px-1">Press Enter to send</p>
-                </div>
-              </CardContent>
-            </Card>
           )}
 
           {/* ── Tab: Full Output ───────────────────────────────────── */}
