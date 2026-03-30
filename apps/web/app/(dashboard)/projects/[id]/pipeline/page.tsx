@@ -250,12 +250,24 @@ export default function PipelinePage() {
     },
   });
 
+  // Wait for Zustand hydration before init — on SSR first render,
+  // currentProjectId/currentPipelineRunId are null (defaults), not the
+  // persisted values. Without this guard, every refresh calls initPipeline
+  // which resets activeStageIndex to 0.
+  const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
-    if (!projectId) return;
+    // Zustand persist hydrates synchronously after first render
+    const unsub = usePipelineStore.persist.onFinishHydration(() => setHydrated(true));
+    // If already hydrated (hot reload), set immediately
+    if (usePipelineStore.persist.hasHydrated()) setHydrated(true);
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if (!projectId || !hydrated) return;
 
     // If a specific run ID is provided via URL (?run=xxx), use it directly
     if (runIdFromUrl) {
-      // Only reset if it's a different run — preserve activeStageIndex on refresh
       if (currentPipelineRunId !== runIdFromUrl) {
         initPipeline(projectId, runIdFromUrl);
       }
@@ -279,7 +291,7 @@ export default function PipelinePage() {
       if (!ok) startPipeline.mutate();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, runIdFromUrl]);
+  }, [projectId, runIdFromUrl, hydrated]);
 
   // ─── Poll for stuck stages (SSE drop recovery) ─────────────
   // If a stage is stuck in 'generating' for 30+ seconds, poll DB to check if it
