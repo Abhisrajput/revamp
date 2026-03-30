@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef } from 'react';
 import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -85,6 +85,8 @@ export default function ForgePanel({
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [activePane, setActivePane] = useState<'code' | 'terminal' | 'agent' | 'traceability'>('code');
   const currentPipelineRunId = usePipelineStore((s) => s.currentPipelineRunId);
+  const editorContainerRef = useRef<HTMLDivElement>(null);
+  const [editorHeight, setEditorHeight] = useState(400);
 
   const isRunning = stage.status === 'generating' || stage.status === 'validating';
   const hasOutput = !!(stage.output || streamingText);
@@ -134,6 +136,20 @@ export default function ForgePanel({
       } catch { /* non-fatal */ }
     })();
   }, [currentPipelineRunId, stage.status]);
+
+  // Measure editor container for Monaco pixel height
+  useEffect(() => {
+    const el = editorContainerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const h = Math.floor(entry.contentRect.height);
+        if (h > 0) setEditorHeight(h);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [activePane]);
 
   // Traceability data
   const { data: traceabilityData } = useQuery<{ entries: any[] }>({
@@ -296,17 +312,15 @@ export default function ForgePanel({
               </div>
 
               {/* Pane Content */}
-              <div className="flex-1 overflow-hidden min-h-0">
+              <div ref={editorContainerRef} className="flex-1 overflow-hidden min-h-0">
                 {activePane === 'code' && (
                   currentFile ? (
-                    <div className="h-full w-full">
-                      <CodeEditor
-                        value={currentFile.content}
-                        language={inferLanguage(currentFile.name || currentFile.path)}
-                        height="462px"
-                        readOnly
-                      />
-                    </div>
+                    <CodeEditor
+                      value={currentFile.content}
+                      language={inferLanguage(currentFile.name || currentFile.path)}
+                      height={`${editorHeight}px`}
+                      readOnly
+                    />
                   ) : (
                     <div className="flex items-center justify-center h-full text-sm text-slate-400">
                       Select a file to view

@@ -192,6 +192,8 @@ export default function EvolvePanel({
   const [activeTab, setActiveTab] = useState<TabKey>('ide');
   const [chatInput, setChatInput] = useState('');
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const editorContainerRef = useRef<HTMLDivElement>(null);
+  const [editorHeight, setEditorHeight] = useState(500);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const isRunning = stage.status === 'generating' || stage.status === 'validating';
@@ -225,6 +227,20 @@ export default function EvolvePanel({
       updateModernizedFile(selectedFile, value);
     }
   }, [selectedFile, updateModernizedFile]);
+
+  // Measure editor container to give Monaco an explicit pixel height
+  useEffect(() => {
+    const el = editorContainerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const h = Math.floor(entry.contentRect.height);
+        if (h > 0) setEditorHeight(h);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [activeTab]);
 
   const handleSendChat = useCallback(() => {
     if (!chatInput.trim()) return;
@@ -408,24 +424,26 @@ export default function EvolvePanel({
                 </div>
 
                 {/* Code Editor */}
-                <div className="border-r border-slate-200 dark:border-slate-700 overflow-hidden">
+                <div className="border-r border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col h-full">
                   {currentFile && (
-                    <div className="px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 text-[10px] font-mono text-slate-500 truncate">
+                    <div className="flex-shrink-0 px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 text-[10px] font-mono text-slate-500 truncate">
                       {currentFile.path}
                     </div>
                   )}
-                  {currentFile ? (
-                    <CodeEditor
-                      value={currentFile.content}
-                      onChange={handleCodeChange}
-                      language={inferLanguage(currentFile.name || currentFile.path)}
-                      height="calc(100vh - 350px)"
-                    />
-                  ) : (
-                    <div className="flex items-center justify-center h-full text-sm text-slate-400">
-                      {modernizedFiles.length > 0 ? 'Select a file to edit' : 'No files yet'}
-                    </div>
-                  )}
+                  <div ref={editorContainerRef} className="flex-1 min-h-0">
+                    {currentFile ? (
+                      <CodeEditor
+                        value={currentFile.content}
+                        onChange={handleCodeChange}
+                        language={inferLanguage(currentFile.name || currentFile.path)}
+                        height={`${editorHeight}px`}
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center h-full text-sm text-slate-400">
+                        {modernizedFiles.length > 0 ? 'Select a file to edit' : 'No files yet'}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Chat Panel — fixed height, internal scroll only */}
