@@ -310,7 +310,7 @@ export const StageOutput = memo(function StageOutput({ output, isStreaming }: St
         }
         .stage-output table {
           width: 100%; border-collapse: collapse; font-size: 0.75rem;
-          table-layout: fixed; word-wrap: break-word;
+          table-layout: auto;
         }
         .stage-output th {
           background: #f1f5f9; font-weight: 600; text-align: left;
@@ -319,8 +319,8 @@ export const StageOutput = memo(function StageOutput({ output, isStreaming }: St
         }
         .stage-output td {
           padding: 0.375rem 0.5rem; border: 1px solid #e2e8f0;
-          vertical-align: top; word-break: break-word; font-size: 0.7rem;
-          max-width: 200px; overflow-wrap: break-word;
+          vertical-align: top; font-size: 0.7rem;
+          overflow-wrap: break-word;
         }
         .stage-output tbody tr:nth-child(even) { background: #f8fafc; }
         .dark .stage-output .table-wrapper { border-color: #334155; }

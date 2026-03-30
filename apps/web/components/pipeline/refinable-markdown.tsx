@@ -268,7 +268,7 @@ function renderSimple(text: string): string {
 
   function flushTable() {
     if (tableRows.length === 0) return;
-    let html = '<div class="overflow-x-auto my-3 border border-slate-200 dark:border-slate-700 rounded-md"><table class="w-full border-collapse text-[11px]" style="table-layout:fixed;word-wrap:break-word">';
+    let html = '<div class="overflow-x-auto my-3 border border-slate-200 dark:border-slate-700 rounded-md"><table class="w-full border-collapse text-[11px]" style="table-layout:auto">';
     for (let r = 0; r < tableRows.length; r++) {
       const tag = r === 0 ? 'th' : 'td';
       if (r === 0) html += '<thead>';
