@@ -224,6 +224,24 @@ export default function PipelinePage() {
         }
       }
 
+      // Restore activeStageIndex to the furthest completed/approved stage
+      const finalStore = usePipelineStore.getState();
+      let furthestIndex = 0;
+      for (let i = 0; i < finalStore.stages.length; i++) {
+        const st = finalStore.stages[i].status;
+        if (st === 'completed' || st === 'approved') {
+          furthestIndex = i;
+        }
+      }
+      // Show the furthest stage (or the next pending one)
+      const nextPending = furthestIndex + 1 < finalStore.stages.length ? furthestIndex + 1 : furthestIndex;
+      const targetIndex = finalStore.stages[nextPending]?.status === 'idle' || finalStore.stages[nextPending]?.status === 'pending'
+        ? furthestIndex
+        : nextPending;
+      if (targetIndex !== finalStore.activeStageIndex) {
+        usePipelineStore.getState().setActiveStage(targetIndex);
+      }
+
       return true;
     } catch {
       return false;

@@ -387,17 +387,17 @@ export default function EvolvePanel({
 
           {/* ── Tab: IDE (File Tree + Code Editor + Chat) ─────────── */}
           {activeTab === 'ide' && (
-            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden" style={{ height: '520px' }}>
-              <div className="grid h-full" style={{ gridTemplateColumns: '180px 1fr 320px' }}>
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden" style={{ height: 'calc(100vh - 280px)', minHeight: '400px' }}>
+              <div className="grid h-full overflow-hidden" style={{ gridTemplateColumns: '180px minmax(0, 1fr) 300px' }}>
                 {/* File Tree */}
-                <div className="border-r border-slate-200 dark:border-slate-700 overflow-hidden bg-white dark:bg-slate-900">
+                <div className="border-r border-slate-200 dark:border-slate-700 overflow-y-auto bg-white dark:bg-slate-900">
                   {modernizedFiles.length > 0 ? (
                     <FileTree
                       nodes={fileTree}
                       selectedPath={selectedFile || undefined}
                       onFileClick={handleFileClick}
                       showSearch
-                      maxHeight="520px"
+                      maxHeight="calc(100vh - 280px)"
                       className="border-0 rounded-none"
                     />
                   ) : (
@@ -408,31 +408,28 @@ export default function EvolvePanel({
                 </div>
 
                 {/* Code Editor */}
-                <div className="flex flex-col h-full min-h-0 border-r border-slate-200 dark:border-slate-700">
-                  {/* File path breadcrumb */}
+                <div className="border-r border-slate-200 dark:border-slate-700 overflow-hidden">
                   {currentFile && (
-                    <div className="flex-shrink-0 px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 text-[10px] font-mono text-slate-500 truncate">
+                    <div className="px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 text-[10px] font-mono text-slate-500 truncate">
                       {currentFile.path}
                     </div>
                   )}
-                  <div className="flex-1 min-h-0">
-                    {currentFile ? (
-                      <CodeEditor
-                        value={currentFile.content}
-                        onChange={handleCodeChange}
-                        language={inferLanguage(currentFile.name || currentFile.path)}
-                        height="100%"
-                      />
-                    ) : (
-                      <div className="flex items-center justify-center h-full text-sm text-slate-400">
-                        {modernizedFiles.length > 0 ? 'Select a file to edit' : 'No files yet'}
-                      </div>
-                    )}
-                  </div>
+                  {currentFile ? (
+                    <CodeEditor
+                      value={currentFile.content}
+                      onChange={handleCodeChange}
+                      language={inferLanguage(currentFile.name || currentFile.path)}
+                      height="calc(100vh - 310px)"
+                    />
+                  ) : (
+                    <div className="flex items-center justify-center h-full text-sm text-slate-400">
+                      {modernizedFiles.length > 0 ? 'Select a file to edit' : 'No files yet'}
+                    </div>
+                  )}
                 </div>
 
-                {/* Chat Panel */}
-                <div className="flex flex-col h-full bg-slate-50 dark:bg-slate-900">
+                {/* Chat Panel — fixed height, internal scroll only */}
+                <div className="flex flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-900">
                   {/* Chat Header */}
                   <div className="flex-shrink-0 flex items-center justify-between px-3 py-2 border-b border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
                     <div className="flex items-center gap-1.5">
