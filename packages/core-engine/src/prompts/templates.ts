@@ -126,49 +126,136 @@ Organize by business domain and extraction priority.`,
   [PipelineStageName.BLUEPRINT]: {
     stageId: PipelineStageName.BLUEPRINT,
     description:
-      'Map business capabilities to system components and define service boundaries',
+      'Map business capabilities to bounded contexts, define service boundaries, and plan migration waves',
     variables: [
-      'capabilities',
-      'dataModel',
-      'communicationPatterns',
-      'organizationStructure',
+      'decodeOutput',
+      'scanOutput',
+      'targetStack',
+      'targetCloud',
     ],
-    template: `Design capability map and service boundaries:
+    template: `You are performing Stage 3 (BLUEPRINT) of an 8-stage modernization pipeline. Your job is to map the business capabilities extracted by DECODE into bounded contexts and service boundaries for the modernized architecture.
 
-**Capabilities to Extract:**
-{{capabilities}}
+**DECODE Output (business rules, workflows, entities):**
+{{decodeOutput}}
 
-**Current Data Model:**
-{{dataModel}}
+**SCAN Output (codebase structure):**
+{{scanOutput}}
 
-**Communication Patterns:**
-{{communicationPatterns}}
+**Target Stack:** {{targetStack}}
+**Target Cloud:** {{targetCloud}}
 
-**Organization Structure (Conway's Law):**
-{{organizationStructure}}
+---
 
-For each proposed service, define:
-1. Service name and purpose
-2. Owned data entities and schemas
-3. API operations (queries and commands)
-4. Event types it publishes and subscribes to
-5. External dependencies
-6. Eventual consistency boundaries
-7. Transactional guarantees needed
-8. Suggested technology stack
-9. Scaling considerations
-10. Team ownership
+Produce a complete BLUEPRINT document with these EXACT sections:
 
-Justify each boundary decision. Address:
-- Cohesion within services
-- Coupling between services
-- Data consistency patterns
-- Communication overhead
-- Team autonomy`,
+## Capability Inventory
+
+List every business capability discovered in DECODE:
+
+| ID | Capability | Domain | Current Module(s) | Business Rules | Data Entities | Complexity | Priority |
+|----|-----------|--------|-------------------|----------------|---------------|------------|----------|
+| CAP-1 | User Authentication | Identity | auth.module, login.cbl | BR-1, BR-2, BR-3 | User, Session, AuditLog | Medium | High |
+| CAP-2 | Order Processing | Commerce | order.module, calc.cbl | BR-5, BR-6, BR-7 | Order, OrderLine, Payment | High | High |
+| CAP-3 | Report Generation | Reporting | rpt-*.cbl | BR-12 | ReportDef, ReportOutput | Low | Medium |
+
+Requirements:
+- EVERY business rule from DECODE must map to at least one capability
+- Reference BR-{id} from DECODE for traceability to SPEC_LOCK
+- Complexity: Low / Medium / High based on rule count and integration points
+- Priority: High / Medium / Low for migration ordering
+
+## Bounded Contexts
+
+Group capabilities into bounded contexts (DDD). For each:
+
+### Context: Identity & Access
+**Capabilities:** CAP-1, CAP-4
+**Owned Entities:** User, Role, Permission, Session, AuditLog
+**API Surface:** REST — login, logout, token refresh, user CRUD, role assignment
+**Events Published:** UserCreated, UserLocked, SessionExpired
+**Events Consumed:** None (context root)
+**Data Store:** PostgreSQL (users schema)
+**Team:** Identity Team (2-3 engineers)
+
+Produce 3-8 bounded contexts depending on codebase size.
+
+## Service Boundary Decisions
+
+For each context boundary, justify with a decision record:
+
+| Decision | Boundary | Rationale | Tradeoff |
+|----------|----------|-----------|----------|
+| Split auth from user profile | Identity ↔ Profile | Auth has strict latency SLA; profiles are CRUD-heavy | Extra network hop for profile-enriched auth tokens |
+| Keep order + payment together | Commerce (single service) | Transactional consistency required for order→payment | Larger service, harder to scale independently |
+
+## Capability Map (Mermaid)
+
+\`\`\`mermaid
+graph TD
+    subgraph Identity["Identity & Access"]
+        CAP1[User Auth]
+        CAP4[Role Management]
+    end
+    subgraph Commerce["Commerce"]
+        CAP2[Order Processing]
+        CAP5[Payment]
+    end
+    subgraph Reporting["Reporting"]
+        CAP3[Report Generation]
+    end
+    Commerce --> Identity
+    Reporting --> Commerce
+\`\`\`
+
+## Dependency Graph (Mermaid)
+
+Show module-level dependencies from the legacy codebase:
+
+\`\`\`mermaid
+graph LR
+    AUTH[auth.module] --> DB[(User DB)]
+    ORDER[order.module] --> AUTH
+    ORDER --> CALC[calc.module]
+    ORDER --> DB2[(Order DB)]
+    RPT[report.module] --> ORDER
+    RPT --> DB2
+\`\`\`
+
+## Migration Waves
+
+Plan the extraction order:
+
+| Wave | Timeline | Services | Dependencies | Risk | Go/No-Go Criteria |
+|------|----------|----------|-------------|------|-------------------|
+| Wave 1 | Sprint 1-3 | Identity & Access | None (foundational) | Low | Auth API passes all BR-1 scenarios |
+| Wave 2 | Sprint 4-7 | Commerce | Identity service live | Medium | Order lifecycle BR-5 through BR-10 pass |
+| Wave 3 | Sprint 8-10 | Reporting | Commerce service live | Low | Report output matches legacy byte-for-byte |
+
+Requirements:
+- Foundation services (auth, config) go first
+- Each wave has specific BDD scenario pass criteria (reference SPEC_LOCK)
+- No circular migration dependencies
+
+## Data Ownership Matrix
+
+| Entity | Owner Context | Shared Read By | Sync Strategy |
+|--------|-------------|----------------|---------------|
+| User | Identity | Commerce, Reporting | API call |
+| Order | Commerce | Reporting | Event (OrderCreated) |
+| Payment | Commerce | Reporting | Event (PaymentCompleted) |
+
+---
+
+IMPORTANT:
+- Every DECODE business rule must appear in the Capability Inventory (BR-{id} references)
+- Bounded contexts must cover ALL capabilities — nothing left unmapped
+- Migration waves must reference BDD scenarios from SPEC_LOCK as go/no-go criteria
+- Include TWO Mermaid diagrams minimum (capability map + dependency graph)
+- Justify every boundary split/merge decision in the decisions table`,
 
     examples: [
-      'User service: authentication, profiles, permissions management',
-      'Order service: order lifecycle, status tracking, notifications',
+      'COBOL payroll: 4 contexts (Identity, Payroll, Benefits, Reporting), 3 migration waves',
+      'RPG order system: 3 contexts (Auth, Commerce, Fulfillment), Wave 1 = Auth (2 sprints)',
     ],
   },
 
@@ -343,65 +430,154 @@ IMPORTANT RULES:
 
   [PipelineStageName.ARCHITECT]: {
     stageId: PipelineStageName.ARCHITECT,
-    description: 'Design modernization strategy, target architecture, and migration roadmap',
+    description: 'Design target architecture, technology decisions, phased migration roadmap with risk register',
     variables: [
-      'services',
-      'technicalConstraints',
-      'businessConstraints',
-      'riskFactors',
+      'blueprintOutput',
+      'decodeOutput',
+      'targetStack',
+      'targetCloud',
     ],
-    template: `Design modernization approach for these services:
+    template: `You are performing Stage 5 (ARCHITECT) of an 8-stage modernization pipeline. Your job is to design the target architecture and migration roadmap based on the BLUEPRINT bounded contexts and DECODE business rules.
 
-**Services to Modernize:**
-{{services}}
+**BLUEPRINT Output (bounded contexts, service boundaries, migration waves):**
+{{blueprintOutput}}
 
-**Technical Constraints:**
-{{technicalConstraints}}
+**DECODE Output (business rules, workflows, entities):**
+{{decodeOutput}}
 
-**Business Constraints:**
-{{businessConstraints}}
+**Target Stack:** {{targetStack}}
+**Target Cloud:** {{targetCloud}}
 
-**Risk Factors:**
-{{riskFactors}}
+---
 
-Develop a comprehensive strategy including:
+Produce a complete ARCHITECT document with these EXACT sections:
 
-1. Phasing and Milestones:
-   - Phase breakdown (short, medium, long-term)
-   - Dependencies between phases
-   - Estimated timeline
-   - Go/no-go decision points
+## Target Architecture
 
-2. Technology Choices:
-   - Language and framework recommendations
-   - Data store selections
-   - Message queue technology
-   - Containerization and orchestration
-   - Observability stack
+Describe the modernized system architecture:
 
-3. Platform and Infrastructure:
-   - Cloud provider strategy
-   - Network architecture
-   - Service mesh options
-   - CI/CD pipeline design
-   - Deployment automation
+### Component Inventory
 
-4. Risk Management:
-   - Identified risks and mitigation
-   - Dependency risks
-   - Integration risks
-   - Performance risks
-   - Cost overrun mitigation
+| Component | Type | Technology | Bounded Context | Responsibilities | Scaling Strategy |
+|-----------|------|-----------|-----------------|-----------------|-----------------|
+| auth-service | Microservice | {{targetStack}} | Identity | Login, JWT, RBAC | Horizontal (stateless) |
+| order-service | Microservice | {{targetStack}} | Commerce | Order CRUD, lifecycle | Horizontal + CQRS |
+| api-gateway | Gateway | Kong/Envoy | Cross-cutting | Routing, rate limiting, auth | Horizontal |
+| event-bus | Infrastructure | Kafka/SQS | Cross-cutting | Async events between services | Partition-based |
+| postgres-primary | Database | PostgreSQL 16 | Commerce | Order, Payment data | Read replicas |
 
-5. Success Metrics:
-   - KPIs to track
-   - Technical metrics
-   - Business metrics
-   - Quality gates for each phase`,
+### Architecture Diagram (Mermaid)
+
+\`\`\`mermaid
+graph TD
+    Client[Client Apps] --> GW[API Gateway]
+    GW --> AUTH[Auth Service]
+    GW --> ORDER[Order Service]
+    GW --> RPT[Report Service]
+    AUTH --> DB1[(Auth DB)]
+    ORDER --> DB2[(Order DB)]
+    ORDER --> MQ[Event Bus]
+    RPT --> MQ
+    RPT --> DB2
+\`\`\`
+
+### Communication Patterns
+- Synchronous: REST/gRPC between gateway and services
+- Asynchronous: Events for cross-context data flow
+- Specify which calls are sync vs async and why
+
+## Technology Decision Matrix
+
+For each technology choice, compare alternatives:
+
+| Category | Chosen | Alternative 1 | Alternative 2 | Rationale |
+|----------|--------|--------------|---------------|-----------|
+| Language | Java 21 + Spring Boot 3 | Go + Chi | Node.js + Fastify | Team expertise, enterprise ecosystem |
+| Database | PostgreSQL 16 | MySQL 8 | MongoDB 7 | ACID required, existing schema compatibility |
+| Message Queue | Apache Kafka | AWS SQS | RabbitMQ | Event sourcing capability, partition ordering |
+| Container | Docker + Kubernetes | ECS Fargate | Docker Swarm | Multi-cloud portability, HPA support |
+| CI/CD | GitHub Actions | GitLab CI | Jenkins | Existing GitHub org, marketplace actions |
+| Observability | OpenTelemetry + Grafana | Datadog | New Relic | Open standards, cost control |
+
+Requirements:
+- At least 6 technology categories
+- At least 2 alternatives per category
+- Concrete rationale (not "industry standard" — cite specific project needs)
+
+## Migration Roadmap
+
+Phased migration with milestones:
+
+| Phase | Sprint Range | Deliverables | Go/No-Go Gate | Dependencies | Risk Level |
+|-------|-------------|-------------|---------------|-------------|------------|
+| Phase 0: Foundation | Sprint 1-2 | CI/CD pipeline, container infra, auth service skeleton | Pipeline deploys to staging | None | Low |
+| Phase 1: Identity | Sprint 3-5 | Auth service live, JWT integration | All BR-1 scenarios pass in SHADOW_RUN | Phase 0 | Medium |
+| Phase 2: Commerce | Sprint 6-10 | Order + Payment services | BR-5 through BR-10 pass, performance within 20% of legacy | Phase 1 | High |
+| Phase 3: Reporting | Sprint 11-13 | Report service, legacy decommission | Full BDD suite passes, byte-for-byte report output match | Phase 2 | Medium |
+
+Requirements:
+- Reference SPEC_LOCK BDD scenarios as go/no-go criteria
+- Reference BLUEPRINT migration waves
+- Include Phase 0 for infrastructure setup
+- Sprint ranges (not vague "Q1" timelines)
+
+## Risk Register
+
+| # | Risk | Probability | Impact | Severity | Mitigation | Owner | Contingency |
+|---|------|------------|--------|----------|------------|-------|-------------|
+| 1 | Data migration corruption | Medium | Critical | High | Checksums per table, parallel validation | Data Team | Rollback to legacy, re-run migration |
+| 2 | Performance regression | Medium | High | High | Load test each phase, p95 budget | Backend Lead | Circuit breaker, fallback to legacy endpoint |
+| 3 | Team skill gap (new stack) | High | Medium | Medium | Training sprint, pair programming | Tech Lead | Extended Phase 0, contractor support |
+| 4 | Scope creep | Medium | Medium | Medium | Strict phase gates, change board | PM | Defer to post-cutover backlog |
+
+Target: 6-10 risks minimum.
+
+## Cost Model
+
+| Resource | Monthly Cost | Annual Cost | Notes |
+|----------|-------------|-------------|-------|
+| Compute (3 services × 2 replicas) | $X,XXX | $XX,XXX | t3.medium or equivalent |
+| Database (PostgreSQL RDS) | $XXX | $X,XXX | Multi-AZ, 100GB |
+| Message Queue | $XXX | $X,XXX | Kafka managed or SQS |
+| CI/CD | $XXX | $X,XXX | GitHub Actions minutes |
+| Monitoring | $XXX | $X,XXX | Grafana Cloud or self-hosted |
+| **Total** | **$X,XXX** | **$XX,XXX** | — |
+
+Compare to estimated legacy hosting cost.
+
+## Infrastructure Diagram (Mermaid)
+
+\`\`\`mermaid
+graph TD
+    subgraph Cloud["{{targetCloud}}"]
+        subgraph VPC["VPC"]
+            LB[Load Balancer] --> K8S[Kubernetes Cluster]
+            K8S --> SVC1[Auth Pod]
+            K8S --> SVC2[Order Pod]
+            K8S --> SVC3[Report Pod]
+        end
+        DB[(RDS PostgreSQL)]
+        CACHE[(Redis/ElastiCache)]
+        MQ[Kafka/SQS]
+    end
+    K8S --> DB
+    K8S --> CACHE
+    K8S --> MQ
+\`\`\`
+
+---
+
+IMPORTANT:
+- Reference BLUEPRINT bounded contexts by name when assigning components
+- Reference SPEC_LOCK BDD scenarios (BR-{id}) as phase gate criteria
+- Technology decisions must cite specific project needs, not generic best practices
+- TWO Mermaid diagrams minimum (architecture + infrastructure)
+- Cost estimates must be concrete dollar amounts, not "varies"
+- Risk register must include probability, impact, AND mitigation`,
 
     examples: [
-      'Agile modernization: extract 2 services per quarter over 18 months',
-      'Big bang: migrate entire platform in one major release',
+      'COBOL → Java/Spring: 4 phases, 13 sprints, $8K/mo cloud, 8 risks',
+      'RPG → Node.js: 3 phases, 10 sprints, Kubernetes on AWS, $5K/mo',
     ],
   },
 
