@@ -282,9 +282,9 @@ export default function ForgePanel({
             </div>
 
             {/* Right: Code / Terminal / Agent */}
-            <div className="flex flex-col">
+            <div className="flex flex-col h-full min-h-0">
               {/* Pane Tabs */}
-              <div className="flex items-center gap-0 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800">
+              <div className="flex-shrink-0 flex items-center gap-0 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800">
                 {panes.map(({ key, label, icon: Icon }) => (
                   <button
                     key={key}
@@ -303,15 +303,17 @@ export default function ForgePanel({
               </div>
 
               {/* Pane Content */}
-              <div className="flex-1 overflow-hidden">
+              <div className="flex-1 overflow-hidden min-h-0">
                 {activePane === 'code' && (
                   currentFile ? (
-                    <CodeEditor
-                      value={currentFile.content}
-                      onChange={handleCodeChange}
-                      language={inferLanguage(currentFile.name || currentFile.path)}
-                      height="100%"
-                    />
+                    <div className="h-full w-full">
+                      <CodeEditor
+                        value={currentFile.content}
+                        onChange={handleCodeChange}
+                        language={inferLanguage(currentFile.name || currentFile.path)}
+                        height="462px"
+                      />
+                    </div>
                   ) : (
                     <div className="flex items-center justify-center h-full text-sm text-slate-400">
                       Select a file to view
