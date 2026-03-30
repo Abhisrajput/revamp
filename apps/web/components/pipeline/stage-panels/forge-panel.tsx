@@ -80,7 +80,6 @@ export default function ForgePanel({
   const logs = usePipelineStore((s) => s.logs);
   const toolCalls = usePipelineStore((s) => s.toolCalls);
   const modernizedFiles = usePipelineStore((s) => s.modernizedFiles);
-  const updateModernizedFile = usePipelineStore((s) => s.updateModernizedFile);
   const stages = usePipelineStore((s) => s.stages);
   const setGithubSyncOpen = useUIPreferencesStore((s) => s.setGithubSyncOpen);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -106,12 +105,6 @@ export default function ForgePanel({
       setActivePane('code');
     }
   }, []);
-
-  const handleCodeChange = useCallback((value: string | undefined) => {
-    if (selectedFile && value !== undefined) {
-      updateModernizedFile(selectedFile, value);
-    }
-  }, [selectedFile, updateModernizedFile]);
 
   // Load modernized files from API on mount (for rehydration after refresh)
   useEffect(() => {
@@ -309,9 +302,9 @@ export default function ForgePanel({
                     <div className="h-full w-full">
                       <CodeEditor
                         value={currentFile.content}
-                        onChange={handleCodeChange}
                         language={inferLanguage(currentFile.name || currentFile.path)}
                         height="462px"
+                        readOnly
                       />
                     </div>
                   ) : (

@@ -12,6 +12,8 @@ import { Badge } from '@/components/ui/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { RefinableMarkdown } from '@/components/pipeline/refinable-markdown';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
+import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
+import { CodeEditor } from '@/components/editor/code-editor';
 import { usePipelineStore, canExecuteStage } from '@/lib/stores/pipeline-store';
 import { useEvolveChat } from '@/lib/hooks/use-evolve-chat';
 import { cn } from '@/lib/utils';
@@ -127,16 +129,53 @@ function extractDecommission(text: string): DecommissionPhase[] {
 
 // ─── Component ────────────────────────────────────────────────────
 
-type TabKey = 'kpis' | 'backlog' | 'decommission' | 'runbook' | 'chat' | 'output';
+type TabKey = 'kpis' | 'code' | 'backlog' | 'decommission' | 'runbook' | 'chat' | 'output';
 
 const TABS: Array<{ key: TabKey; label: string; icon: typeof Target }> = [
   { key: 'kpis', label: 'KPI Dashboard', icon: Target },
+  { key: 'code', label: 'Code', icon: FileCode },
   { key: 'backlog', label: 'Backlog', icon: ClipboardList },
   { key: 'decommission', label: 'Decommission', icon: Calendar },
   { key: 'runbook', label: 'Runbook', icon: FileCode },
   { key: 'chat', label: 'Chat', icon: MessageSquare },
   { key: 'output', label: 'Full Output', icon: BarChart3 },
 ];
+
+function inferLanguage(filename: string | undefined): string {
+  if (!filename) return 'plaintext';
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  const langMap: Record<string, string> = {
+    ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
+    py: 'python', go: 'go', java: 'java', rs: 'rust', rb: 'ruby',
+    cs: 'csharp', sql: 'sql', yaml: 'yaml', yml: 'yaml', json: 'json',
+    md: 'markdown', html: 'html', css: 'css', scss: 'scss',
+    sh: 'shell', bash: 'shell', dockerfile: 'dockerfile',
+    xml: 'xml', toml: 'toml', tf: 'hcl',
+  };
+  return langMap[ext] || 'plaintext';
+}
+
+function buildFileTree(files: { path: string }[]): FileNode[] {
+  const root: FileNode[] = [];
+  for (const file of files) {
+    const parts = file.path.split('/').filter(Boolean);
+    let current = root;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (i === parts.length - 1) {
+        current.push({ name: part, type: 'file', path: file.path });
+      } else {
+        let dir = current.find((n) => n.name === part && n.type === 'dir');
+        if (!dir) {
+          dir = { name: part, type: 'dir', children: [] };
+          current.push(dir);
+        }
+        current = dir.children!;
+      }
+    }
+  }
+  return root;
+}
 
 export default function EvolvePanel({
   stage,
@@ -149,8 +188,11 @@ export default function EvolvePanel({
 }: StagePanelProps) {
   const logs = usePipelineStore((s) => s.logs);
   const stages = usePipelineStore((s) => s.stages);
+  const modernizedFiles = usePipelineStore((s) => s.modernizedFiles);
+  const updateModernizedFile = usePipelineStore((s) => s.updateModernizedFile);
   const [activeTab, setActiveTab] = useState<TabKey>('kpis');
   const [chatInput, setChatInput] = useState('');
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const isRunning = stage.status === 'generating' || stage.status === 'validating';
@@ -164,6 +206,26 @@ export default function EvolvePanel({
   const backlog = useMemo(() => stage.output ? extractBacklog(stage.output) : [], [stage.output]);
   const decommission = useMemo(() => stage.output ? extractDecommission(stage.output) : [], [stage.output]);
   const runbookSection = useMemo(() => stage.output ? extractSection(stage.output, 'Operational Runbook') : null, [stage.output]);
+
+  // ─── Code editor ───────────────────────────────────────────────
+  const fileTree = useMemo(() => buildFileTree(modernizedFiles), [modernizedFiles]);
+  const currentFile = useMemo(() => {
+    if (!selectedFile) return modernizedFiles[0] || null;
+    return modernizedFiles.find((f) => f.path === selectedFile) || null;
+  }, [selectedFile, modernizedFiles]);
+
+  const handleFileClick = useCallback((node: FileNode) => {
+    if (node.type === 'file') {
+      setSelectedFile(node.path || null);
+      setActiveTab('code');
+    }
+  }, []);
+
+  const handleCodeChange = useCallback((value: string | undefined) => {
+    if (selectedFile && value !== undefined) {
+      updateModernizedFile(selectedFile, value);
+    }
+  }, [selectedFile, updateModernizedFile]);
 
   const handleSendChat = useCallback(() => {
     if (!chatInput.trim()) return;
@@ -330,6 +392,44 @@ export default function EvolvePanel({
           )}
 
           {/* ── Tab: Backlog ────────────────────────────────────────── */}
+          {/* ── Tab: Code Editor ──────────────────────────────────── */}
+          {activeTab === 'code' && (
+            <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-0 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden" style={{ height: '460px' }}>
+              <div className="border-r border-slate-200 dark:border-slate-700 overflow-hidden">
+                {modernizedFiles.length > 0 ? (
+                  <FileTree
+                    nodes={fileTree}
+                    selectedPath={selectedFile || undefined}
+                    onFileClick={handleFileClick}
+                    showSearch
+                    maxHeight="460px"
+                    className="border-0 rounded-none"
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-full text-xs text-slate-400 p-4 text-center">
+                    Run FORGE first to generate code files
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-col h-full min-h-0">
+                <div className="flex-1 min-h-0">
+                  {currentFile ? (
+                    <CodeEditor
+                      value={currentFile.content}
+                      onChange={handleCodeChange}
+                      language={inferLanguage(currentFile.name || currentFile.path)}
+                      height="460px"
+                    />
+                  ) : (
+                    <div className="flex items-center justify-center h-full text-sm text-slate-400">
+                      {modernizedFiles.length > 0 ? 'Select a file to edit' : 'No files generated yet'}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {activeTab === 'backlog' && (
             <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto" style={{ maxHeight: '460px' }}>
               {backlog.length > 0 ? (
