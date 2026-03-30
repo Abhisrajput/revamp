@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Play, TrendingUp, MessageSquare, Send, FileCode,
-  BarChart3, Rocket, RefreshCw, Loader2, Trash2, User, Bot,
+  BarChart3, Rocket, Loader2, Trash2, User, Bot,
+  Calendar, ClipboardList, Target,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -16,6 +17,127 @@ import { useEvolveChat } from '@/lib/hooks/use-evolve-chat';
 import { cn } from '@/lib/utils';
 import type { StagePanelProps } from './types';
 
+// ─── Parsers ──────────────────────────────────────────────────────
+
+interface KpiRow {
+  kpi: string;
+  baseline: string;
+  target30: string;
+  target90: string;
+  owner: string;
+}
+
+interface BacklogItem {
+  index: number;
+  item: string;
+  priority: string;
+  category: string;
+  effort: string;
+  sprint: string;
+  status: string;
+}
+
+interface DecommissionPhase {
+  phase: string;
+  timeline: string;
+  action: string;
+  dependencies: string;
+  rollback: string;
+}
+
+function extractSection(text: string, heading: string): string | null {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`^#{1,3}\\s*${escaped}[^\\n]*\\n([\\s\\S]*?)(?=^#{1,3}\\s|$)`, 'im');
+  const match = pattern.exec(text);
+  return match ? match[1].trim() : null;
+}
+
+function extractKpis(text: string): KpiRow[] {
+  const section = extractSection(text, 'KPI Dashboard');
+  if (!section) return [];
+
+  const rows: KpiRow[] = [];
+  const lines = section.split('\n').filter((l) =>
+    /^\|/.test(l) && !/^[\s|:-]+$/.test(l) && !/^\|\s*KPI\s*\|/.test(l)
+  );
+
+  for (const line of lines) {
+    const cells = line.split('|').map((c) => c.trim()).filter(Boolean);
+    if (cells.length < 4) continue;
+    rows.push({
+      kpi: cells[0],
+      baseline: cells[1],
+      target30: cells[2],
+      target90: cells[3],
+      owner: cells[4] || '',
+    });
+  }
+  return rows;
+}
+
+function extractBacklog(text: string): BacklogItem[] {
+  const section = extractSection(text, 'Modernization Backlog');
+  if (!section) return [];
+
+  const rows: BacklogItem[] = [];
+  const lines = section.split('\n').filter((l) =>
+    /^\|/.test(l) && !/^[\s|:-]+$/.test(l) && !/^\|\s*#\s*\|/.test(l)
+  );
+
+  for (const line of lines) {
+    const cells = line.split('|').map((c) => c.trim()).filter(Boolean);
+    if (cells.length < 6) continue;
+    const idx = parseInt(cells[0], 10);
+    if (isNaN(idx)) continue;
+    rows.push({
+      index: idx,
+      item: cells[1],
+      priority: cells[2],
+      category: cells[3],
+      effort: cells[4],
+      sprint: cells[5],
+      status: cells[6] || 'Pending',
+    });
+  }
+  return rows;
+}
+
+function extractDecommission(text: string): DecommissionPhase[] {
+  const section = extractSection(text, 'Decommission Plan') || extractSection(text, 'Legacy Decommission Plan');
+  if (!section) return [];
+
+  const rows: DecommissionPhase[] = [];
+  const lines = section.split('\n').filter((l) =>
+    /^\|/.test(l) && !/^[\s|:-]+$/.test(l) && !/^\|\s*Phase\s*\|/.test(l)
+  );
+
+  for (const line of lines) {
+    const cells = line.split('|').map((c) => c.trim()).filter(Boolean);
+    if (cells.length < 4) continue;
+    rows.push({
+      phase: cells[0],
+      timeline: cells[1],
+      action: cells[2],
+      dependencies: cells[3],
+      rollback: cells[4] || '',
+    });
+  }
+  return rows;
+}
+
+// ─── Component ────────────────────────────────────────────────────
+
+type TabKey = 'kpis' | 'backlog' | 'decommission' | 'runbook' | 'chat' | 'output';
+
+const TABS: Array<{ key: TabKey; label: string; icon: typeof Target }> = [
+  { key: 'kpis', label: 'KPI Dashboard', icon: Target },
+  { key: 'backlog', label: 'Backlog', icon: ClipboardList },
+  { key: 'decommission', label: 'Decommission', icon: Calendar },
+  { key: 'runbook', label: 'Runbook', icon: FileCode },
+  { key: 'chat', label: 'Chat', icon: MessageSquare },
+  { key: 'output', label: 'Full Output', icon: BarChart3 },
+];
+
 export default function EvolvePanel({
   stage,
   stageIndex,
@@ -27,7 +149,7 @@ export default function EvolvePanel({
 }: StagePanelProps) {
   const logs = usePipelineStore((s) => s.logs);
   const stages = usePipelineStore((s) => s.stages);
-  const [activeTab, setActiveTab] = useState<'roadmap' | 'chat' | 'output'>('roadmap');
+  const [activeTab, setActiveTab] = useState<TabKey>('kpis');
   const [chatInput, setChatInput] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -35,8 +157,13 @@ export default function EvolvePanel({
   const hasOutput = !!(stage.output || streamingText);
   const canExecute = (stage.status === 'pending' || stage.status === 'failed') && !isExecuting && canExecuteStage(stages, stageIndex);
 
-  // Chat via LLM hook
   const { messages: chatHistory, sendMessage, isStreaming: isChatStreaming, clearHistory } = useEvolveChat(pipelineRunId);
+
+  // ─── Parse output ──────────────────────────────────────────────
+  const kpis = useMemo(() => stage.output ? extractKpis(stage.output) : [], [stage.output]);
+  const backlog = useMemo(() => stage.output ? extractBacklog(stage.output) : [], [stage.output]);
+  const decommission = useMemo(() => stage.output ? extractDecommission(stage.output) : [], [stage.output]);
+  const runbookSection = useMemo(() => stage.output ? extractSection(stage.output, 'Operational Runbook') : null, [stage.output]);
 
   const handleSendChat = useCallback(() => {
     if (!chatInput.trim()) return;
@@ -44,7 +171,6 @@ export default function EvolvePanel({
     setChatInput('');
   }, [chatInput, sendMessage]);
 
-  // Auto-scroll to bottom on new messages or streaming updates
   useEffect(() => {
     if (chatHistory.length > 0) {
       setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
@@ -52,24 +178,20 @@ export default function EvolvePanel({
   }, [chatHistory.length, chatHistory[chatHistory.length - 1]?.content]);
 
   const formatTimestamp = (ts: string) => {
-    try {
-      const date = new Date(ts);
-      return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-    } catch {
-      return '';
-    }
+    try { return new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); }
+    catch { return ''; }
   };
 
-  const kpiCards = [
-    { label: 'Code Coverage', value: '—', icon: BarChart3, color: 'text-blue-500' },
-    { label: 'Modernization %', value: '—', icon: TrendingUp, color: 'text-green-500' },
-    { label: 'Technical Debt', value: '—', icon: RefreshCw, color: 'text-orange-500' },
-    { label: 'Deployment Ready', value: '—', icon: Rocket, color: 'text-purple-500' },
-  ];
+  // Stats
+  const p0Items = backlog.filter((b) => b.priority === 'P0').length;
+  const totalEffort = backlog.reduce((sum, b) => {
+    const match = b.effort.match(/(\d+)/);
+    return sum + (match ? parseInt(match[1], 10) : 0);
+  }, 0);
 
   return (
     <div className="space-y-4">
-      {/* Pre-execution */}
+      {/* ── Pre-execution ────────────────────────────────────────── */}
       {!hasOutput && !isRunning && (
         <>
           <Card className="bg-slate-50 dark:bg-slate-900">
@@ -81,37 +203,32 @@ export default function EvolvePanel({
                 </h3>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Continuous modernization with KPI tracking, iterative refinement through chat,
-                and operational readiness planning. Your living modernization cockpit.
+                Post-cutover operations plan with quantified KPI targets, operational runbook,
+                legacy decommission timeline, and prioritized modernization backlog.
+                Includes interactive chat for ongoing refinement.
               </p>
+              <div className="flex flex-wrap gap-2 mt-3">
+                <Badge variant="outline" className="text-[10px]">KPI Dashboard</Badge>
+                <Badge variant="outline" className="text-[10px]">Operational Runbook</Badge>
+                <Badge variant="outline" className="text-[10px]">Decommission Plan</Badge>
+                <Badge variant="outline" className="text-[10px]">Backlog</Badge>
+                <Badge variant="outline" className="text-[10px]">Interactive Chat</Badge>
+              </div>
             </CardContent>
           </Card>
-
-          {/* KPI Preview */}
-          <div className="grid grid-cols-4 gap-3">
-            {kpiCards.map(({ label, value, icon: Icon, color }) => (
-              <Card key={label} className="bg-slate-50 dark:bg-slate-900">
-                <CardContent className="p-3 text-center">
-                  <Icon className={cn('w-5 h-5 mx-auto mb-1', color)} />
-                  <p className="text-lg font-bold text-slate-900 dark:text-slate-50">{value}</p>
-                  <p className="text-[10px] text-slate-500">{label}</p>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
 
           {canExecute && (
             <div className="flex justify-center pt-2">
               <Button size="lg" onClick={onExecute} className="gap-2">
                 <Play className="w-4 h-4" />
-                Generate Modernization Roadmap
+                Generate Operations Plan
               </Button>
             </div>
           )}
         </>
       )}
 
-      {/* During execution */}
+      {/* ── During execution ─────────────────────────────────────── */}
       {isRunning && (
         <>
           {streamingText && <StageOutput output={streamingText} isStreaming />}
@@ -119,53 +236,210 @@ export default function EvolvePanel({
         </>
       )}
 
-      {/* After execution */}
+      {/* ── After execution ──────────────────────────────────────── */}
       {stage.output && !isRunning && (
         <>
-          {/* Tabs */}
-          <div className="flex gap-1 border-b border-slate-200 dark:border-slate-700">
-            {[
-              { key: 'roadmap', label: 'Roadmap', icon: TrendingUp },
-              { key: 'chat', label: 'Chat', icon: MessageSquare },
-              { key: 'output', label: 'Full Output', icon: FileCode },
-            ].map(({ key, label, icon: Icon }) => (
+          {/* Stats Bar */}
+          <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 px-4 py-2">
+            <div className="flex items-center gap-4 text-xs">
+              <span className="flex items-center gap-1.5 text-slate-500">
+                <Target className="w-3.5 h-3.5" />
+                {kpis.length} KPIs tracked
+              </span>
+              <span className="flex items-center gap-1.5 text-slate-500">
+                <ClipboardList className="w-3.5 h-3.5" />
+                {backlog.length} backlog items
+              </span>
+              {p0Items > 0 && (
+                <span className="flex items-center gap-1.5 text-red-600 font-medium">
+                  <Rocket className="w-3.5 h-3.5" />
+                  {p0Items} P0 items
+                </span>
+              )}
+              <span className="flex items-center gap-1.5 text-slate-500">
+                <Calendar className="w-3.5 h-3.5" />
+                {decommission.length} phases
+              </span>
+            </div>
+            {totalEffort > 0 && (
+              <Badge variant="outline" className="text-[10px]">
+                ~{totalEffort}d total effort
+              </Badge>
+            )}
+          </div>
+
+          {/* Tab Bar */}
+          <div className="flex gap-0.5 border-b border-slate-200 dark:border-slate-700 overflow-x-auto">
+            {TABS.map(({ key, label, icon: Icon }) => (
               <button
                 key={key}
-                onClick={() => setActiveTab(key as any)}
+                onClick={() => setActiveTab(key)}
                 className={cn(
-                  'flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors',
+                  'flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors whitespace-nowrap',
                   activeTab === key
                     ? 'border-primary-600 text-primary-600'
-                    : 'border-transparent text-slate-500 hover:text-slate-700',
+                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300',
                 )}
               >
                 <Icon className="w-3.5 h-3.5" />
                 {label}
                 {key === 'chat' && chatHistory.length > 0 && (
-                  <Badge variant="outline" className="text-[9px] px-1 py-0 ml-1">
-                    {chatHistory.length}
-                  </Badge>
+                  <span className="text-[9px] ml-0.5 opacity-70">({chatHistory.length})</span>
+                )}
+                {key === 'backlog' && backlog.length > 0 && (
+                  <span className="text-[9px] ml-0.5 opacity-70">({backlog.length})</span>
                 )}
               </button>
             ))}
           </div>
 
-          {/* Roadmap */}
-          {activeTab === 'roadmap' && (
-            <RefinableMarkdown
-              text={stage.output}
-              onSectionRefined={(updated) => {
-                usePipelineStore.getState().setStageOutput(stageIndex, updated);
-              }}
-              onRefineRequest={onRefineRequest}
-            />
+          {/* ── Tab: KPI Dashboard ─────────────────────────────────── */}
+          {activeTab === 'kpis' && (
+            <div className="space-y-3">
+              {kpis.length > 0 ? (
+                <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto" style={{ maxHeight: '460px' }}>
+                  <table className="w-full text-[11px]">
+                    <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10">
+                      <tr className="border-b border-slate-200 dark:border-slate-700">
+                        <th className="text-left py-2 px-3 text-slate-500 font-semibold">KPI</th>
+                        <th className="text-center py-2 px-3 text-slate-500 font-semibold">Current</th>
+                        <th className="text-center py-2 px-3 text-slate-500 font-semibold">30-Day Target</th>
+                        <th className="text-center py-2 px-3 text-slate-500 font-semibold">90-Day Target</th>
+                        <th className="text-left py-2 px-3 text-slate-500 font-semibold">Owner</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {kpis.map((k, i) => (
+                        <tr key={i} className="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                          <td className="py-2 px-3 font-medium text-slate-900 dark:text-slate-50">{k.kpi}</td>
+                          <td className="py-2 px-3 text-center font-mono text-slate-500">{k.baseline}</td>
+                          <td className="py-2 px-3 text-center font-mono text-amber-600 dark:text-amber-400 font-medium">{k.target30}</td>
+                          <td className="py-2 px-3 text-center font-mono text-emerald-600 dark:text-emerald-400 font-medium">{k.target90}</td>
+                          <td className="py-2 px-3 text-slate-500">{k.owner}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="flex items-center justify-center h-40 text-sm text-slate-400">
+                  No KPI data found in output
+                </div>
+              )}
+            </div>
           )}
 
-          {/* Chat */}
+          {/* ── Tab: Backlog ────────────────────────────────────────── */}
+          {activeTab === 'backlog' && (
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto" style={{ maxHeight: '460px' }}>
+              {backlog.length > 0 ? (
+                <table className="w-full text-[11px]">
+                  <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10">
+                    <tr className="border-b border-slate-200 dark:border-slate-700">
+                      <th className="text-left py-2 px-3 text-slate-500 font-semibold w-8">#</th>
+                      <th className="text-left py-2 px-3 text-slate-500 font-semibold">Item</th>
+                      <th className="text-center py-2 px-3 text-slate-500 font-semibold">Priority</th>
+                      <th className="text-left py-2 px-3 text-slate-500 font-semibold">Category</th>
+                      <th className="text-center py-2 px-3 text-slate-500 font-semibold">Effort</th>
+                      <th className="text-center py-2 px-3 text-slate-500 font-semibold">Sprint</th>
+                      <th className="text-center py-2 px-3 text-slate-500 font-semibold">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {backlog.map((b) => (
+                      <tr key={b.index} className={cn(
+                        'border-b border-slate-100 dark:border-slate-800',
+                        b.priority === 'P0' && 'bg-red-50/50 dark:bg-red-950/10',
+                      )}>
+                        <td className="py-1.5 px-3 text-slate-400 font-mono">{b.index}</td>
+                        <td className="py-1.5 px-3 font-medium text-slate-900 dark:text-slate-50">{b.item}</td>
+                        <td className="py-1.5 px-3 text-center">
+                          <Badge className={cn(
+                            'text-[9px] px-1.5',
+                            b.priority === 'P0' && 'bg-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-400',
+                            b.priority === 'P1' && 'bg-amber-100 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400',
+                            b.priority === 'P2' && 'bg-blue-100 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400',
+                            b.priority === 'P3' && 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400',
+                          )}>
+                            {b.priority}
+                          </Badge>
+                        </td>
+                        <td className="py-1.5 px-3 text-slate-500">{b.category}</td>
+                        <td className="py-1.5 px-3 text-center font-mono text-slate-500">{b.effort}</td>
+                        <td className="py-1.5 px-3 text-center font-mono text-primary-600 dark:text-primary-400">{b.sprint}</td>
+                        <td className="py-1.5 px-3 text-center">
+                          <Badge variant="outline" className="text-[9px]">{b.status}</Badge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="flex items-center justify-center h-40 text-sm text-slate-400">
+                  No backlog data found in output
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Tab: Decommission ───────────────────────────────────── */}
+          {activeTab === 'decommission' && (
+            <div className="space-y-3">
+              {decommission.length > 0 ? (
+                decommission.map((phase, i) => (
+                  <Card key={i} className="overflow-hidden">
+                    <div className="px-4 py-2 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="text-[10px] font-mono">{phase.timeline}</Badge>
+                        <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">{phase.phase}</span>
+                      </div>
+                    </div>
+                    <CardContent className="p-3 space-y-1.5">
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                        <span className="font-semibold text-slate-700 dark:text-slate-300">Action:</span> {phase.action}
+                      </p>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                        <span className="font-semibold text-slate-700 dark:text-slate-300">Dependencies:</span> {phase.dependencies}
+                      </p>
+                      {phase.rollback && (
+                        <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                          <span className="font-semibold text-slate-700 dark:text-slate-300">Rollback:</span> {phase.rollback}
+                        </p>
+                      )}
+                    </CardContent>
+                  </Card>
+                ))
+              ) : (
+                <div className="flex items-center justify-center h-40 text-sm text-slate-400">
+                  No decommission plan found in output
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Tab: Runbook ─────────────────────────────────────────── */}
+          {activeTab === 'runbook' && (
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-4 max-h-[460px] overflow-auto">
+              {runbookSection ? (
+                <RefinableMarkdown
+                  text={`## Operational Runbook\n\n${runbookSection}`}
+                  onSectionRefined={(updated) => {
+                    usePipelineStore.getState().setStageOutput(stageIndex, updated);
+                  }}
+                  onRefineRequest={onRefineRequest}
+                />
+              ) : (
+                <div className="flex items-center justify-center h-40 text-sm text-slate-400">
+                  No operational runbook found in output
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Tab: Chat ────────────────────────────────────────────── */}
           {activeTab === 'chat' && (
             <Card className="bg-slate-50 dark:bg-slate-900">
               <CardContent className="p-0">
-                {/* Chat Header with clear button */}
                 {chatHistory.length > 0 && (
                   <div className="flex items-center justify-between px-4 py-2 border-b border-slate-200 dark:border-slate-700">
                     <span className="text-xs text-slate-500">
@@ -174,7 +448,7 @@ export default function EvolvePanel({
                     <button
                       onClick={clearHistory}
                       disabled={isChatStreaming}
-                      className="flex items-center gap-1 text-xs text-slate-400 hover:text-red-500 dark:hover:text-red-400 transition-colors disabled:opacity-50"
+                      className="flex items-center gap-1 text-xs text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50"
                     >
                       <Trash2 className="w-3 h-3" />
                       Clear
@@ -182,20 +456,19 @@ export default function EvolvePanel({
                   </div>
                 )}
 
-                {/* Messages */}
                 <div className="h-[380px] overflow-y-auto p-4 space-y-4">
                   {chatHistory.length === 0 ? (
                     <div className="text-center py-12">
                       <MessageSquare className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto mb-2" />
                       <p className="text-sm text-slate-500">
-                        Start a conversation to refine your modernization plan
+                        Refine the operations plan through conversation
                       </p>
                       <div className="flex flex-wrap gap-2 justify-center mt-3">
                         {[
-                          'Prioritize security improvements',
-                          'Add monitoring strategy',
-                          'Optimize for cost',
-                          'Suggest phased rollout plan',
+                          'Tighten the decommission timeline',
+                          'Add P0 items for security hardening',
+                          'What monitoring alerts should fire first?',
+                          'Reduce cloud cost estimates by 20%',
                         ].map((suggestion) => (
                           <button
                             key={suggestion}
@@ -209,14 +482,7 @@ export default function EvolvePanel({
                     </div>
                   ) : (
                     chatHistory.map((msg) => (
-                      <div
-                        key={msg.id}
-                        className={cn(
-                          'flex gap-2.5',
-                          msg.role === 'user' ? 'justify-end' : 'justify-start',
-                        )}
-                      >
-                        {/* Avatar for assistant */}
+                      <div key={msg.id} className={cn('flex gap-2.5', msg.role === 'user' ? 'justify-end' : 'justify-start')}>
                         {msg.role === 'assistant' && (
                           <div className="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center shrink-0 mt-0.5">
                             <Bot className="w-3.5 h-3.5 text-primary-600 dark:text-primary-400" />
@@ -238,15 +504,10 @@ export default function EvolvePanel({
                               ) : null
                             )}
                           </div>
-                          {/* Timestamp */}
-                          <span className={cn(
-                            'text-[10px] text-slate-400 mt-0.5 px-1',
-                            msg.role === 'user' ? 'text-right' : 'text-left',
-                          )}>
+                          <span className={cn('text-[10px] text-slate-400 mt-0.5 px-1', msg.role === 'user' ? 'text-right' : 'text-left')}>
                             {formatTimestamp(msg.timestamp)}
                           </span>
                         </div>
-                        {/* Avatar for user */}
                         {msg.role === 'user' && (
                           <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center shrink-0 mt-0.5">
                             <User className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
@@ -256,7 +517,6 @@ export default function EvolvePanel({
                     ))
                   )}
 
-                  {/* Streaming indicator when assistant is responding */}
                   {isChatStreaming && chatHistory.length > 0 && chatHistory[chatHistory.length - 1]?.content && (
                     <div className="flex items-center gap-2 pl-8">
                       <div className="flex gap-1">
@@ -267,11 +527,9 @@ export default function EvolvePanel({
                       <span className="text-[10px] text-slate-400">Streaming...</span>
                     </div>
                   )}
-
                   <div ref={chatEndRef} />
                 </div>
 
-                {/* Input */}
                 <div className="border-t border-slate-200 dark:border-slate-700 p-3">
                   <div className="flex gap-2">
                     <input
@@ -279,38 +537,31 @@ export default function EvolvePanel({
                       value={chatInput}
                       onChange={(e) => setChatInput(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          handleSendChat();
-                        }
+                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendChat(); }
                       }}
-                      placeholder="Ask about the modernization plan..."
+                      placeholder="Ask about the operations plan..."
                       disabled={isChatStreaming}
                       className="flex-1 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-950 px-3 py-2 text-slate-900 dark:text-slate-50 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50"
                     />
-                    <Button
-                      size="sm"
-                      onClick={handleSendChat}
-                      disabled={!chatInput.trim() || isChatStreaming}
-                    >
-                      {isChatStreaming ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Send className="w-4 h-4" />
-                      )}
+                    <Button size="sm" onClick={handleSendChat} disabled={!chatInput.trim() || isChatStreaming}>
+                      {isChatStreaming ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                     </Button>
                   </div>
-                  <p className="text-[10px] text-slate-400 mt-1 px-1">
-                    Press Enter to send
-                  </p>
+                  <p className="text-[10px] text-slate-400 mt-1 px-1">Press Enter to send</p>
                 </div>
               </CardContent>
             </Card>
           )}
 
-          {/* Full Output */}
+          {/* ── Tab: Full Output ───────────────────────────────────── */}
           {activeTab === 'output' && (
-            <StageOutput output={stage.output} isStreaming={false} />
+            <RefinableMarkdown
+              text={stage.output}
+              onSectionRefined={(updated) => {
+                usePipelineStore.getState().setStageOutput(stageIndex, updated);
+              }}
+              onRefineRequest={onRefineRequest}
+            />
           )}
         </>
       )}

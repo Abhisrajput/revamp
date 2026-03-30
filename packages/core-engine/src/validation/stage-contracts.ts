@@ -250,18 +250,22 @@ export const stageContracts: StageContract[] = [
   {
     stageName: PipelineStageName.EVOLVE,
     stageIndex: 7,
-    minTotalWords: 400,
-    maxRefinementPasses: 1,
+    minTotalWords: 800,
+    maxRefinementPasses: 2,
     hardGate: false, // Final stage — advisory only
     requiredSections: [
-      { heading: 'KPIs', required: true, minWordCount: 80 },
-      { heading: 'Operational Plan', required: true, minWordCount: 100 },
-      { heading: 'Modernization Backlog', required: true, minWordCount: 80 },
-      { heading: 'Decommission Plan', required: true, minWordCount: 60 },
+      { heading: 'KPI Dashboard', required: true, minWordCount: 100, mustContain: ['Target', 'Baseline'] },
+      { heading: 'Operational Runbook', required: true, minWordCount: 100, mustContain: ['Monitor', 'Alert'] },
+      { heading: 'Decommission Plan', required: true, minWordCount: 80, mustContain: ['Week', 'Phase'] },
+      { heading: 'Modernization Backlog', required: true, minWordCount: 80, mustContain: ['Sprint', 'Priority'] },
+      { heading: 'Cost Optimization', required: true, minWordCount: 40 },
     ],
     requiredArtifacts: [],
     requiredPatterns: [
-      { name: 'metrics', pattern: /\d+%|\d+ms|\d+s|p\d{2}/g, minOccurrences: 3, description: 'Must include quantified metrics and targets' },
+      { name: 'kpi_metrics', pattern: /\d+(?:\.\d+)?%/g, minOccurrences: 8, description: 'Must include 8+ quantified KPI percentages' },
+      { name: 'time_targets', pattern: /\d+(?:ms|s|min|h|d)/g, minOccurrences: 4, description: 'Must include time-based targets' },
+      { name: 'sprint_refs', pattern: /Sprint\s+\d+/gi, minOccurrences: 2, description: 'Must reference sprint assignments' },
+      { name: 'cost_values', pattern: /\$[\d,]+/g, minOccurrences: 2, description: 'Must include cost estimates' },
     ],
   },
 ];

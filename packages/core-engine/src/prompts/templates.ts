@@ -596,64 +596,121 @@ IMPORTANT RULES:
   [PipelineStageName.EVOLVE]: {
     stageId: PipelineStageName.EVOLVE,
     description:
-      'Continuous modernization — KPI roadmap, operational plan, and ongoing evolution',
+      'Post-cutover operations plan — KPI dashboard, monitoring, decommission, modernization backlog',
     variables: [
-      'modernizedServices',
-      'operationalMetrics',
-      'teamCapacity',
-      'futureRoadmap',
+      'shadowRunVerdict',
+      'forgeOutput',
+      'specLockScenarios',
+      'targetStack',
     ],
-    template: `Plan continuous modernization and evolution:
+    template: `You are performing Stage 8 (EVOLVE) of an 8-stage modernization pipeline. The modernized system has passed SHADOW_RUN validation and is now in production. Your job is to produce a comprehensive post-cutover operations plan.
 
-**Modernized Services:**
-{{modernizedServices}}
+**SHADOW_RUN Verdict:**
+{{shadowRunVerdict}}
 
-**Current Operational Metrics:**
-{{operationalMetrics}}
+**FORGE Output (generated code summary):**
+{{forgeOutput}}
 
-**Team Capacity:**
-{{teamCapacity}}
+**SPEC_LOCK Scenarios (BDD coverage):**
+{{specLockScenarios}}
 
-**Future Roadmap:**
-{{futureRoadmap}}
+**Target Stack:** {{targetStack}}
 
-Define a continuous evolution plan including:
+---
 
-1. Operational Excellence:
-   - Monitoring and alerting setup
-   - Incident response procedures
-   - SLA tracking and reporting
-   - Performance optimization backlog
+Produce a complete EVOLVE document with these EXACT sections:
 
-2. Technical Debt Management:
-   - Remaining debt inventory
-   - Prioritized remediation plan
-   - Automated quality gates
-   - Dependency update strategy
+## KPI Dashboard
 
-3. Feature Evolution:
-   - Feature roadmap alignment
-   - A/B testing capabilities
-   - Feature flag management
-   - Gradual rollout strategies
+Define quantified targets for the modernized system. Use a table:
 
-4. Platform Maturity:
-   - Infrastructure automation
-   - Self-service capabilities
-   - Developer experience improvements
-   - Documentation and runbooks
+| KPI | Current Baseline | 30-Day Target | 90-Day Target | Owner |
+|-----|-----------------|---------------|---------------|-------|
+| System Uptime | 99.2% | 99.5% | 99.9% | SRE Team |
+| Avg Response Time (p95) | 450ms | 200ms | 100ms | Backend Team |
+| BDD Scenario Pass Rate | 85% | 95% | 100% | QA Team |
+| Code Coverage | 0% | 60% | 80% | Dev Team |
+| Deployment Frequency | Monthly | Weekly | Daily | DevOps |
+| MTTR (Mean Time to Recovery) | 4h | 1h | 15min | SRE Team |
+| Remaining Legacy Modules | 100% | 30% | 0% | Architect |
+| Monthly Cloud Cost | — | $X,XXX | $X,XXX (optimized) | FinOps |
 
-5. KPIs and Metrics:
-   - Business impact metrics
-   - Technical health scores
-   - Team velocity tracking
-   - Cost optimization targets
+Include 8-12 KPIs minimum. Use realistic numbers derived from SHADOW_RUN performance data.
 
-Ensure the plan enables sustainable, continuous improvement.`,
+## Operational Runbook
+
+### Monitoring & Alerting
+- What to monitor (endpoints, queues, databases, error rates)
+- Alert thresholds and escalation paths
+- Dashboards to create (Grafana/Datadog/CloudWatch)
+
+### Incident Response
+- Severity levels (P1-P4) with response time SLAs
+- On-call rotation setup
+- Runbook for the 3 most likely failure scenarios
+
+### Health Checks
+- Endpoint health check URLs and expected responses
+- Database connection pool monitoring
+- Queue depth and consumer lag thresholds
+
+## Legacy Decommission Plan
+
+Timeline for shutting down the legacy system:
+
+| Phase | Timeline | Action | Dependencies | Rollback |
+|-------|----------|--------|-------------|----------|
+| Parallel Run | Week 1-2 | Both systems active, traffic split | Monitoring in place | Full rollback to legacy |
+| Traffic Migration | Week 3-4 | 100% to modern, legacy read-only | All BDD scenarios green | Redirect traffic back |
+| Data Freeze | Week 5-6 | Legacy writes disabled, final sync | Data reconciliation complete | Re-enable legacy writes |
+| Archive | Week 7-8 | Legacy data archived, system powered down | Compliance archive verified | Restore from archive |
+
+Include specific decommission steps for each legacy component identified in SCAN.
+
+## Modernization Backlog
+
+Prioritized backlog of remaining work post-cutover:
+
+| # | Item | Priority | Category | Effort | Sprint | Status |
+|---|------|----------|----------|--------|--------|--------|
+| 1 | Fix SHADOW_RUN deviations | P0 | Bug Fix | 2d | Sprint 1 | Pending |
+| 2 | Add missing BDD scenario coverage | P1 | Quality | 3d | Sprint 1 | Pending |
+| 3 | Performance optimization for slow queries | P1 | Performance | 5d | Sprint 2 | Pending |
+| 4 | Implement CI/CD pipeline | P1 | DevOps | 3d | Sprint 1 | Pending |
+| 5 | Add observability (traces, metrics, logs) | P2 | Operations | 5d | Sprint 2 | Pending |
+| 6 | Security hardening (OWASP top 10) | P2 | Security | 5d | Sprint 3 | Pending |
+
+Categories: Bug Fix, Quality, Performance, DevOps, Operations, Security, Feature, Documentation
+Include 10-15 backlog items minimum. Reference specific SHADOW_RUN deviations and SPEC_LOCK gaps.
+
+## Cost Optimization
+
+| Resource | Current | Optimized | Savings | Action |
+|----------|---------|-----------|---------|--------|
+| Compute | $X/mo | $Y/mo | Z% | Right-size instances, auto-scaling |
+| Database | $X/mo | $Y/mo | Z% | Reserved instances, read replicas |
+| Storage | $X/mo | $Y/mo | Z% | Lifecycle policies, compression |
+
+## Team & Knowledge Transfer
+
+- Required skills for the modernized stack
+- Training plan for the team
+- Documentation deliverables (ADRs, runbooks, API docs)
+- Knowledge transfer sessions schedule
+
+---
+
+IMPORTANT:
+- All KPI targets must be quantified (numbers, percentages, time units)
+- Reference SHADOW_RUN deviations when populating the backlog
+- Reference SPEC_LOCK scenarios when discussing test coverage
+- Decommission timeline must have specific week ranges
+- Backlog items must have sprint assignments
+- This is a LIVING document — it will be refined via interactive chat`,
 
     examples: [
-      'Quarterly modernization sprints for remaining legacy components',
-      'Automated dependency updates with canary testing',
+      'COBOL payroll cutover: 8-week decommission, 15 backlog items, $12K/mo cloud target',
+      'RPG order system: 99.9% uptime target, weekly deploys, 4 sprint backlog',
     ],
   },
 };
