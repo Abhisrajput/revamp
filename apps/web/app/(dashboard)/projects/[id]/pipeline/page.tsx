@@ -210,8 +210,8 @@ export default function PipelinePage() {
               const rawData = artRes.data;
               const artifacts = Array.isArray(rawData) ? rawData : rawData?.artifacts || rawData?.data || [];
               const outputArt = artifacts.find((a: any) => a.artifact_type === 'stage_output');
-              if (outputArt?.metadata?.content) {
-                const content = outputArt.metadata.content;
+              const content = outputArt?.metadata?.content || outputArt?.metadata?.output;
+              if (content) {
                 usePipelineStore.getState().setStageOutput(idx, content);
                 // Cache in IndexedDB for next visit
                 setCachedOutput(runId, stageName, content);
@@ -356,10 +356,11 @@ export default function PipelinePage() {
           const rawData = stageRes.data;
           const artifacts = Array.isArray(rawData) ? rawData : rawData?.artifacts || rawData?.data || [];
           const outputArtifact = artifacts.find((a: any) => a.artifact_type === 'stage_output');
-          if (outputArtifact?.metadata?.content) {
+          const outputContent = outputArtifact?.metadata?.content || outputArtifact?.metadata?.output;
+          if (outputContent) {
             const stageIndex = s.stages.findIndex((st) => st.name === stageName);
             if (stageIndex >= 0) {
-              usePipelineStore.getState().setStageOutput(stageIndex, outputArtifact.metadata.content);
+              usePipelineStore.getState().setStageOutput(stageIndex, outputContent);
             }
           }
           // Rehydrate validation — prefer the separate validation_result artifact

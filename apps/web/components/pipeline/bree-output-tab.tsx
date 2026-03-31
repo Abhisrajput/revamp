@@ -25,17 +25,27 @@ export const BreeOutputTab = memo(function BreeOutputTab({ stageName, className 
   const pipelineRunId = usePipelineStore((s) => s.currentPipelineRunId);
   const [deepData, setDeepData] = useState<any>(null);
 
-  // Load basic BREE data from pipeline artifacts
+  // Load basic BREE data from pipeline artifacts — falls back to SCAN if no stage-specific data
   const { data: basicData, isLoading } = useQuery<any>({
     queryKey: ['bree-artifact', pipelineRunId, stageName],
     queryFn: async () => {
       if (!pipelineRunId) return null;
+      // Try stage-specific artifacts first
       const res = await apiClient.get(`/pipeline/${pipelineRunId}/artifacts/${stageName}`);
       const artifacts = res.data?.artifacts ?? res.data ?? [];
       const breeArt = artifacts.find((a: any) => a.artifact_type === 'bree_analysis');
       if (breeArt?.metadata) return breeArt.metadata;
       const scoutArt = artifacts.find((a: any) => a.artifact_type === 'scout_assessment');
       if (scoutArt?.metadata?.assessment) return { _scout: true, ...scoutArt.metadata.assessment };
+      // Fallback: load BREE data from SCAN stage (codebase analysis is shared)
+      if (stageName !== 'SCAN') {
+        const scanRes = await apiClient.get(`/pipeline/${pipelineRunId}/artifacts/SCAN`);
+        const scanArtifacts = scanRes.data?.artifacts ?? scanRes.data ?? [];
+        const scanBree = scanArtifacts.find((a: any) => a.artifact_type === 'bree_analysis');
+        if (scanBree?.metadata) return scanBree.metadata;
+        const scanScout = scanArtifacts.find((a: any) => a.artifact_type === 'scout_assessment');
+        if (scanScout?.metadata?.assessment) return { _scout: true, ...scanScout.metadata.assessment };
+      }
       return null;
     },
     staleTime: 30_000,

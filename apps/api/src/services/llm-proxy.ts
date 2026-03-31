@@ -317,9 +317,13 @@ export class LLMProxyService {
   /**
    * Create an LLMCallFn compatible with core-engine stage runner.
    * This is the main integration point.
+   *
+   * The returned function has a `.tokenUsage` property that accumulates
+   * input/output tokens across all calls made through this function.
    */
-  createCallFn(options?: { model?: string; maxTokens?: number }): LLMCallFn {
-    return async (req: LLMCallRequest): Promise<string> => {
+  createCallFn(options?: { model?: string; maxTokens?: number }): LLMCallFn & { tokenUsage: { inputTokens: number; outputTokens: number } } {
+    const tokenUsage = { inputTokens: 0, outputTokens: 0 };
+    const fn = async (req: LLMCallRequest): Promise<string> => {
       const messages: ChatMessage[] = [];
 
       // System prompt — mark as cacheable for Anthropic
@@ -364,6 +368,8 @@ export class LLMProxyService {
           req.onDelta,
           req.signal,
         );
+        tokenUsage.inputTokens += response.input_tokens || 0;
+        tokenUsage.outputTokens += response.output_tokens || 0;
         return response.content;
       }
 
@@ -377,8 +383,12 @@ export class LLMProxyService {
         },
       });
 
+      tokenUsage.inputTokens += response.input_tokens || 0;
+      tokenUsage.outputTokens += response.output_tokens || 0;
       return response.content;
     };
+    fn.tokenUsage = tokenUsage;
+    return fn;
   }
 
   /**

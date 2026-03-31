@@ -12,7 +12,6 @@ import { StageOutput } from '@/components/pipeline/stage-output';
 import { RefinableMarkdown } from '@/components/pipeline/refinable-markdown';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
-import { CodeEditor } from '@/components/editor/code-editor';
 import { usePipelineStore, canExecuteStage } from '@/lib/stores/pipeline-store';
 import { cn } from '@/lib/utils';
 import type { StagePanelProps } from './types';
@@ -149,14 +148,17 @@ function extractValidationFindings(text: string): ValidationFinding[] {
     const cells = row.split('|').map((c) => c.trim()).filter(Boolean);
     if (cells.length < 4) continue;
 
-    const idx = parseInt(cells[0], 10);
-    if (isNaN(idx)) continue;
+    // Index can be a number (1, 2) or an ID (VF-1, VF-2)
+    const idCell = cells[0];
+    const idx = parseInt(idCell.replace(/\D+/g, ''), 10);
+    if (isNaN(idx) && !idCell) continue;
 
-    const severity = cells[1].includes('Critical') ? 'Critical'
-      : cells[1].includes('Warning') ? 'Warning' : 'Info';
+    const severityRaw = cells[1];
+    const severity = /critical/i.test(severityRaw) ? 'Critical'
+      : /warning|high/i.test(severityRaw) ? 'Warning' : 'Info';
 
     findings.push({
-      index: idx,
+      index: idx || findings.length + 1,
       severity,
       finding: cells[2],
       evidence: cells[3],
@@ -197,9 +199,13 @@ function extractTraceability(text: string): TraceabilityRow[] {
 /** Extract a markdown section by heading */
 function extractSection(text: string, heading: string): string | null {
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(`^#{1,3}\\s*${escaped}[^\\n]*\\n([\\s\\S]*?)(?=^#{1,3}\\s|$)`, 'im');
-  const match = pattern.exec(text);
-  return match ? match[1].trim() : null;
+  const headingMatch = new RegExp(`(?:^|\\n)(#{1,3})\\s*(?:\\d+\\.?\\s*)?${escaped}[^\\n]*\\n`, 'i').exec(text);
+  if (!headingMatch) return null;
+  const level = headingMatch[1].length;
+  const startIndex = headingMatch.index + headingMatch[0].length;
+  const endMatch = new RegExp(`\\n#{1,${level}}\\s`).exec(text.slice(startIndex));
+  const content = endMatch ? text.slice(startIndex, startIndex + endMatch.index) : text.slice(startIndex);
+  return content.trim() || null;
 }
 
 /** Build file tree from feature file paths */
@@ -334,7 +340,7 @@ export default function SpecLockPanel({
   }, [featureFiles, testResults]);
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col h-full overflow-hidden">
       {/* ── Pre-execution ────────────────────────────────────────── */}
       {!hasOutput && !isRunning && (
         <>
@@ -382,9 +388,9 @@ export default function SpecLockPanel({
 
       {/* ── After execution ──────────────────────────────────────── */}
       {stage.output && !isRunning && (
-        <>
-          {/* Stats Bar */}
-          <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 px-4 py-2">
+        <div className="flex flex-col flex-1 min-h-0">
+          {/* Stats Bar — sticky */}
+          <div className="flex-shrink-0 flex items-center justify-between bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 px-4 py-2">
             <div className="flex items-center gap-4 text-xs">
               <span className="flex items-center gap-1.5 text-slate-500">
                 <BookOpen className="w-3.5 h-3.5" />
@@ -426,8 +432,8 @@ export default function SpecLockPanel({
             </div>
           </div>
 
-          {/* Tab Bar */}
-          <div className="flex gap-0.5 border-b border-slate-200 dark:border-slate-700 overflow-x-auto">
+          {/* Tab Bar — sticky */}
+          <div className="flex-shrink-0 flex gap-0.5 border-b border-slate-200 dark:border-slate-700 overflow-x-auto">
             {TABS.map(({ key, label, icon: Icon }) => (
               <button
                 key={key}
@@ -451,30 +457,27 @@ export default function SpecLockPanel({
             ))}
           </div>
 
+          {/* Tab content — scrollable area */}
+          <div className="flex-1 min-h-0 overflow-auto p-4">
+
           {/* ── Tab: Features ─────────────────────────────────────── */}
           {activeTab === 'features' && (
-            <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-0 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden" style={{ height: '460px' }}>
+            <div className="grid grid-cols-[220px_1fr] rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden" style={{ height: 'calc(100vh - 280px)' }}>
               {/* File tree sidebar */}
-              <div className="border-r border-slate-200 dark:border-slate-700 overflow-hidden">
+              <div className="border-r border-slate-200 dark:border-slate-700 overflow-auto">
                 <FileTree
                   nodes={fileTree}
                   selectedPath={selectedFile || undefined}
                   onFileClick={handleFileClick}
                   showSearch={false}
-                  maxHeight="460px"
                   className="border-0 rounded-none"
                 />
               </div>
 
               {/* Gherkin viewer */}
-              <div className="overflow-hidden">
+              <div className="overflow-auto bg-slate-950">
                 {currentFile ? (
-                  <CodeEditor
-                    value={currentFile.content}
-                    language="ruby"
-                    height="100%"
-                    readOnly
-                  />
+                  <GherkinViewer content={currentFile.content} />
                 ) : (
                   <div className="flex items-center justify-center h-full text-sm text-slate-400">
                     Select a .feature file to view
@@ -486,7 +489,7 @@ export default function SpecLockPanel({
 
           {/* ── Tab: Test Results ──────────────────────────────────── */}
           {activeTab === 'results' && (
-            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto" style={{ maxHeight: '460px' }}>
+            <div className="flex-1 min-h-0 rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto">
               {testResults.length > 0 ? (
                 <table className="w-full text-[11px]">
                   <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10">
@@ -587,7 +590,7 @@ export default function SpecLockPanel({
                   </div>
 
                   {/* Findings cards */}
-                  <div className="space-y-2 max-h-[420px] overflow-auto">
+                  <div className="space-y-2">
                     {findings.map((f) => (
                       <Card key={f.index} className={cn(
                         'overflow-hidden',
@@ -641,7 +644,7 @@ export default function SpecLockPanel({
 
           {/* ── Tab: Traceability Matrix ───────────────────────────── */}
           {activeTab === 'traceability' && (
-            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto" style={{ maxHeight: '460px' }}>
+            <div className="flex-1 min-h-0 rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto">
               {traceability.length > 0 ? (
                 <table className="w-full text-[11px]">
                   <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10">
@@ -722,7 +725,7 @@ export default function SpecLockPanel({
 
           {/* ── Tab: Regression Checklist ──────────────────────────── */}
           {activeTab === 'regression' && (
-            <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-4 max-h-[460px] overflow-auto">
+            <div className="flex-1 min-h-0 rounded-lg border border-slate-200 dark:border-slate-700 p-4 overflow-auto">
               {regressionSection ? (
                 <div className="prose prose-sm dark:prose-invert max-w-none text-xs">
                   <RegressionMarkdown content={regressionSection} />
@@ -737,21 +740,56 @@ export default function SpecLockPanel({
 
           {/* ── Tab: Full Output ───────────────────────────────────── */}
           {activeTab === 'output' && (
-            <RefinableMarkdown
-              text={stage.output}
-              onSectionRefined={(updated) => {
-                usePipelineStore.getState().setStageOutput(stageIndex, updated);
-              }}
-              onRefineRequest={onRefineRequest}
-            />
+            <div className="flex-1 min-h-0 overflow-auto">
+              <RefinableMarkdown
+                text={stage.output}
+                onSectionRefined={(updated) => {
+                  usePipelineStore.getState().setStageOutput(stageIndex, updated);
+                }}
+                onRefineRequest={onRefineRequest}
+              />
+            </div>
           )}
-        </>
+
+          </div>{/* end scrollable tab content */}
+        </div>
       )}
     </div>
   );
 }
 
 // ─── Regression Markdown Renderer ─────────────────────────────────
+
+// ─── Gherkin Syntax Viewer ──────────────────────────────────────
+
+function GherkinViewer({ content }: { content: string }) {
+  const lines = content.split('\n');
+  return (
+    <pre className="p-4 text-[12px] font-mono leading-relaxed">
+      {lines.map((line, i) => {
+        const trimmed = line.trimStart();
+        let cls = 'text-slate-400'; // default
+
+        if (/^#/.test(trimmed)) cls = 'text-slate-500 italic';
+        else if (/^@/.test(trimmed)) cls = 'text-amber-400';
+        else if (/^Feature:/.test(trimmed)) cls = 'text-blue-400 font-bold';
+        else if (/^Scenario Outline:/.test(trimmed)) cls = 'text-purple-400 font-semibold';
+        else if (/^Scenario:/.test(trimmed)) cls = 'text-purple-400 font-semibold';
+        else if (/^Background:/.test(trimmed)) cls = 'text-cyan-400 font-semibold';
+        else if (/^Examples:/.test(trimmed)) cls = 'text-cyan-400 font-semibold';
+        else if (/^\s*(Given|When|Then|And|But)\s/.test(line)) cls = 'text-green-400';
+        else if (/^\|/.test(trimmed)) cls = 'text-slate-300';
+
+        return (
+          <div key={i} className="flex">
+            <span className="w-8 text-right text-slate-600 select-none mr-4 shrink-0">{i + 1}</span>
+            <span className={cls}>{line || '\u00A0'}</span>
+          </div>
+        );
+      })}
+    </pre>
+  );
+}
 
 function RegressionMarkdown({ content }: { content: string }) {
   const lines = content.split('\n');

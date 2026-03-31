@@ -49,9 +49,13 @@ interface DecommissionPhase {
 
 function extractSection(text: string, heading: string): string | null {
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(`^#{1,3}\\s*${escaped}[^\\n]*\\n([\\s\\S]*?)(?=^#{1,3}\\s|$)`, 'im');
-  const match = pattern.exec(text);
-  return match ? match[1].trim() : null;
+  const headingMatch = new RegExp(`(?:^|\\n)(#{1,3})\\s*(?:\\d+\\.?\\s*)?${escaped}[^\\n]*\\n`, 'i').exec(text);
+  if (!headingMatch) return null;
+  const level = headingMatch[1].length;
+  const startIndex = headingMatch.index + headingMatch[0].length;
+  const endMatch = new RegExp(`\\n#{1,${level}}\\s`).exec(text.slice(startIndex));
+  const content = endMatch ? text.slice(startIndex, startIndex + endMatch.index) : text.slice(startIndex);
+  return content.trim() || null;
 }
 
 function extractKpis(text: string): KpiRow[] {

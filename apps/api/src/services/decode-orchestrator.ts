@@ -77,6 +77,7 @@ export interface DecodeOrchestrationOptions {
   onDelta?: OnDelta;
   signal?: AbortSignal;
   model?: string;
+  maxTokens?: number;
 }
 
 interface SubtaskPlan {
@@ -481,9 +482,10 @@ async function runDirectorPlanning(
 
   const agentRoster = await buildAgentRoster();
 
-  // Truncate SCAN output for the director prompt to avoid overwhelming context
-  const scanSummary = opts.scanOutput.length > 8000
-    ? opts.scanOutput.slice(0, 8000) + "\n\n[... SCAN output truncated for planning ...]"
+  // Truncate SCAN output for the director prompt — increased from 8K to 16K to preserve
+  // frontend component discovery that was being silently dropped at lower limits
+  const scanSummary = opts.scanOutput.length > 16000
+    ? opts.scanOutput.slice(0, 16000) + "\n\n[... SCAN output truncated for planning ...]"
     : opts.scanOutput;
 
   const prompt = DECODE_DIRECTOR_PLAN
@@ -572,9 +574,10 @@ async function executeSubtask(
   const codebaseContext = buildCodebaseContext(opts);
   const priorFindings = formatPriorFindings(priorResults);
 
-  // Provide SCAN output as primary context — truncate per subtask to manage token budget
-  const scanContext = opts.scanOutput.length > 12000
-    ? opts.scanOutput.slice(0, 12000) + "\n\n[... SCAN output truncated ...]"
+  // Provide SCAN output as primary context — increased from 12K to 20K to preserve
+  // all discovered components (backend + frontend + infrastructure)
+  const scanContext = opts.scanOutput.length > 20000
+    ? opts.scanOutput.slice(0, 20000) + "\n\n[... SCAN output truncated ...]"
     : opts.scanOutput;
 
   const filledPrompt = template
@@ -582,9 +585,10 @@ async function executeSubtask(
     .replace("{{scanOutput}}", scanContext)
     .replace("{{priorFindings}}", priorFindings);
 
-  // Create LLM call function
+  // Create LLM call function — use project-configured maxTokens
+  const decodeMaxTokens = opts.maxTokens || 32768;
   let llmCallFn = llmProxyService.createCallFn({
-    maxTokens: 8192,
+    maxTokens: decodeMaxTokens,
     model: opts.model || "",
   });
 
@@ -750,7 +754,7 @@ async function composeResults(
 
   // Use maximum output tokens — this is the SOLE output the user sees
   const composerCallFn = llmProxyService.createCallFn({
-    maxTokens: 32768,
+    maxTokens: opts.maxTokens || 32768,
     model: opts.model || "",
   });
 
@@ -781,7 +785,7 @@ async function refineComposition(
   refinementPrompt: string,
 ): Promise<string> {
   const callFn = llmProxyService.createCallFn({
-    maxTokens: 32768,
+    maxTokens: opts.maxTokens || 32768,
     model: opts.model || "",
   });
 

@@ -46,6 +46,7 @@ export interface ForgeOrchestrationOptions {
   onDelta?: OnDelta;
   signal?: AbortSignal;
   model?: string;
+  maxTokens?: number;
 }
 
 interface GeneratedFile {
@@ -99,21 +100,33 @@ export async function orchestrateForgeStage(
   const projectConfig = opts.projectContext as any;
   const targetStack = projectConfig?.target_stack || projectConfig?.targetStack || "typescript-express";
   const targetCloud = projectConfig?.target_cloud || projectConfig?.targetCloud || "aws";
+  const sourceLanguages = (projectConfig?.sourceLanguages as string[])?.join(", ") || (projectConfig?.source_languages as string[])?.join(", ") || "unknown";
 
   emit("context_retrieval", {
-    message: `Context loaded: DECODE (${decodeOutput.length} chars), ARCHITECT (${architectOutput.length} chars), SPEC_LOCK (${specLockOutput.length} chars)`,
+    message: `Context loaded: DECODE (${decodeOutput.length} chars), ARCHITECT (${architectOutput.length} chars), SPEC_LOCK (${specLockOutput.length} chars), SCAN (${scanOutput.length} chars)`,
   });
 
   // ── STEP 2: Planning phase ────────────────────────────────────
   emit("director_planning", { message: "Planning code generation..." });
   checkAbort();
 
-  const planCallFn = llmProxyService.createCallFn({ maxTokens: 8192, model: opts.model });
+  const planCallFn = llmProxyService.createCallFn({ maxTokens: opts.maxTokens || 8192, model: opts.model });
+
+  // Extract frontend signals from SCAN output for planning
+  const scanLower = scanOutput.toLowerCase();
+  const hasFrontend = ["vue", "react", "angular", "blade", "twig", "javascript", "typescript", ".jsx", ".tsx", ".vue", ".html"].some(fw => scanLower.includes(fw));
+  const frontendNote = hasFrontend
+    ? `\n\nCRITICAL: The source codebase contains frontend code (detected in SCAN). You MUST include frontend components in the plan — pages, components, routing, state management, API client. Do NOT generate a backend-only plan.`
+    : "";
 
   const planPrompt = `You are a code generation planner. Based on the business rules and target architecture below, create a JSON plan of files to generate.
 
+## Source Languages & Frameworks: ${sourceLanguages}
 ## Target Stack: ${targetStack}
 ## Target Cloud: ${targetCloud}
+
+## Codebase Discovery (from SCAN stage):
+${scanOutput.slice(0, 6000)}
 
 ## Business Rules & Workflows (from DECODE stage):
 ${decodeOutput.slice(0, 12000)}
@@ -127,14 +140,16 @@ Generate a JSON array of files to create. Each file should have:
 - language: programming language
 - rules: array of business rule IDs this file implements (e.g., ["BR-001", "BR-002"])
 
-Output ONLY valid JSON wrapped in \`\`\`json code fence. Generate 10-20 files covering:
+Output ONLY valid JSON wrapped in \`\`\`json code fence. Generate 15-30 files covering ALL layers of the source codebase:
 1. Domain models/entities
 2. Services/business logic
 3. API routes/controllers
 4. Database schema/migrations
 5. Tests (unit + integration)
 6. Configuration (Docker, env, etc.)
-7. Frontend components (if applicable)`;
+7. Frontend pages and components (REQUIRED if source has frontend code)
+8. Frontend routing and state management (REQUIRED if source has frontend code)
+9. Frontend API client/services (REQUIRED if source has frontend code)${frontendNote}`;
 
   let filePlan: FilePlan[] = [];
   try {
@@ -181,7 +196,7 @@ Output ONLY valid JSON wrapped in \`\`\`json code fence. Generate 10-20 files co
     batches.push(filePlan.slice(i, i + batchSize));
   }
 
-  const codeCallFn = llmProxyService.createCallFn({ maxTokens: 16384, model: opts.model });
+  const codeCallFn = llmProxyService.createCallFn({ maxTokens: opts.maxTokens || 16384, model: opts.model });
 
   for (let bi = 0; bi < batches.length; bi++) {
     const batch = batches[bi];

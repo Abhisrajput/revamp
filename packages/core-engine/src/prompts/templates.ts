@@ -436,6 +436,8 @@ IMPORTANT RULES:
       'decodeOutput',
       'targetStack',
       'targetCloud',
+      'sourceLanguages',
+      'scanOutput',
     ],
     template: `You are performing Stage 5 (ARCHITECT) of an 8-stage modernization pipeline. Your job is to design the target architecture and migration roadmap based on the BLUEPRINT bounded contexts and DECODE business rules.
 
@@ -445,8 +447,14 @@ IMPORTANT RULES:
 **DECODE Output (business rules, workflows, entities):**
 {{decodeOutput}}
 
+**Source Languages & Frameworks (discovered by SCAN):** {{sourceLanguages}}
 **Target Stack:** {{targetStack}}
 **Target Cloud:** {{targetCloud}}
+
+**SCAN Output (codebase discovery):**
+{{scanOutput}}
+
+CRITICAL COVERAGE REQUIREMENT: You MUST design components for ALL discovered source languages and frameworks listed above. If the source codebase includes frontend code (Vue.js, React, Blade, Twig, JavaScript, etc.), you MUST include a frontend modernization strategy and frontend components in the Component Inventory. Do NOT silently omit any technology layer found in the source codebase.
 
 ---
 
@@ -466,7 +474,7 @@ Describe the modernized system architecture:
 | event-bus | Infrastructure | Kafka/SQS | Cross-cutting | Async events between services | Partition-based |
 | postgres-primary | Database | PostgreSQL 16 | Commerce | Order, Payment data | Read replicas |
 
-### Architecture Diagram (Mermaid)
+### Architecture Diagram (Mermaid) — REQUIRED
 
 \`\`\`mermaid
 graph TD
@@ -486,23 +494,74 @@ graph TD
 - Asynchronous: Events for cross-context data flow
 - Specify which calls are sync vs async and why
 
+### Data Flow Diagram
+
+YOU MUST output a \`\`\`mermaid sequenceDiagram showing the most critical business workflow:
+
+\`\`\`mermaid
+sequenceDiagram
+    participant Client
+    participant GW as API Gateway
+    participant AUTH as Auth Service
+    participant SVC as Business Service
+    participant DB as Database
+    participant MQ as Event Bus
+    Client->>GW: Request
+    GW->>AUTH: Validate token
+    AUTH-->>GW: OK
+    GW->>SVC: Process
+    SVC->>DB: Query/Update
+    SVC->>MQ: Emit event
+    SVC-->>GW: Response
+    GW-->>Client: Result
+\`\`\`
+
+### Infrastructure Diagram
+
+YOU MUST output a \`\`\`mermaid graph showing cloud deployment topology (VPC, subnets, load balancer, compute, database, cache, queue):
+
+\`\`\`mermaid
+graph TD
+    subgraph Cloud["{{targetCloud}}"]
+        subgraph VPC["VPC"]
+            LB[Load Balancer] --> ECS[ECS/Kubernetes]
+            ECS --> SVC1[Auth Service]
+            ECS --> SVC2[Account Service]
+            ECS --> SVC3[Transaction Service]
+        end
+        DB[(RDS PostgreSQL)]
+        CACHE[(ElastiCache Redis)]
+        MQ[Kafka/MSK]
+    end
+    ECS --> DB
+    ECS --> CACHE
+    ECS --> MQ
+\`\`\`
+
 ## Technology Decision Matrix
 
-For each technology choice, compare alternatives:
+For EACH technology category below, provide a row with Chosen, 2 alternatives, and a DETAILED rationale (2-4 sentences citing specific project requirements, business rules, SLAs, or legacy constraints — not generic "industry standard" reasons).
+
+YOU MUST cover ALL of these categories (minimum 10 rows):
 
 | Category | Chosen | Alternative 1 | Alternative 2 | Rationale |
 |----------|--------|--------------|---------------|-----------|
-| Language | Java 21 + Spring Boot 3 | Go + Chi | Node.js + Fastify | Team expertise, enterprise ecosystem |
-| Database | PostgreSQL 16 | MySQL 8 | MongoDB 7 | ACID required, existing schema compatibility |
-| Message Queue | Apache Kafka | AWS SQS | RabbitMQ | Event sourcing capability, partition ordering |
-| Container | Docker + Kubernetes | ECS Fargate | Docker Swarm | Multi-cloud portability, HPA support |
-| CI/CD | GitHub Actions | GitLab CI | Jenkins | Existing GitHub org, marketplace actions |
-| Observability | OpenTelemetry + Grafana | Datadog | New Relic | Open standards, cost control |
+| Language & Runtime | e.g. Java 21 + Spring Boot 3 | Go + Chi | Node.js + Fastify | Why this language fits the team, legacy migration patterns, and performance requirements |
+| Primary Database | e.g. PostgreSQL 16 | MySQL 8 | MongoDB 7 | ACID requirements for balance ops, schema compatibility with legacy data model |
+| Connection Pooling | e.g. pgBouncer | HikariCP | Druid | Connection limits, memory per connection, scaling profile |
+| Cache Layer | e.g. Redis 7 | Memcached | DynamoDB DAX | Session management, TTL, data structures, latency SLA |
+| Message Queue / Event Bus | e.g. Apache Kafka | AWS SQS | RabbitMQ | Ordering guarantees, replay capability, audit requirements |
+| API Gateway | e.g. Spring Cloud Gateway | AWS API Gateway | Kong | JWT validation, rate limiting, latency budget |
+| Container / Compute | e.g. ECS Fargate | Kubernetes | AWS Lambda | Team ops burden, cold start SLA, scaling requirements |
+| CI/CD Pipeline | e.g. GitHub Actions + ArgoCD | GitLab CI | Jenkins | Integration with cloud, deployment strategy, cost |
+| Observability | e.g. OpenTelemetry + Grafana | Datadog | AWS X-Ray | Vendor lock-in, cost, trace completeness |
+| Security / Secrets | e.g. AWS Secrets Manager + mTLS | HashiCorp Vault | API Keys | Key rotation, inter-service auth, compliance |
 
-Requirements:
-- At least 6 technology categories
-- At least 2 alternatives per category
-- Concrete rationale (not "industry standard" — cite specific project needs)
+Rationale requirements:
+- Reference specific business rules (BR-IDs) or SLAs where the choice matters
+- Cite legacy system constraints that influenced the decision
+- Include concrete numbers (latency, cost, connection limits) where applicable
+- Explain why alternatives were rejected, not just why the choice was made
 
 ## Migration Roadmap
 
@@ -545,35 +604,16 @@ Target: 6-10 risks minimum.
 
 Compare to estimated legacy hosting cost.
 
-## Infrastructure Diagram (Mermaid)
-
-\`\`\`mermaid
-graph TD
-    subgraph Cloud["{{targetCloud}}"]
-        subgraph VPC["VPC"]
-            LB[Load Balancer] --> K8S[Kubernetes Cluster]
-            K8S --> SVC1[Auth Pod]
-            K8S --> SVC2[Order Pod]
-            K8S --> SVC3[Report Pod]
-        end
-        DB[(RDS PostgreSQL)]
-        CACHE[(Redis/ElastiCache)]
-        MQ[Kafka/SQS]
-    end
-    K8S --> DB
-    K8S --> CACHE
-    K8S --> MQ
-\`\`\`
-
 ---
 
 IMPORTANT:
 - Reference BLUEPRINT bounded contexts by name when assigning components
 - Reference SPEC_LOCK BDD scenarios (BR-{id}) as phase gate criteria
 - Technology decisions must cite specific project needs, not generic best practices
-- TWO Mermaid diagrams minimum (architecture + infrastructure)
+- THREE Mermaid diagrams minimum (architecture + data flow + infrastructure) — each in a \`\`\`mermaid code block
 - Cost estimates must be concrete dollar amounts, not "varies"
-- Risk register must include probability, impact, AND mitigation`,
+- Risk register must include probability, impact, AND mitigation
+- FULL STACK COVERAGE: Your Component Inventory MUST include components for EVERY technology layer discovered in the source codebase (backend services, frontend apps, database migrations, batch jobs, integrations). If the source has frontend code, you MUST include frontend components with their target framework, migration strategy, and responsibilities. Do NOT design a backend-only architecture when the source includes frontend code.`,
 
     examples: [
       'COBOL → Java/Spring: 4 phases, 13 sprints, $8K/mo cloud, 8 risks',

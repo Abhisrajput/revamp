@@ -195,9 +195,11 @@ export const stageContracts: StageContract[] = [
     ],
     requiredArtifacts: [
       { type: 'diagram', description: 'Target architecture diagram (Mermaid)', required: true },
+      { type: 'diagram', description: 'Data flow sequence diagram (Mermaid)', required: true },
+      { type: 'diagram', description: 'Infrastructure deployment diagram (Mermaid)', required: true },
     ],
     requiredPatterns: [
-      { name: 'mermaid_blocks', pattern: /```mermaid[\s\S]*?```/g, minOccurrences: 2, description: 'Must include 2+ Mermaid diagrams (architecture + infrastructure)' },
+      { name: 'mermaid_blocks', pattern: /```mermaid[\s\S]*?```/g, minOccurrences: 3, description: 'Must include 3 Mermaid diagrams (architecture + data flow + infrastructure)' },
       { name: 'cost_values', pattern: /\$[\d,]+/g, minOccurrences: 4, description: 'Must include concrete cost estimates' },
       { name: 'phase_refs', pattern: /Phase\s+\d+/gi, minOccurrences: 3, description: 'Must have at least 3 migration phases' },
       { name: 'br_refs', pattern: /BR-\d+/g, minOccurrences: 3, description: 'Must reference SPEC_LOCK business rules as gate criteria' },

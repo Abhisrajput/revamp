@@ -28,6 +28,7 @@ import {
   type UserFeedback,
   getStageOrder,
 } from "@revamp/core-engine";
+import { enforceContract } from "@revamp/core-engine";
 import { llmProxyService } from "./llm-proxy.js";
 import {
   matchAndAssignAgent,
@@ -505,8 +506,12 @@ export class PipelineService {
       || process.env.LLM_DEFAULT_MODEL
       || agentCtx?.preferredModel
       || "";
+    // Read maxTokens from project settings (set via Settings page), fallback to 32768
+    const projectSettings = (run.project as any).settings as Record<string, unknown> | null;
+    const configuredMaxTokens = (projectSettings?.maxTokens as number) || 32768;
+
     let llmCallFn = llmProxyService.createCallFn({
-      maxTokens: 8192,
+      maxTokens: configuredMaxTokens,
       model: modelName,
     });
     const llmEvalFn = options?.skipLlmEval
@@ -770,6 +775,7 @@ export class PipelineService {
         onDelta: options?.onDelta,
         signal: options?.signal,
         model: modelName,
+        maxTokens: configuredMaxTokens,
       });
 
       // Store result
@@ -832,6 +838,7 @@ export class PipelineService {
         onDelta: options?.onDelta,
         signal: options?.signal,
         model: modelName,
+        maxTokens: configuredMaxTokens,
       });
 
       if (forgeResult.output) {
@@ -861,6 +868,22 @@ export class PipelineService {
       return forgeResult;
     }
 
+    // Auto-enrich templateVars with source/scan context so ARCHITECT and other
+    // stages can see ALL discovered components (prevents frontend dropout).
+    const enrichedTemplateVars = { ...templateVars };
+    if (!enrichedTemplateVars.sourceLanguages) {
+      enrichedTemplateVars.sourceLanguages = projectContext.sourceLanguages.join(", ");
+    }
+    if (!enrichedTemplateVars.scanOutput) {
+      const scanPrior = priorOutputs.find(o => o.stageName === "SCAN");
+      if (scanPrior?.output) {
+        // Include enough of SCAN output to preserve component discovery
+        enrichedTemplateVars.scanOutput = scanPrior.output.length > 16000
+          ? scanPrior.output.slice(0, 16000) + "\n\n[... SCAN output truncated ...]"
+          : scanPrior.output;
+      }
+    }
+
     // Execute stage — with fallback chain.
     // If the Go orchestrator is unreachable or overloaded, we retry with
     // degraded settings (no reviewer, no LLM eval) to maximize the chance
@@ -873,7 +896,7 @@ export class PipelineService {
         stageName,
         stageIndex: stageConfig.index,
         pipelineRunId,
-        templateVars,
+        templateVars: enrichedTemplateVars,
         llmCallFn,
         llmEvalFn,
         reviewerLlmCallFn,
@@ -927,7 +950,7 @@ export class PipelineService {
         stageName,
         stageIndex: stageConfig.index,
         pipelineRunId,
-        templateVars,
+        templateVars: enrichedTemplateVars,
         llmCallFn,
         // Omit reviewer and LLM eval — reduce external calls
         llmEvalFn: undefined,
@@ -944,22 +967,98 @@ export class PipelineService {
       });
     }
 
+    // ─── Contract enforcement + auto-refinement ───────────────────
+    if (result.output) {
+      const contractResult = enforceContract(stageName, result.output);
+
+      if (!contractResult.passed && contractResult.refinementPrompt) {
+        const maxPasses = contractResult.violations.some((v) => v.severity === 'critical') ? 2 : 1;
+
+        for (let pass = 0; pass < maxPasses; pass++) {
+          options?.onEvent?.({
+            phase: 'contract_refinement',
+            stageName,
+            stageIndex: stageConfig.index,
+            timestamp: new Date().toISOString(),
+            data: {
+              pass: pass + 1,
+              maxPasses,
+              violations: contractResult.violations.map((v) => v.description),
+              completenessScore: contractResult.completenessScore,
+            },
+          });
+
+          try {
+            const refinedResult = await runStage({
+              project: projectContext,
+              stageName,
+              stageIndex: stageConfig.index,
+              pipelineRunId,
+              templateVars: enrichedTemplateVars,
+              llmCallFn,
+              priorOutputs,
+              feedback,
+              onEvent: options?.onEvent,
+              onDelta: options?.onDelta,
+              signal: options?.signal,
+              skipLlmEval: true,
+              skipReview: true,
+              promptOverride: `The previous output was incomplete. Fix ONLY the following gaps — keep all existing content and append the missing sections:\n\n${contractResult.refinementPrompt}\n\nPrevious output (keep and extend):\n${result.output}`,
+              model: modelName,
+            });
+
+            if (refinedResult.output && refinedResult.output.length > result.output.length) {
+              result = refinedResult;
+              const recheck = enforceContract(stageName, result.output);
+              if (recheck.passed) break;
+            } else {
+              break; // Refinement didn't improve — stop
+            }
+          } catch {
+            break; // Refinement failed — use what we have
+          }
+        }
+      }
+
+      // Log contract result
+      if (!contractResult.passed) {
+        console.warn(
+          `[PipelineService] Contract violations for ${stageName}:`,
+          contractResult.violations.map((v) => `[${v.severity}] ${v.description}`),
+        );
+      }
+    }
+
     // Store result
     if (result.output) {
       await this.storeStageOutput(pipelineRunId, stageName, result);
     }
 
-    // Record pipeline-level spend from token usage
+    // Record pipeline-level spend from token usage.
+    // Primary source: llmCallFn.tokenUsage (accumulated from actual LLM responses).
+    // Fallback: phase event data (may be empty for stages that don't emit token phases).
     try {
-      const stageInputTokens = result.phases?.reduce(
-        (s, p) => s + (Number(p.data?.inputTokens) || 0), 0,
-      ) || 0;
-      const stageOutputTokens = result.phases?.reduce(
-        (s, p) => s + (Number(p.data?.outputTokens) || 0), 0,
-      ) || 0;
+      const proxyTokens = (llmCallFn as any).tokenUsage as { inputTokens: number; outputTokens: number } | undefined;
+      const stageInputTokens = proxyTokens?.inputTokens
+        || result.phases?.reduce((s, p) => s + (Number(p.data?.inputTokens) || 0), 0)
+        || 0;
+      const stageOutputTokens = proxyTokens?.outputTokens
+        || result.phases?.reduce((s, p) => s + (Number(p.data?.outputTokens) || 0), 0)
+        || 0;
       if (stageInputTokens > 0 || stageOutputTokens > 0) {
         const cost = estimateCostCents(stageInputTokens, stageOutputTokens, modelName);
         await recordPipelineSpend(pipelineRunId, cost);
+
+        // Write to llmUsage table so dashboard/usage endpoints can display it
+        await db.insert(llmUsage).values({
+          id: crypto.randomUUID(),
+          project_id: run.project.id,
+          pipeline_run_id: pipelineRunId,
+          model: modelName || "unknown",
+          input_tokens: stageInputTokens,
+          output_tokens: stageOutputTokens,
+          cost: Math.round(cost),
+        });
       }
     } catch {
       // Non-fatal — budget tracking failure shouldn't break pipeline

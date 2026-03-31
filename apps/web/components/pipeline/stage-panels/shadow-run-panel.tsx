@@ -73,9 +73,13 @@ interface CutoverVerdict {
 /** Extract section between heading and next heading */
 function extractSection(text: string, heading: string): string | null {
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(`^#{1,3}\\s*${escaped}[^\\n]*\\n([\\s\\S]*?)(?=^#{1,3}\\s|$)`, 'im');
-  const match = pattern.exec(text);
-  return match ? match[1].trim() : null;
+  const headingMatch = new RegExp(`(?:^|\\n)(#{1,3})\\s*(?:\\d+\\.?\\s*)?${escaped}[^\\n]*\\n`, 'i').exec(text);
+  if (!headingMatch) return null;
+  const level = headingMatch[1].length;
+  const startIndex = headingMatch.index + headingMatch[0].length;
+  const endMatch = new RegExp(`\\n#{1,${level}}\\s`).exec(text.slice(startIndex));
+  const content = endMatch ? text.slice(startIndex, startIndex + endMatch.index) : text.slice(startIndex);
+  return content.trim() || null;
 }
 
 function extractTestMatrix(text: string): TestMatrixRow[] {
@@ -91,8 +95,8 @@ function extractTestMatrix(text: string): TestMatrixRow[] {
     const cells = line.split('|').map((c) => c.trim()).filter(Boolean);
     if (cells.length < 7) continue;
 
-    const idx = parseInt(cells[0], 10);
-    if (isNaN(idx)) continue;
+    const idx = parseInt(cells[0].replace(/\D+/g, ''), 10);
+    if (isNaN(idx) && !cells[0]) continue;
 
     const matchStr = cells[5].toUpperCase();
     const match: TestMatrixRow['match'] =
@@ -101,7 +105,7 @@ function extractTestMatrix(text: string): TestMatrixRow[] {
       matchStr.includes('IMPROVEMENT') ? 'IMPROVEMENT' : 'MATCH';
 
     rows.push({
-      index: idx,
+      index: idx || rows.length + 1,
       scenario: cells[1],
       tags: cells[2],
       legacyResult: cells[3],
@@ -225,12 +229,12 @@ function extractDeviationSummary(text: string): DeviationSummaryRow[] {
     const cells = line.split('|').map((c) => c.trim()).filter(Boolean);
     if (cells.length < 6) continue;
 
-    const idx = parseInt(cells[0], 10);
-    if (isNaN(idx)) continue;
+    const idx = parseInt(cells[0].replace(/\D+/g, ''), 10);
+    if (isNaN(idx) && !cells[0]) continue;
 
     const blockingStr = cells[6]?.toUpperCase() || cells[5]?.toUpperCase() || '';
     rows.push({
-      index: idx,
+      index: idx || rows.length + 1,
       deviation: cells[1],
       severity: cells[2],
       category: cells[3],
@@ -321,7 +325,7 @@ export default function ShadowRunPanel({
   const matchRate = testMatrix.length > 0 ? Math.round((matchCount / testMatrix.length) * 100) : 0;
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col h-full overflow-hidden">
       {/* ── Pre-execution ────────────────────────────────────────── */}
       {!hasOutput && !isRunning && (
         <>
@@ -376,9 +380,9 @@ export default function ShadowRunPanel({
 
       {/* ── After execution ──────────────────────────────────────── */}
       {stage.output && !isRunning && (
-        <>
-          {/* Stats Bar */}
-          <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 px-4 py-2">
+        <div className="flex flex-col flex-1 min-h-0">
+          {/* Stats Bar — sticky */}
+          <div className="flex-shrink-0 flex items-center justify-between bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 px-4 py-2">
             <div className="flex items-center gap-4 text-xs">
               <span className="flex items-center gap-1.5 text-slate-500">
                 <BarChart3 className="w-3.5 h-3.5" />
@@ -434,8 +438,8 @@ export default function ShadowRunPanel({
             </div>
           </div>
 
-          {/* Tab Bar */}
-          <div className="flex gap-0.5 border-b border-slate-200 dark:border-slate-700 overflow-x-auto">
+          {/* Tab Bar — sticky */}
+          <div className="flex-shrink-0 flex gap-0.5 border-b border-slate-200 dark:border-slate-700 overflow-x-auto">
             {TABS.map(({ key, label, icon: Icon }) => (
               <button
                 key={key}
@@ -456,9 +460,12 @@ export default function ShadowRunPanel({
             ))}
           </div>
 
+          {/* Tab content — scrollable */}
+          <div className="flex-1 min-h-0 overflow-auto p-4">
+
           {/* ── Tab: Test Matrix ───────────────────────────────────── */}
           {activeTab === 'matrix' && (
-            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto" style={{ maxHeight: '460px' }}>
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto">
               {testMatrix.length > 0 ? (
                 <table className="w-full text-[11px]">
                   <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10">
@@ -528,7 +535,7 @@ export default function ShadowRunPanel({
 
           {/* ── Tab: Behavioral Comparison ──────────────────────────── */}
           {activeTab === 'comparison' && (
-            <div className="space-y-3 max-h-[460px] overflow-auto">
+            <div className="space-y-3">
               {deviationDetails.length > 0 ? (
                 deviationDetails.map((d) => (
                   <Card key={d.id} className={cn(
@@ -592,7 +599,7 @@ export default function ShadowRunPanel({
 
           {/* ── Tab: Performance ────────────────────────────────────── */}
           {activeTab === 'performance' && (
-            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto" style={{ maxHeight: '460px' }}>
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto">
               {performance.length > 0 ? (
                 <table className="w-full text-[11px]">
                   <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10">
@@ -648,7 +655,7 @@ export default function ShadowRunPanel({
 
           {/* ── Tab: Deviations ─────────────────────────────────────── */}
           {activeTab === 'deviations' && (
-            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto" style={{ maxHeight: '460px' }}>
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto">
               {deviationSummary.length > 0 ? (
                 <table className="w-full text-[11px]">
                   <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10">
@@ -791,7 +798,9 @@ export default function ShadowRunPanel({
               onRefineRequest={onRefineRequest}
             />
           )}
-        </>
+
+          </div>{/* end scrollable tab content */}
+        </div>
       )}
     </div>
   );

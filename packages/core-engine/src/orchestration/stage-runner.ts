@@ -54,6 +54,7 @@ export type StagePhase =
   | 'composing'           // Composing subtask results into final output (multi-agent SCAN)
   | 'scout_failed'        // Scout triage failed (multi-agent SCAN)
   | 'bree_analysis'       // BREE Engine running static analysis
+  | 'contract_refinement' // Auto-refining to meet stage contract
   | 'completed'            // Stage done successfully
   | 'failed';              // Stage failed
 
