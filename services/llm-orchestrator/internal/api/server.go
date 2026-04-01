@@ -18,13 +18,14 @@ import (
 
 // Server represents the HTTP server
 type Server struct {
-	Router     *chi.Mux
-	config     *config.Config
-	engine     *orchestrator.Engine
-	workerPool *queue.WorkerPool
-	redis      *redis.Client
-	metrics    *metrics.Registry
-	logger     *zap.Logger
+	Router      *chi.Mux
+	config      *config.Config
+	engine      *orchestrator.Engine
+	workerPool  *queue.WorkerPool
+	redis       *redis.Client
+	metrics     *metrics.Registry
+	logger      *zap.Logger
+	rateLimiter *RateLimiter
 }
 
 // NewServer creates a new HTTP server
@@ -37,12 +38,13 @@ func NewServer(
 	logger *zap.Logger,
 ) *Server {
 	s := &Server{
-		config:     cfg,
-		engine:     engine,
-		workerPool: workerPool,
-		redis:      redis,
-		metrics:    metricsRegistry,
-		logger:     logger,
+		config:      cfg,
+		engine:      engine,
+		workerPool:  workerPool,
+		redis:       redis,
+		metrics:     metricsRegistry,
+		logger:      logger,
+		rateLimiter: NewRateLimiter(redis, cfg.RateLimitPerMinute, logger),
 	}
 
 	s.Router = s.setupRouter()
@@ -147,13 +149,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// rateLimitMiddleware implements rate limiting
+// rateLimitMiddleware delegates to the Redis-backed sliding window rate limiter.
 func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// In production, implement proper rate limiting using Redis
-		// For now, just pass through
-		next.ServeHTTP(w, r)
-	})
+	return s.rateLimiter.Middleware(next)
 }
 
 // handleHealth handles the health check endpoint

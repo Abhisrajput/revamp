@@ -20,6 +20,10 @@ impl LanguageParser for DelphiParser {
     fn supported_dialects(&self) -> &[&'static str] { &["Delphi-7", "Delphi-XE", "Delphi-11"] }
     fn file_extensions(&self) -> &[&'static str] { &["pas", "dpr", "dpk", "dfm"] }
 
+    fn nir_coverage_pct(&self) -> f64 { 0.58 }
+    fn recommended_backend(&self) -> &'static str { "tree-sitter (pascal) + DFM" }
+    fn estimated_dev_effort(&self) -> &'static str { "2-3 weeks to production" }
+
     fn can_parse(&self, file: &SourceFile) -> bool {
         let ext_match = self.file_extensions().contains(&file.extension.as_str());
         let lower = file.header.to_lowercase();

@@ -23,6 +23,10 @@ impl LanguageParser for NaturalParser {
     fn supported_dialects(&self) -> &[&'static str] { &["NATURAL-8", "NATURAL-9"] }
     fn file_extensions(&self) -> &[&'static str] { &["nsp", "nsn", "nss", "nsm", "nsl"] }
 
+    fn nir_coverage_pct(&self) -> f64 { 0.70 }
+    fn recommended_backend(&self) -> &'static str { "custom (no OSS NATURAL parser)" }
+    fn estimated_dev_effort(&self) -> &'static str { "2-3 weeks to production" }
+
     fn can_parse(&self, file: &SourceFile) -> bool {
         let ext_match = self.file_extensions().contains(&file.extension.as_str());
         let upper = file.header.to_uppercase();

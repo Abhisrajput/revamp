@@ -20,6 +20,10 @@ impl LanguageParser for SasParser {
     fn supported_dialects(&self) -> &[&'static str] { &["SAS-Base", "SAS-Macro", "SAS-SQL"] }
     fn file_extensions(&self) -> &[&'static str] { &["sas"] }
 
+    fn nir_coverage_pct(&self) -> f64 { 0.70 }
+    fn recommended_backend(&self) -> &'static str { "custom (DATA/PROC + macros)" }
+    fn estimated_dev_effort(&self) -> &'static str { "2-3 weeks to production" }
+
     fn can_parse(&self, file: &SourceFile) -> bool {
         let ext_match = self.file_extensions().contains(&file.extension.as_str());
         let lower = file.header.to_lowercase();

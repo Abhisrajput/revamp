@@ -137,6 +137,10 @@ impl LanguageParser for JclParser {
     fn supported_dialects(&self) -> &[&'static str] { &["JES2", "JES3"] }
     fn file_extensions(&self) -> &[&'static str] { &["jcl", "proc", "prc"] }
 
+    fn nir_coverage_pct(&self) -> f64 { 0.72 }
+    fn recommended_backend(&self) -> &'static str { "custom JCL statement parser" }
+    fn estimated_dev_effort(&self) -> &'static str { "1 week to production" }
+
     fn can_parse(&self, file: &SourceFile) -> bool {
         let ext_match = self.file_extensions().contains(&file.extension.as_str());
         let content_match = file.header.lines().take(5).any(|l| {

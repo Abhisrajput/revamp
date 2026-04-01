@@ -13,7 +13,7 @@
 import crypto from "crypto";
 import { db } from "@/db/index.js";
 import { stageArtifacts, agentSubtasks, agentPersonas } from "@/db/schema.js";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, or, isNull, inArray, asc } from "drizzle-orm";
 import { PipelineStageName } from "@revamp/shared-types/pipeline";
 import {
   type StageRunResult,
@@ -1347,9 +1347,16 @@ async function spawnSpecialistAgent(
     return { id: existing.id, name: existing.name, slug: existing.slug };
   }
 
-  // Determine the speciality from detected languages
-  const langLabel = detectedLangs.map((l) => l.charAt(0).toUpperCase() + l.slice(1)).join("/");
-  const name = `${langLabel} ${plan.title} Specialist`;
+  // Build a concise, readable name for the auto-spawned agent.
+  // Old pattern produced "Cobol/Python COBOL/CICS/VSAM Legacy Pattern Analysis Specialist"
+  // which is unreadable in org charts and dashboards.
+  const langLabel = detectedLangs.slice(0, 2).map((l) => l.charAt(0).toUpperCase() + l.slice(1)).join("/");
+  // Extract a short focus label from the subtask type (slug-like) rather than the full title
+  const focusLabel = plan.type
+    .replace(/-/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\s+(Analysis|Assessment|Review|Mapping|Deepdive)$/i, "");
+  const name = `${langLabel} ${focusLabel} Specialist`.slice(0, 60);
 
   // Build skills from plan requirements + detected languages
   const skills = [
@@ -1362,10 +1369,18 @@ async function spawnSpecialistAgent(
     },
   ];
 
-  // Find who this agent should report to (architect-lead or first lead)
+  // Find who this agent should report to — discovery director, then any lead/director
   const lead = await db.query.agentPersonas.findFirst({
-    where: eq(agentPersonas.slug, "architect-lead"),
+    where: and(
+      isNull(agentPersonas.hidden_at),
+      or(
+        eq(agentPersonas.slug, "aria-discovery-director"),
+        eq(agentPersonas.slug, "architect-lead"),
+        and(eq(agentPersonas.department, "discovery"), inArray(agentPersonas.role, ["director", "lead"])),
+      ),
+    ),
     columns: { id: true },
+    orderBy: [asc(agentPersonas.role)], // director first
   });
 
   const systemPrompt = [

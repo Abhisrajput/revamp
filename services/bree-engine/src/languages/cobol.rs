@@ -670,6 +670,10 @@ impl LanguageParser for CobolParser {
         &["cbl", "cob", "cpy", "cbl38", "sqb"]
     }
 
+    fn nir_coverage_pct(&self) -> f64 { 0.93 }
+    fn recommended_backend(&self) -> &'static str { "tree-sitter + ProLeap COBOL" }
+    fn estimated_dev_effort(&self) -> &'static str { "1 week to production" }
+
     fn can_parse(&self, file: &SourceFile) -> bool {
         let ext_match = self.file_extensions().contains(&file.extension.as_str());
         let upper = file.header.to_uppercase();

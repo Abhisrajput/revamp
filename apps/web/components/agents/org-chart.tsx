@@ -90,7 +90,19 @@ interface OrgChartProps {
 }
 
 export function OrgChart({ department, className }: OrgChartProps) {
-  const { data: tree, isLoading } = useDepartmentTree(department);
+  const { data: agents, isLoading } = useDepartmentTree(department);
+
+  // Build structured tree from the flat agent list.
+  // The API returns DelegationTarget[] — group by role into { director, leads, specialists }.
+  const tree = (() => {
+    if (!agents || !Array.isArray(agents) || agents.length === 0) return null;
+    const deptAgents = agents.filter((a: any) => a.department === department);
+    const director = deptAgents.find((a: any) => a.role === 'director') || null;
+    const leads = deptAgents.filter((a: any) => a.role === 'lead');
+    const specialists = deptAgents.filter((a: any) => a.role === 'specialist');
+    if (!director && leads.length === 0 && specialists.length === 0) return null;
+    return { director, leads, specialists };
+  })();
 
   const Icon = DEPT_ICONS[department] || Brain;
 

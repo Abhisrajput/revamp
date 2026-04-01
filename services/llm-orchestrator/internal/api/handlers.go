@@ -31,8 +31,9 @@ type CompletionRequestBody struct {
 	} `json:"response_format,omitempty"`
 
 	// Extended thinking (Anthropic, OpenAI o-series)
-	ExtendedThinking bool `json:"extended_thinking,omitempty"`
-	ThinkingBudget   int  `json:"thinking_budget,omitempty"`
+	ExtendedThinking  bool `json:"extended_thinking,omitempty"`
+	ThinkingBudget    int  `json:"thinking_budget,omitempty"`
+	MaxThinkingTokens int  `json:"max_thinking_tokens,omitempty"` // default 10,000 when thinking enabled
 
 	// Metadata for tracking
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
@@ -106,6 +107,15 @@ func (s *Server) handleCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve thinking token cap: explicit > legacy > default (10k)
+	thinkingBudget := reqBody.MaxThinkingTokens
+	if thinkingBudget == 0 && reqBody.ThinkingBudget > 0 {
+		thinkingBudget = reqBody.ThinkingBudget
+	}
+	if reqBody.ExtendedThinking && thinkingBudget == 0 {
+		thinkingBudget = 10_000 // default cap prevents runaway costs
+	}
+
 	// Convert to orchestrator format
 	req := &orchestrator.CompletionRequest{
 		CompletionRequest: &providers.CompletionRequest{
@@ -118,7 +128,7 @@ func (s *Server) handleCompletion(w http.ResponseWriter, r *http.Request) {
 			Stream:           false,
 			ResponseFormat:   convertResponseFormat(reqBody.ResponseFormat),
 			ExtendedThinking: reqBody.ExtendedThinking,
-			ThinkingBudget:   reqBody.ThinkingBudget,
+			ThinkingBudget:   thinkingBudget,
 			Metadata:         reqBody.Metadata,
 		},
 		ProjectID: r.Header.Get("X-Project-ID"),
@@ -175,6 +185,15 @@ func (s *Server) handleStreamCompletion(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Resolve thinking token cap for streaming
+	streamThinkingBudget := reqBody.MaxThinkingTokens
+	if streamThinkingBudget == 0 && reqBody.ThinkingBudget > 0 {
+		streamThinkingBudget = reqBody.ThinkingBudget
+	}
+	if reqBody.ExtendedThinking && streamThinkingBudget == 0 {
+		streamThinkingBudget = 10_000
+	}
+
 	req := &orchestrator.CompletionRequest{
 		CompletionRequest: &providers.CompletionRequest{
 			Model:            reqBody.Model,
@@ -186,7 +205,7 @@ func (s *Server) handleStreamCompletion(w http.ResponseWriter, r *http.Request) 
 			Stream:           true,
 			ResponseFormat:   convertResponseFormat(reqBody.ResponseFormat),
 			ExtendedThinking: reqBody.ExtendedThinking,
-			ThinkingBudget:   reqBody.ThinkingBudget,
+			ThinkingBudget:   streamThinkingBudget,
 			Metadata:         reqBody.Metadata,
 		},
 		ProjectID: r.Header.Get("X-Project-ID"),

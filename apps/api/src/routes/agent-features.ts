@@ -30,7 +30,7 @@ import {
   stageRuns, pipelineRuns, llmUsage, agentTasks,
   agentActivityLog, agentAssignments,
 } from "@/db/schema.js";
-import { eq, and, desc, inArray, count, sql, gte } from "drizzle-orm";
+import { eq, and, desc, inArray, count, sql, gte, isNull } from "drizzle-orm";
 
 // ─── SCHEMAS ────────────────────────────────────────────────────
 
@@ -421,6 +421,7 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
     { onRequest: [fastify.authenticate] },
     async (request, reply) => {
       const agents = await db.query.agentPersonas.findMany({
+        where: isNull(agentPersonas.hidden_at),
         columns: {
           id: true, name: true, slug: true, role: true, department: true,
           status: true, reports_to: true, preferred_model: true,

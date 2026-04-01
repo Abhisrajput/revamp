@@ -38,6 +38,10 @@ impl LanguageParser for FortranParser {
     fn supported_dialects(&self) -> &[&'static str] { &["Fortran-77", "Fortran-90", "Fortran-95", "Fortran-2003"] }
     fn file_extensions(&self) -> &[&'static str] { &["f", "for", "ftn", "f77", "f90", "f95", "f03", "f08"] }
 
+    fn nir_coverage_pct(&self) -> f64 { 0.68 }
+    fn recommended_backend(&self) -> &'static str { "tree-sitter (fortran grammar)" }
+    fn estimated_dev_effort(&self) -> &'static str { "1-2 weeks to production" }
+
     fn can_parse(&self, file: &SourceFile) -> bool {
         let ext_match = self.file_extensions().contains(&file.extension.as_str());
         let upper = file.header.to_uppercase();

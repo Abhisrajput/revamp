@@ -23,7 +23,7 @@ import { KanbanBoard } from '@/components/agents/kanban-board';
 import { RoutinesView } from '@/components/agents/routines-view';
 import { BudgetsView } from '@/components/agents/budgets-view';
 import { SkillsView } from '@/components/agents/skills-view';
-import { OrgChartView } from '@/components/agents/org-chart-view';
+// OrgChartView merged into DepartmentCards as unified "Overview" tab
 
 const ROLES = ['all', 'director', 'lead', 'specialist'] as const;
 const STATUSES = ['all', 'idle', 'working', 'paused', 'disabled'] as const;
@@ -35,7 +35,7 @@ const DEPT_ICONS: Record<string, typeof Brain> = {
   pm: FileText,
 };
 
-type ViewMode = 'list' | 'department' | 'orchestrator' | 'kanban' | 'routines' | 'budgets' | 'skills' | 'org-chart';
+type ViewMode = 'list' | 'department' | 'orchestrator' | 'kanban' | 'routines' | 'budgets' | 'skills';
 
 export default function AgentsPage() {
   const searchParams = useSearchParams();
@@ -78,12 +78,11 @@ export default function AgentsPage() {
         {/* View Mode Toggle */}
         <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 rounded-lg p-1">
           <ViewToggle mode="list" icon={List} label="List" active={viewMode} onSelect={setViewMode} />
-          <ViewToggle mode="department" icon={LayoutGrid} label="Departments" active={viewMode} onSelect={setViewMode} />
+          <ViewToggle mode="department" icon={LayoutGrid} label="Overview" active={viewMode} onSelect={setViewMode} />
           <ViewToggle mode="kanban" icon={Columns} label="Kanban" active={viewMode} onSelect={setViewMode} />
           <ViewToggle mode="routines" icon={Clock} label="Routines" active={viewMode} onSelect={setViewMode} />
           <ViewToggle mode="budgets" icon={DollarSign} label="Budgets" active={viewMode} onSelect={setViewMode} />
           <ViewToggle mode="skills" icon={Brain} label="Skills" active={viewMode} onSelect={setViewMode} />
-          <ViewToggle mode="org-chart" icon={Network} label="Org Chart" active={viewMode} onSelect={setViewMode} />
           <ViewToggle mode="orchestrator" icon={Network} label="Orchestrator" active={viewMode} onSelect={setViewMode} />
         </div>
       </div>
@@ -97,8 +96,6 @@ export default function AgentsPage() {
         <BudgetsView />
       ) : viewMode === 'skills' ? (
         <SkillsView />
-      ) : viewMode === 'org-chart' ? (
-        <OrgChartView />
       ) : viewMode === 'orchestrator' ? (
         <OrchestratorView orchestrator={orchestrator} />
       ) : (

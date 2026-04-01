@@ -146,9 +146,10 @@ export interface BreeScanResult {
 
 // ─── Client ──────────────────────────────────────────────────────
 
-async function breeRequest<T>(path: string, options?: RequestInit): Promise<T> {
+async function breeRequest<T>(path: string, options?: RequestInit & { timeoutMs?: number }): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const ms = options?.timeoutMs ?? TIMEOUT_MS;
+  const timeout = setTimeout(() => controller.abort(), ms);
 
   try {
     const res = await fetch(`${BREE_URL}${path}`, {
@@ -228,6 +229,7 @@ export async function breeAnalyze(
   return breeRequest("/api/v1/analyze", {
     method: "POST",
     body: JSON.stringify({ files }),
+    timeoutMs: ANALYSIS_TIMEOUT_MS,
   });
 }
 
@@ -244,7 +246,7 @@ export async function breeAnalyzeReport(
   files: Array<{ path: string; content: string }>,
 ): Promise<string> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), ANALYSIS_TIMEOUT_MS);
   try {
     const res = await fetch(`${BREE_URL}/api/v1/analyze/report`, {
       method: "POST",
@@ -341,6 +343,7 @@ export async function breeAnalyzeRequirements(
   return breeRequest("/api/v1/analyze/requirements", {
     method: "POST",
     body: JSON.stringify(input),
+    timeoutMs: ANALYSIS_TIMEOUT_MS,
   });
 }
 
@@ -351,6 +354,7 @@ export async function breeAnalyzeGraph(
   return breeRequest("/api/v1/analyze/graph", {
     method: "POST",
     body: JSON.stringify(input),
+    timeoutMs: ANALYSIS_TIMEOUT_MS,
   });
 }
 

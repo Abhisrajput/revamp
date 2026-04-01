@@ -312,6 +312,10 @@ impl LanguageParser for DdsParser {
         &["dds", "pf", "lf", "dspf", "prtf", "icff"]
     }
 
+    fn nir_coverage_pct(&self) -> f64 { 0.85 }
+    fn recommended_backend(&self) -> &'static str { "custom column-positional" }
+    fn estimated_dev_effort(&self) -> &'static str { "1 week to production" }
+
     fn can_parse(&self, file: &SourceFile) -> bool {
         // Extension match
         if self.file_extensions().contains(&file.extension.as_str()) {

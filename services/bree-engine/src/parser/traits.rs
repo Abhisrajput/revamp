@@ -92,6 +92,16 @@ pub trait LanguageParser: Send + Sync {
     /// File extensions this parser handles (e.g., ["cbl", "cob", "cpy"]).
     fn file_extensions(&self) -> &[&'static str];
 
+    /// NIR coverage percentage (0.0 to 1.0). Status is derived from this value
+    /// via `ParserStatus::from_coverage()` instead of being hardcoded.
+    fn nir_coverage_pct(&self) -> f64 { 0.0 }
+
+    /// Recommended parsing backend for production use.
+    fn recommended_backend(&self) -> &'static str { "unknown" }
+
+    /// Estimated development effort to reach production readiness.
+    fn estimated_dev_effort(&self) -> &'static str { "unknown" }
+
     /// Whether this parser can handle the given file.
     /// Uses extension check + content heuristics (e.g., IDENTIFICATION DIVISION).
     fn can_parse(&self, file: &SourceFile) -> bool;

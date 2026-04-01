@@ -20,6 +20,10 @@ impl LanguageParser for PlsqlParser {
     fn supported_dialects(&self) -> &[&'static str] { &["Oracle-12c", "Oracle-19c", "Oracle-23ai"] }
     fn file_extensions(&self) -> &[&'static str] { &["pls", "plb", "pck", "pkb", "pks", "sql"] }
 
+    fn nir_coverage_pct(&self) -> f64 { 0.80 }
+    fn recommended_backend(&self) -> &'static str { "ANTLR (mature PlSql grammar)" }
+    fn estimated_dev_effort(&self) -> &'static str { "1 week to production" }
+
     fn can_parse(&self, file: &SourceFile) -> bool {
         let ext_match = ["pls", "plb", "pck", "pkb", "pks"].contains(&file.extension.as_str());
         let upper = file.header.to_uppercase();

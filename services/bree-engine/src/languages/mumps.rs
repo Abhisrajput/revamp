@@ -21,6 +21,10 @@ impl LanguageParser for MumpsParser {
     fn supported_dialects(&self) -> &[&'static str] { &["ANSI-M", "InterSystems-Cache", "InterSystems-IRIS", "GT.M"] }
     fn file_extensions(&self) -> &[&'static str] { &["m", "mps", "zwr", "ro", "int"] }
 
+    fn nir_coverage_pct(&self) -> f64 { 0.68 }
+    fn recommended_backend(&self) -> &'static str { "custom PEG grammar" }
+    fn estimated_dev_effort(&self) -> &'static str { "3-4 weeks to production" }
+
     fn can_parse(&self, file: &SourceFile) -> bool {
         // .m is ambiguous (also Objective-C, MATLAB)
         // Use content heuristics: MUMPS has SET/KILL/QUIT and ^global references

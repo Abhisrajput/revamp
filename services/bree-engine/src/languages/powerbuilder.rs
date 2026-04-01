@@ -20,6 +20,10 @@ impl LanguageParser for PowerBuilderParser {
     fn supported_dialects(&self) -> &[&'static str] { &["PB-12", "PB-2019", "PB-2025"] }
     fn file_extensions(&self) -> &[&'static str] { &["srw", "srd", "srf", "srm"] }
 
+    fn nir_coverage_pct(&self) -> f64 { 0.58 }
+    fn recommended_backend(&self) -> &'static str { "custom PBL + PowerScript" }
+    fn estimated_dev_effort(&self) -> &'static str { "3-4 weeks to production" }
+
     fn can_parse(&self, file: &SourceFile) -> bool {
         let ext_match = self.file_extensions().contains(&file.extension.as_str());
         let lower = file.header.to_lowercase();

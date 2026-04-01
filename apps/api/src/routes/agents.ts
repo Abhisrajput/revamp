@@ -793,4 +793,86 @@ export async function agentRoutes(fastify: FastifyInstance) {
       return reply.send(persona);
     }
   );
+
+  // ─── SSE: /agents/events — real-time agent event stream ─────────
+  // EventSource can't set headers, so JWT is passed via ?token= query param.
+  // These endpoints register with the agent-events broadcast system so that
+  // events emitted by agent-department.ts flow to SSE clients in real time.
+  fastify.get<{ Querystring: { token?: string } }>(
+    "/agents/events",
+    async (request, reply) => {
+      const token = request.query.token;
+      if (!token) return reply.status(401).send({ error: "Unauthorized" });
+      try {
+        fastify.jwt.verify(token);
+      } catch {
+        return reply.status(401).send({ error: "Unauthorized" });
+      }
+
+      const { addSSEClient, removeSSEClient } = await import("@/services/agent-events.js");
+
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "Access-Control-Allow-Origin": "*",
+      });
+      reply.raw.write("data: {\"type\":\"connected\"}\n\n");
+
+      // Register with broadcast system — receives ALL agent events
+      const sseClient = {
+        write: (data: string) => reply.raw.write(data),
+        agentFilter: "",
+      };
+      addSSEClient(sseClient);
+
+      const heartbeat = setInterval(() => {
+        reply.raw.write(": heartbeat\n\n");
+      }, 15000);
+
+      request.raw.on("close", () => {
+        clearInterval(heartbeat);
+        removeSSEClient(sseClient);
+      });
+    }
+  );
+
+  fastify.get<{ Querystring: { token?: string }; Params: { id: string } }>(
+    "/agents/:id/events",
+    async (request, reply) => {
+      const token = request.query.token;
+      if (!token) return reply.status(401).send({ error: "Unauthorized" });
+      try {
+        fastify.jwt.verify(token);
+      } catch {
+        return reply.status(401).send({ error: "Unauthorized" });
+      }
+
+      const { addSSEClient, removeSSEClient } = await import("@/services/agent-events.js");
+
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "Access-Control-Allow-Origin": "*",
+      });
+      reply.raw.write(`data: ${JSON.stringify({ type: "connected", agentId: request.params.id })}\n\n`);
+
+      // Register with broadcast system — only events for this agent
+      const sseClient = {
+        write: (data: string) => reply.raw.write(data),
+        agentFilter: request.params.id,
+      };
+      addSSEClient(sseClient);
+
+      const heartbeat = setInterval(() => {
+        reply.raw.write(": heartbeat\n\n");
+      }, 15000);
+
+      request.raw.on("close", () => {
+        clearInterval(heartbeat);
+        removeSSEClient(sseClient);
+      });
+    }
+  );
 }

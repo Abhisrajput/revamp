@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -16,6 +18,7 @@ import (
 type Engine struct {
 	registry       *providers.Registry
 	cache          *redis.Client
+	cacheTTL       time.Duration
 	metrics        *metrics.Registry
 	logger         *zap.Logger
 	router         *Router
@@ -34,12 +37,18 @@ func NewEngine(
 	return &Engine{
 		registry:       registry,
 		cache:          cache,
+		cacheTTL:       5 * time.Minute,
 		metrics:        metricsRegistry,
 		logger:         logger,
 		router:         NewRouter(registry, logger),
 		balancer:       NewLoadBalancer(registry),
 		circuitBreaker: NewCircuitBreaker(registry, logger),
 	}
+}
+
+// SetCacheTTL configures the response cache TTL.
+func (e *Engine) SetCacheTTL(ttl time.Duration) {
+	e.cacheTTL = ttl
 }
 
 // CompletionRequest wraps the provider request with additional metadata
@@ -260,30 +269,65 @@ type StreamingChunk struct {
 	Error        string
 }
 
-// getCacheKey generates a cache key for a request
+// getCacheKey generates a SHA256-based cache key for a request.
+// Returns empty string for requests that should not be cached:
+// streaming, tool-calling, or empty messages.
 func (cr *CompletionRequest) getCacheKey() string {
 	if cr.Stream {
-		return "" // Don't cache streaming requests
+		return ""
 	}
-
-	// Simple cache key based on model and messages hash
-	// In production, implement proper hashing
 	if len(cr.Messages) == 0 {
 		return ""
 	}
+	// Don't cache tool-calling requests — responses are non-deterministic
+	if len(cr.Tools) > 0 {
+		return ""
+	}
 
-	return fmt.Sprintf("llm:cache:%s:%s", cr.Model, cr.ProjectID)
+	h := sha256.New()
+	h.Write([]byte(cr.Model))
+	h.Write([]byte(fmt.Sprintf("%.2f", cr.Temperature)))
+	for _, msg := range cr.Messages {
+		h.Write([]byte(msg.Role))
+		h.Write([]byte(msg.Content))
+	}
+	return fmt.Sprintf("llm:cache:%x", h.Sum(nil))
 }
 
-// getFromCache retrieves a cached completion response
+// getFromCache retrieves a cached completion response from Redis.
 func (e *Engine) getFromCache(ctx context.Context, key string) (*providers.CompletionResponse, error) {
-	// Implement cache retrieval
-	return nil, nil // For now, always miss
+	if e.cache == nil {
+		return nil, nil
+	}
+	data, err := e.cache.Get(ctx, key).Bytes()
+	if err != nil {
+		return nil, nil // includes redis.Nil — treat as miss
+	}
+	var resp providers.CompletionResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		e.logger.Warn("Cache unmarshal failed", zap.Error(err))
+		return nil, nil
+	}
+	return &resp, nil
 }
 
-// saveToCache saves a completion response to cache
+// saveToCache stores a completion response in Redis with TTL.
+// Skips tool-calling responses since they're non-deterministic.
 func (e *Engine) saveToCache(ctx context.Context, key string, resp *providers.CompletionResponse) {
-	// Implement cache saving with TTL
+	if e.cache == nil {
+		return
+	}
+	if len(resp.ToolCalls) > 0 {
+		return
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		e.logger.Warn("Cache marshal failed", zap.Error(err))
+		return
+	}
+	if err := e.cache.Set(ctx, key, data, e.cacheTTL).Err(); err != nil {
+		e.logger.Warn("Cache save failed", zap.Error(err), zap.String("key", key))
+	}
 }
 
 // GetHealth returns the health status of all providers

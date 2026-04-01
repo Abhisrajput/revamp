@@ -12,16 +12,19 @@ import (
 
 // Registry holds all Prometheus metrics
 type Registry struct {
-	requestCount       prometheus.CounterVec
-	requestDuration    prometheus.HistogramVec
-	tokenUsage         prometheus.CounterVec
-	costTracking       prometheus.CounterVec
-	cacheHits          prometheus.CounterVec
-	cacheSize          prometheus.GaugeVec
+	requestCount        prometheus.CounterVec
+	requestDuration     prometheus.HistogramVec
+	tokenUsage          prometheus.CounterVec
+	costTracking        prometheus.CounterVec
+	cacheHits           prometheus.CounterVec
+	cacheMisses         prometheus.CounterVec
+	cacheSize           prometheus.GaugeVec
 	circuitBreakerState prometheus.GaugeVec
-	providerLatency    prometheus.HistogramVec
-	providerErrors     prometheus.CounterVec
-	mu                 sync.RWMutex
+	providerLatency     prometheus.HistogramVec
+	providerErrors      prometheus.CounterVec
+	smartRouteCount     prometheus.CounterVec
+	rateLimitHits       prometheus.CounterVec
+	mu                  sync.RWMutex
 }
 
 // NewRegistry creates a new metrics registry
@@ -92,6 +95,27 @@ func NewRegistry() *Registry {
 			},
 			[]string{"provider", "error_type"},
 		),
+		cacheMisses: *promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "llm_cache_misses_total",
+				Help: "Total number of cache misses",
+			},
+			[]string{"model"},
+		),
+		smartRouteCount: *promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "llm_smart_route_total",
+				Help: "Requests routed by smart model selection",
+			},
+			[]string{"tier", "selected_model"},
+		),
+		rateLimitHits: *promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "llm_rate_limit_hits_total",
+				Help: "Requests rejected by rate limiter",
+			},
+			[]string{"key"},
+		),
 	}
 }
 
@@ -137,6 +161,20 @@ func (r *Registry) RecordCacheHit(model string) {
 	defer r.mu.RUnlock()
 
 	r.cacheHits.WithLabelValues(model).Inc()
+}
+
+// RecordCacheMiss records a cache miss
+func (r *Registry) RecordCacheMiss(model string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	r.cacheMisses.WithLabelValues(model).Inc()
+}
+
+// RecordSmartRoute records a smart routing decision
+func (r *Registry) RecordSmartRoute(tier, selectedModel string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	r.smartRouteCount.WithLabelValues(tier, selectedModel).Inc()
 }
 
 // SetCircuitBreakerState sets the circuit breaker state

@@ -1375,6 +1375,10 @@ impl LanguageParser for RpgParser {
         &["rpg", "rpgle", "sqlrpgle", "rpg38", "rpg36"]
     }
 
+    fn nir_coverage_pct(&self) -> f64 { 0.92 }
+    fn recommended_backend(&self) -> &'static str { "custom (column + free-format)" }
+    fn estimated_dev_effort(&self) -> &'static str { "1 week to production" }
+
     fn can_parse(&self, file: &SourceFile) -> bool {
         let ext_match = self.file_extensions().contains(&file.extension.as_str());
         let content_match = file.header.contains("dcl-s")

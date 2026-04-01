@@ -14,6 +14,7 @@ macro_rules! impl_parser {
         $struct_name:ident,
         $id:expr, $display:expr, $dialects:expr, $extensions:expr,
         $header_patterns:expr,
+        $nir:expr, $backend:expr, $effort:expr,
         $parse_body:expr
     ) => {
         pub struct $struct_name;
@@ -24,6 +25,9 @@ macro_rules! impl_parser {
             fn display_name(&self) -> &'static str { $display }
             fn supported_dialects(&self) -> &[&'static str] { $dialects }
             fn file_extensions(&self) -> &[&'static str] { $extensions }
+            fn nir_coverage_pct(&self) -> f64 { $nir }
+            fn recommended_backend(&self) -> &'static str { $backend }
+            fn estimated_dev_effort(&self) -> &'static str { $effort }
 
             fn can_parse(&self, file: &SourceFile) -> bool {
                 let ext_match = self.file_extensions().contains(&file.extension.as_str());
@@ -106,6 +110,7 @@ fn sp(i: usize, len: usize) -> Span {
 impl_parser!(VbNetParser, "vbnet-legacy", "VB.NET (Legacy .NET 1.x-3.5)",
     &["VB.NET-2.0", "VB.NET-3.5"], &["vb"],
     &["Imports System", "Module ", "Class ", "Sub Main", "Inherits System.Windows.Forms"],
+    0.52, "Roslyn (CodeAnalysis.VB)", "2-3 weeks to production",
     |source: &SourceFile| {
         let mut syms = Vec::new(); let mut nodes = Vec::new(); let mut meta = HashMap::new();
         let mut imports = Vec::new();
@@ -145,6 +150,7 @@ impl_parser!(VbNetParser, "vbnet-legacy", "VB.NET (Legacy .NET 1.x-3.5)",
 impl_parser!(AspClassicParser, "asp-classic", "ASP Classic (VBScript)",
     &["ASP-3.0"], &["asp", "asa"],
     &["<%", "Response.Write", "Request.Form", "Server.CreateObject"],
+    0.50, "custom VBScript + HTML", "2-3 weeks to production",
     |source: &SourceFile| {
         let mut syms = Vec::new(); let mut nodes = Vec::new(); let mut meta = HashMap::new();
         let mut com_refs = Vec::new(); let mut sql_blocks = Vec::new();
@@ -183,6 +189,7 @@ impl_parser!(AspClassicParser, "asp-classic", "ASP Classic (VBScript)",
 impl_parser!(OracleFormsParser, "oracle-forms", "Oracle Forms",
     &["Oracle-Forms-12c", "Oracle-Forms-14c"], &["fmb", "fmx", "pll", "olb"],
     &[],
+    0.48, "FMB decompiler + PL/SQL ANTLR", "4-6 weeks to production",
     |source: &SourceFile| {
         let mut syms = Vec::new(); let mut nodes = Vec::new(); let mut meta = HashMap::new();
         // PLL files are text-based PL/SQL libraries
@@ -206,6 +213,7 @@ impl_parser!(OracleFormsParser, "oracle-forms", "Oracle Forms",
 impl_parser!(AdaParser, "ada", "Ada / SPARK",
     &["Ada-95", "Ada-2012", "SPARK-2014"], &["ada", "adb", "ads"],
     &["with ", "procedure ", "package ", "pragma "],
+    0.52, "tree-sitter + libadalang", "2-3 weeks to production",
     |source: &SourceFile| {
         let mut syms = Vec::new(); let mut nodes = Vec::new(); let mut meta = HashMap::new();
         let mut withs = Vec::new(); let mut has_spark = false;
@@ -238,6 +246,7 @@ impl_parser!(AdaParser, "ada", "Ada / SPARK",
 impl_parser!(Progress4glParser, "progress-4gl", "Progress 4GL (OpenEdge)",
     &["OpenEdge-11", "OpenEdge-12"], &["p", "w", "i", "cls"],
     &["DEFINE VARIABLE", "FOR EACH", "FIND FIRST", "RUN "],
+    0.52, "custom (ABLParser ref)", "3-4 weeks to production",
     |source: &SourceFile| {
         let mut syms = Vec::new(); let mut nodes = Vec::new(); let mut meta = HashMap::new();
         let mut temp_tables = Vec::new(); let mut runs = Vec::new();
@@ -266,8 +275,11 @@ impl_parser!(Progress4glParser, "progress-4gl", "Progress 4GL (OpenEdge)",
 // ═══════════════════════════════════════════════════════════════════
 
 macro_rules! focused_parser {
-    ($name:ident, $id:expr, $display:expr, $dialects:expr, $exts:expr, $headers:expr, $rules:expr, $dialect_val:expr) => {
+    ($name:ident, $id:expr, $display:expr, $dialects:expr, $exts:expr, $headers:expr,
+     $nir:expr, $backend:expr, $effort:expr,
+     $rules:expr, $dialect_val:expr) => {
         impl_parser!($name, $id, $display, $dialects, $exts, $headers,
+            $nir, $backend, $effort,
             |source: &SourceFile| {
                 let rules: &[(&str, SymbolKind, &str)] = $rules;
                 let mut syms = Vec::new(); let mut nodes = Vec::new(); let mut meta = HashMap::new();
@@ -297,6 +309,7 @@ macro_rules! focused_parser {
 
 focused_parser!(VisualFoxProParser, "visual-foxpro", "Visual FoxPro", &["VFP-9"], &["prg", "scx", "sct", "vcx", "frx"],
     &["LOCAL ", "SELECT ", "SCAN", "DO WHILE", "THISFORM"],
+    0.50, "custom Xbase + SCX", "2-3 weeks to production",
     &[("PROCEDURE ", SymbolKind::Procedure, "procedure_count"), ("FUNCTION ", SymbolKind::Function, "function_count"),
       ("DEFINE CLASS ", SymbolKind::Custom("Class".to_string()), "class_count"), ("LOCAL ", SymbolKind::Variable, "variable_count"),
       ("PUBLIC ", SymbolKind::Variable, "public_count"), ("DO ", SymbolKind::Custom("Do".to_string()), "do_count"),
@@ -306,6 +319,7 @@ focused_parser!(VisualFoxProParser, "visual-foxpro", "Visual FoxPro", &["VFP-9"]
 
 focused_parser!(SmalltalkParser, "smalltalk", "Smalltalk", &["Pharo", "Cincom-VisualWorks", "VA-Smalltalk"], &["st", "cs"],
     &["subclass:", "instanceVariableNames:", "methodsFor:"],
+    0.42, "custom (Pharo image + chunks)", "4-6 weeks to production",
     &[("subclass:", SymbolKind::Custom("Class".to_string()), "class_count"),
       ("methodsFor:", SymbolKind::Custom("MethodCategory".to_string()), "method_category_count"),
       ("instanceVariableNames:", SymbolKind::Custom("InstanceVars".to_string()), "instance_var_decl_count")],
@@ -314,6 +328,7 @@ focused_parser!(SmalltalkParser, "smalltalk", "Smalltalk", &["Pharo", "Cincom-Vi
 
 focused_parser!(CaGenParser, "ca-gen", "CA Gen / CA Telon", &["CA-Gen-8", "CA-Telon"], &[],
     &[],
+    0.38, "CA Gen model + COBOL parser", "6-8 weeks to production",
     &[("GENERATED BY ", SymbolKind::Custom("Generated".to_string()), "generated_markers"),
       ("PERFORM ", SymbolKind::Custom("Perform".to_string()), "perform_count"),
       ("CALL ", SymbolKind::Custom("Call".to_string()), "call_count")],
@@ -322,6 +337,7 @@ focused_parser!(CaGenParser, "ca-gen", "CA Gen / CA Telon", &["CA-Gen-8", "CA-Te
 
 focused_parser!(ClipperParser, "clipper", "Clipper / dBase", &["Clipper-5.3", "Harbour"], &["prg", "ch"],
     &["LOCAL ", "FUNCTION ", "RETURN", "@ "],
+    0.50, "custom Xbase (Harbour ref)", "2-3 weeks to production",
     &[("FUNCTION ", SymbolKind::Function, "function_count"), ("PROCEDURE ", SymbolKind::Procedure, "procedure_count"),
       ("LOCAL ", SymbolKind::Variable, "variable_count"), ("STATIC ", SymbolKind::Variable, "static_count"),
       ("USE ", SymbolKind::Custom("Use".to_string()), "use_count"), ("INDEX ON ", SymbolKind::Custom("Index".to_string()), "index_count"),
@@ -331,6 +347,7 @@ focused_parser!(ClipperParser, "clipper", "Clipper / dBase", &["Clipper-5.3", "H
 
 focused_parser!(SilverlightParser, "silverlight", "Silverlight", &["Silverlight-5"], &["xaml"],
     &["xmlns:sdk=", "Silverlight"],
+    0.42, "Roslyn (C#/VB) + XAML", "2-3 weeks to production",
     &[("x:Class=", SymbolKind::Custom("Class".to_string()), "class_count"),
       ("<UserControl ", SymbolKind::Custom("UserControl".to_string()), "control_count"),
       ("<Page ", SymbolKind::Custom("Page".to_string()), "page_count"),
@@ -341,6 +358,7 @@ focused_parser!(SilverlightParser, "silverlight", "Silverlight", &["Silverlight-
 
 focused_parser!(AssemblerParser, "assembler-zos", "Assembler (z/OS, IBM i)", &["HLASM", "ILE-ASM"], &["asm", "s", "mac"],
     &["CSECT", "USING ", "BALR ", "MVC "],
+    0.48, "custom HLASM (macro complex)", "6-8 weeks to production",
     &[("CSECT", SymbolKind::Custom("CSECT".to_string()), "csect_count"),
       ("DSECT", SymbolKind::Custom("DSECT".to_string()), "dsect_count"),
       ("MACRO", SymbolKind::Custom("Macro".to_string()), "macro_count"),
@@ -353,6 +371,7 @@ focused_parser!(AssemblerParser, "assembler-zos", "Assembler (z/OS, IBM i)", &["
 
 focused_parser!(PerlParser, "perl", "Perl", &["Perl-5"], &["pl", "pm", "t", "cgi"],
     &["#!/usr/bin/perl", "use strict", "my $"],
+    0.50, "tree-sitter (perl) + PPI", "2-3 weeks to production",
     &[("sub ", SymbolKind::Function, "sub_count"), ("package ", SymbolKind::Custom("Package".to_string()), "package_count"),
       ("use ", SymbolKind::Custom("Use".to_string()), "use_count"), ("require ", SymbolKind::Custom("Require".to_string()), "require_count"),
       ("my ", SymbolKind::Variable, "my_count"), ("our ", SymbolKind::Variable, "our_count")],
@@ -361,6 +380,7 @@ focused_parser!(PerlParser, "perl", "Perl", &["Perl-5"], &["pl", "pm", "t", "cgi
 
 focused_parser!(RexxParser, "rexx", "REXX / NetREXX", &["REXX", "NetREXX"], &["rexx", "rex", "exec"],
     &["/* REXX */", "SAY ", "PARSE "],
+    0.48, "custom (PARSE instruction)", "2-3 weeks to production",
     &[("CALL ", SymbolKind::Custom("Call".to_string()), "call_count"),
       ("PARSE ", SymbolKind::Custom("Parse".to_string()), "parse_count"),
       ("SAY ", SymbolKind::Custom("Say".to_string()), "say_count"),
@@ -371,6 +391,7 @@ focused_parser!(RexxParser, "rexx", "REXX / NetREXX", &["REXX", "NetREXX"], &["r
 
 focused_parser!(LotusScriptParser, "lotusscript", "LotusScript (HCL Domino)", &["LotusScript-6"], &["lss", "lsa"],
     &["Sub ", "Dim ", "NotesDocument"],
+    0.48, "custom (VB-like + Notes)", "2-3 weeks to production",
     &[("Sub ", SymbolKind::Procedure, "sub_count"), ("Function ", SymbolKind::Function, "function_count"),
       ("Class ", SymbolKind::Custom("Class".to_string()), "class_count"), ("Dim ", SymbolKind::Variable, "variable_count"),
       ("Set ", SymbolKind::Custom("Set".to_string()), "set_count"), ("Property ", SymbolKind::Custom("Property".to_string()), "property_count")],
@@ -379,6 +400,7 @@ focused_parser!(LotusScriptParser, "lotusscript", "LotusScript (HCL Domino)", &[
 
 focused_parser!(ColdFusionParser, "coldfusion", "ColdFusion", &["CF-2021", "CF-2025"], &["cfm", "cfc", "cfml"],
     &["<cfquery", "<cfoutput", "component {", "<cfset"],
+    0.50, "ANTLR (CFML) + CFScript", "2-3 weeks to production",
     &[("<cffunction", SymbolKind::Function, "function_count"),
       ("<cfquery", SymbolKind::Custom("Query".to_string()), "query_count"),
       ("<cfcomponent", SymbolKind::Custom("Component".to_string()), "component_count"),
@@ -391,6 +413,7 @@ focused_parser!(ColdFusionParser, "coldfusion", "ColdFusion", &["CF-2021", "CF-2
 
 focused_parser!(TsqlParser, "tsql", "T-SQL (SQL Server)", &["SQL-Server-2019", "SQL-Server-2022"], &["sql"],
     &["CREATE PROCEDURE", "CREATE FUNCTION", "DECLARE @", "SET @", "BEGIN TRANSACTION"],
+    0.52, "ANTLR (mature TSql grammar)", "1-2 weeks to production",
     &[("CREATE PROCEDURE ", SymbolKind::Procedure, "procedure_count"), ("CREATE FUNCTION ", SymbolKind::Function, "function_count"),
       ("CREATE TRIGGER ", SymbolKind::Custom("Trigger".to_string()), "trigger_count"), ("CREATE VIEW ", SymbolKind::Custom("View".to_string()), "view_count"),
       ("EXEC ", SymbolKind::Custom("Exec".to_string()), "exec_count"), ("DECLARE ", SymbolKind::Variable, "declare_count"),
@@ -400,6 +423,7 @@ focused_parser!(TsqlParser, "tsql", "T-SQL (SQL Server)", &["SQL-Server-2019", "
 
 focused_parser!(Db2SqlParser, "db2sql", "DB2 SQL (IBM)", &["DB2-for-i", "DB2-for-zOS"], &["sql", "sqb"],
     &["EXEC SQL", "CREATE PROCEDURE", "CREATE FUNCTION"],
+    0.52, "custom DB2 dialect (ANTLR SQL)", "2-3 weeks to production",
     &[("CREATE PROCEDURE ", SymbolKind::Procedure, "procedure_count"), ("CREATE FUNCTION ", SymbolKind::Function, "function_count"),
       ("CREATE TRIGGER ", SymbolKind::Custom("Trigger".to_string()), "trigger_count"),
       ("DECLARE ", SymbolKind::Variable, "declare_count"),

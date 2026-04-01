@@ -84,6 +84,10 @@ impl LanguageParser for Vb6Parser {
     fn supported_dialects(&self) -> &[&'static str] { &["VB6-SP6"] }
     fn file_extensions(&self) -> &[&'static str] { &["frm", "bas", "cls", "vbp", "ctl"] }
 
+    fn nir_coverage_pct(&self) -> f64 { 0.82 }
+    fn recommended_backend(&self) -> &'static str { "ANTLR (vb6 grammar)" }
+    fn estimated_dev_effort(&self) -> &'static str { "1-2 weeks to production" }
+
     fn can_parse(&self, file: &SourceFile) -> bool {
         let ext_match = self.file_extensions().contains(&file.extension.as_str());
         let content_match = file.header.contains("VERSION 5.00")

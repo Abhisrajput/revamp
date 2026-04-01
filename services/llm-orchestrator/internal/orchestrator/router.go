@@ -22,11 +22,27 @@ func NewRouter(registry *providers.Registry, logger *zap.Logger) *Router {
 	}
 }
 
-// RouteRequest selects the best provider for a given request
+// RouteRequest selects the best provider for a given request.
+// When model is "auto" or empty, the smart router classifies the request
+// by complexity and selects the cheapest capable model (60% cost savings).
 func (r *Router) RouteRequest(ctx context.Context, req *providers.CompletionRequest) (providers.LLMProvider, time.Time) {
 	start := time.Now()
 
-	// First, try to find a provider that supports the requested model
+	// Smart routing: if model is "auto" or empty, classify and auto-select
+	if req.Model == "" || req.Model == "auto" {
+		classifier := &RequestClassifier{}
+		tier := classifier.Classify(req)
+		selector := &ModelSelector{registry: r.registry}
+		if selected := selector.SelectModel(tier); selected != "" {
+			r.logger.Info("Smart router selected model",
+				zap.String("tier", tier.String()),
+				zap.String("model", selected),
+			)
+			req.Model = selected
+		}
+	}
+
+	// Try to find a provider that supports the requested model
 	provider, err := r.registry.GetByModel(req.Model)
 	if err == nil && provider.GetHealth().Healthy {
 		return provider, start
@@ -39,8 +55,6 @@ func (r *Router) RouteRequest(ctx context.Context, req *providers.CompletionRequ
 		return nil, start
 	}
 
-	// Use first available provider for now
-	// In production, would use more sophisticated selection
 	return availableProviders[0], start
 }
 

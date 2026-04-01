@@ -49,6 +49,21 @@ pub enum ParserStatus {
     Community,
 }
 
+impl ParserStatus {
+    /// Derive status from NIR coverage percentage.
+    pub fn from_coverage(pct: f64) -> Self {
+        if pct >= 0.80 {
+            ParserStatus::Available
+        } else if pct >= 0.50 {
+            ParserStatus::Partial
+        } else if pct > 0.0 {
+            ParserStatus::Stub
+        } else {
+            ParserStatus::Planned
+        }
+    }
+}
+
 /// Metadata for a language in the BREE matrix.
 #[derive(Debug, Clone, Serialize)]
 pub struct LanguageEntry {
@@ -708,6 +723,55 @@ pub static DATABASE_LOGIC_LANGUAGES: &[LanguageEntry] = &[
         content_signatures: &["EXEC SQL", "CREATE PROCEDURE", "CREATE FUNCTION"],
         build_month_start: 1,
         build_month_end: 6,
+    },
+
+    // ─── .NET / C# ─────────────────────────────────────────────
+    LanguageEntry {
+        id: "csharp",
+        display_name: "C# (.NET)",
+        tier: Tier::Tier2,
+        family: LanguageFamily::WindowsLegacy,
+        parser_status: ParserStatus::Partial,
+        where_it_lives: ".NET Framework 4.x, .NET Core, .NET 5-8 — enterprise, web, desktop",
+        scale: "Millions of enterprise applications worldwide",
+        key_challenges: &[
+            "Async/await patterns (Task, async Task<T>)",
+            "LINQ complexity (expression trees, deferred execution)",
+            "Dependency injection containers (DI coupling)",
+            "Entity Framework Core (DbContext, migrations)",
+            "Nullable reference types (C# 8.0+)",
+            "Reflection and dynamic code generation",
+            ".NET Framework → .NET 8 API gaps",
+        ],
+        file_extensions: &["cs"],
+        content_signatures: &["using System", "namespace ", "public class ", "async Task"],
+        build_month_start: 7,
+        build_month_end: 12,
+    },
+
+    // ─── PHP ───────────────────────────────────────────────────
+    LanguageEntry {
+        id: "php",
+        display_name: "PHP",
+        tier: Tier::Tier2,
+        family: LanguageFamily::WebLegacy,
+        parser_status: ParserStatus::Partial,
+        where_it_lives: "Web servers — WordPress, Magento, Laravel, Symfony, Drupal, legacy CMS",
+        scale: "76.7% of websites with server-side language (W3Techs 2024)",
+        key_challenges: &[
+            "Dynamic typing and weak type coercion",
+            "Magic methods (__get, __set, __call)",
+            "Global state via superglobals ($_GET, $_POST, $_SESSION, $GLOBALS)",
+            "Include/require chains (no formal module system before namespaces)",
+            "Mixed procedural + OOP codebase patterns",
+            "Trait usage (horizontal code reuse, diamond problems)",
+            "String interpolation complexity",
+            "SQL injection patterns in legacy code",
+        ],
+        file_extensions: &["php", "php3", "php5", "php7", "php8", "phtml"],
+        content_signatures: &["<?php", "<?", "$_GET", "$_POST", "function ", "class ", "namespace "],
+        build_month_start: 7,
+        build_month_end: 12,
     },
 ];
 

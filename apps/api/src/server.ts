@@ -225,6 +225,8 @@ async function bootstrap() {
       breeLlmStrategy,
     } = await import("@/services/bree-client.js");
 
+    fastify.log.info({ fileCount: files.length, codebasePath }, "BREE deep-analyze: sending files to BREE Engine");
+
     const [analyzeRes, graphRes, reqsRes, detectRes, strategyRes] = await Promise.allSettled([
       breeAnalyzeFn(files),
       breeAnalyzeGraph({ files }),
@@ -232,6 +234,14 @@ async function bootstrap() {
       breeDetect(files),
       breeLlmStrategy(files),
     ]);
+
+    // Log failures so they're visible in server logs
+    const results = { analyzeRes, graphRes, reqsRes, detectRes, strategyRes };
+    for (const [name, res] of Object.entries(results)) {
+      if (res.status === 'rejected') {
+        fastify.log.error({ name, reason: String(res.reason) }, "BREE deep-analyze: sub-request failed");
+      }
+    }
 
     return reply.send({
       analysisReport: analyzeRes.status === 'fulfilled' ? analyzeRes.value : null,

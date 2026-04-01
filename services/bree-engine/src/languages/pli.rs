@@ -233,6 +233,10 @@ impl LanguageParser for PliParser {
     fn supported_dialects(&self) -> &[&'static str] { &["PL/I-Enterprise", "PL/I-Open"] }
     fn file_extensions(&self) -> &[&'static str] { &["pli", "pl1", "plinc"] }
 
+    fn nir_coverage_pct(&self) -> f64 { 0.74 }
+    fn recommended_backend(&self) -> &'static str { "custom PL/I + ANTLR grammar" }
+    fn estimated_dev_effort(&self) -> &'static str { "2-3 weeks to production" }
+
     fn can_parse(&self, file: &SourceFile) -> bool {
         let ext_match = self.file_extensions().contains(&file.extension.as_str());
         let upper = file.header.to_uppercase();
