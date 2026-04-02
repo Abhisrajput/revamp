@@ -52,6 +52,8 @@ import {
   recordPipelineSpend,
   estimateCostCents,
   PipelineBudgetExceededError,
+  ProjectBudgetExceededError,
+  enforceProjectBudget,
 } from "./pipeline-budget.js";
 import {
   pipelineEventBus,
@@ -605,17 +607,17 @@ export class PipelineService {
     try {
       await checkPipelineBudget(pipelineRunId);
     } catch (budgetErr) {
-      if (budgetErr instanceof PipelineBudgetExceededError) {
+      if (budgetErr instanceof PipelineBudgetExceededError || budgetErr instanceof ProjectBudgetExceededError) {
         options?.onEvent?.({
           phase: 'failed' as any,
           stageName,
           stageIndex: stageConfig.index,
           timestamp: new Date().toISOString(),
           data: {
-            error: budgetErr.message,
+            error: (budgetErr as Error).message,
             budgetExceeded: true,
-            usedCents: budgetErr.usedCents,
-            budgetCents: budgetErr.budgetCents,
+            usedCents: (budgetErr as any).usedCents,
+            budgetCents: (budgetErr as any).budgetCents,
           },
         });
         throw budgetErr;
@@ -1049,6 +1051,9 @@ export class PipelineService {
         const cost = estimateCostCents(stageInputTokens, stageOutputTokens, modelName);
         await recordPipelineSpend(pipelineRunId, cost);
 
+        // Enforce project-level budget (create incidents if thresholds crossed)
+        try { await enforceProjectBudget(run.project.id); } catch { /* non-fatal */ }
+
         // Write to llmUsage table so dashboard/usage endpoints can display it
         await db.insert(llmUsage).values({
           id: crypto.randomUUID(),
@@ -1140,21 +1145,32 @@ export class PipelineService {
       }
     }
 
-    // Update stage progress
-    if (result.validation?.passed || !result.validation) {
-      await this.updateStageProgress(pipelineRunId, stageName, "completed", 100);
+    // Update stage progress based on validation results
+    const validationPassed = result.validation?.passed ?? true;
+    const confidenceScore = result.validation?.confidenceScore ?? 100;
+    const APPROVAL_THRESHOLD = 60; // Only create approval gate if score >= 60%
 
-      // Emit stage completed event
+    if (validationPassed && confidenceScore >= APPROVAL_THRESHOLD) {
+      // ── Validation passed — complete stage and create approval gate ──
+      // Store confidence score in stage_progress for threshold checks on approval
+      await this.updateStageProgress(pipelineRunId, stageName, "completed", 100);
+      // Explicitly set the confidenceScore (updateStageProgress preserves it)
+      {
+        const [r] = await db.select({ stage_progress: pipelineRuns.stage_progress }).from(pipelineRuns).where(eq(pipelineRuns.id, pipelineRunId)).limit(1);
+        const sp = (r?.stage_progress as Record<string, any>) || {};
+        sp[stageName] = { ...sp[stageName], confidenceScore };
+        await db.update(pipelineRuns).set({ stage_progress: sp }).where(eq(pipelineRuns.id, pipelineRunId));
+      }
+
       emitStageCompleted({
         pipelineRunId,
         projectId: run.project.id,
         stageName,
         duration: 0,
-        confidenceScore: result.validation?.confidenceScore,
+        confidenceScore,
       });
 
-      // Create approval gate for the CURRENT stage so user must review its output
-      // before the next stage can run. The frontend shows the gate on the completed stage.
+      // Only create approval gate if the stage requires it AND validation passed threshold
       const currentConfig = this.getStageConfig(stageName);
       if (currentConfig.requiresApproval) {
         await this.createApprovalGate(pipelineRunId, stageName, currentConfig.requiredRole || "admin");
@@ -1163,14 +1179,12 @@ export class PipelineService {
 
       const nextStage = this.getNextStage(stageName);
       if (!nextStage) {
-        // Pipeline complete
         await db.update(pipelineRuns).set({
           status: "completed",
           completed_at: new Date(),
           updated_at: new Date(),
         }).where(eq(pipelineRuns.id, pipelineRunId));
 
-        // Emit pipeline completed event
         pipelineEventBus.fire({
           type: "pipeline.completed",
           timestamp: new Date().toISOString(),
@@ -1180,16 +1194,18 @@ export class PipelineService {
         });
       }
     } else {
-      // Stage failed validation — don't auto-advance
-      await this.updateStageProgress(pipelineRunId, stageName, "needs_review", result.validation.confidenceScore);
+      // ── Validation failed or below threshold — needs re-run, NO approval gate ──
+      await this.updateStageProgress(
+        pipelineRunId, stageName, "failed",
+        Math.round(confidenceScore),
+      );
 
-      // Emit validation failed event
       emitValidationFailed({
         pipelineRunId,
         projectId: run.project.id,
         stageName,
-        violations: result.validation.issues?.length || 0,
-        hardGated: false,
+        violations: result.validation?.issues?.length || 0,
+        hardGated: confidenceScore < APPROVAL_THRESHOLD,
       });
     }
 
@@ -1354,7 +1370,7 @@ export class PipelineService {
   /**
    * Update stage progress in the pipeline run's JSONB column.
    */
-  private async updateStageProgress(
+  async updateStageProgress(
     pipelineRunId: string,
     stageName: PipelineStageName,
     status: string,
@@ -1369,10 +1385,18 @@ export class PipelineService {
       .where(eq(pipelineRuns.id, pipelineRunId))
       .limit(1);
 
-    const current = (run?.stage_progress as Record<string, unknown>) || {};
+    const current = (run?.stage_progress as Record<string, any>) || {};
+    const existing = current[stageName] || {};
     const updated = {
       ...current,
-      [stageName]: { status, progress, updatedAt: new Date().toISOString() },
+      [stageName]: {
+        ...existing,
+        status,
+        progress,
+        // Preserve confidenceScore if already set (from validation)
+        confidenceScore: existing.confidenceScore ?? progress,
+        updatedAt: new Date().toISOString(),
+      },
     };
 
     await db.update(pipelineRuns).set({
@@ -1446,6 +1470,26 @@ export class PipelineService {
 
     if (!gate) throw new Error("Approval gate not found");
     if (gate.status !== "pending") throw new Error(`Gate already ${gate.status}`);
+
+    // Confidence threshold check — block approval if validation score is below threshold
+    const run = await db.query.pipelineRuns.findFirst({
+      where: eq(pipelineRuns.id, pipelineRunId),
+      columns: { project_id: true, stage_progress: true },
+    });
+    if (run) {
+      const project = await db.query.projects.findFirst({
+        where: eq(projects.id, run.project_id),
+        columns: { settings: true },
+      });
+      const threshold = (project?.settings as any)?.confidenceThreshold ?? 75;
+      const stageProgress = (run.stage_progress as Record<string, any>) || {};
+      const stageScore = stageProgress[stageName]?.confidenceScore;
+      if (typeof stageScore === 'number' && stageScore < threshold) {
+        throw new Error(
+          `Cannot approve: confidence score ${stageScore}% is below the threshold of ${threshold}%. Re-run the stage to improve the score.`
+        );
+      }
+    }
 
     await db.update(approvalGates).set({
       status: "approved",

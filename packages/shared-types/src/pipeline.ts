@@ -1,5 +1,5 @@
 /**
- * Pipeline and workflow types for REVAMP
+ * Pipeline and workflow types for AIgnite - LAPM
  *
  * This is the SINGLE SOURCE OF TRUTH for all stage names, display labels,
  * ordering, and approval requirements across the entire platform.
@@ -30,13 +30,13 @@ export const PIPELINE_STAGE_ORDER: PipelineStageName[] = [
 
 /** Human-readable display labels for each stage. */
 export const STAGE_DISPLAY_LABELS: Record<PipelineStageName, string> = {
-  [PipelineStageName.SCAN]: 'Setup & Configuration',
+  [PipelineStageName.SCAN]: 'Setup',
   [PipelineStageName.DECODE]: 'Intent Extraction',
-  [PipelineStageName.BLUEPRINT]: 'Business Capability Mining',
+  [PipelineStageName.BLUEPRINT]: 'Business Capability Map',
   [PipelineStageName.SPEC_LOCK]: 'Behavior Lock-in',
   [PipelineStageName.ARCHITECT]: 'Modernization Approach',
-  [PipelineStageName.FORGE]: 'Co-Create',
-  [PipelineStageName.SHADOW_RUN]: 'Parallel Run & Cutover',
+  [PipelineStageName.FORGE]: 'CoCreate',
+  [PipelineStageName.SHADOW_RUN]: 'Parallel Run',
   [PipelineStageName.EVOLVE]: 'Continuous Modernization',
 };
 

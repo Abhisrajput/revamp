@@ -97,10 +97,29 @@ type CompletionRequest struct {
 	ExtendedThinking bool `json:"extended_thinking,omitempty"`
 	ThinkingBudget   int  `json:"thinking_budget,omitempty"`
 
+	// Per-request credentials (BYOK — Bring Your Own Key)
+	// When present, the orchestrator creates an ephemeral provider client
+	// using these credentials instead of the global env config.
+	Credentials *RequestCredentials `json:"credentials,omitempty"`
+
 	// Metadata
 	ProjectID string                 `json:"project_id"`
 	UserID    string                 `json:"user_id"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// RequestCredentials carries per-request provider credentials.
+// Only the fields relevant to the provider type need to be set.
+type RequestCredentials struct {
+	Provider         string `json:"provider"`                    // "bedrock", "anthropic", "openai", "gemini"
+	AWSAccessKeyID   string `json:"aws_access_key_id,omitempty"`
+	AWSSecretKey     string `json:"aws_secret_access_key,omitempty"`
+	AWSSessionToken  string `json:"aws_session_token,omitempty"`
+	AWSRegion        string `json:"aws_region,omitempty"`
+	AnthropicAPIKey  string `json:"anthropic_api_key,omitempty"`
+	OpenAIAPIKey     string `json:"openai_api_key,omitempty"`
+	OpenAIEndpoint   string `json:"openai_endpoint,omitempty"` // for Azure OpenAI
+	GeminiAPIKey     string `json:"gemini_api_key,omitempty"`
 }
 
 // CompletionResponse represents an LLM completion response

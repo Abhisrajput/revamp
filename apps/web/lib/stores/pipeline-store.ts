@@ -17,22 +17,27 @@ export const STAGE_NAMES = [
 export type StageName = typeof STAGE_NAMES[number];
 
 export const STAGE_LABELS: Record<string, string> = {
-  SCAN: 'Scan',
-  DECODE: 'Decode',
-  BLUEPRINT: 'Blueprint',
-  SPEC_LOCK: 'Spec Lock',
-  ARCHITECT: 'Architect',
-  FORGE: 'Forge',
-  SHADOW_RUN: 'Shadow Run',
-  EVOLVE: 'Evolve',
+  SCAN: 'Setup',
+  DECODE: 'Intent Extraction',
+  BLUEPRINT: 'Business Capability Map',
+  SPEC_LOCK: 'Behavior Lock-in',
+  ARCHITECT: 'Modernization Approach',
+  FORGE: 'CoCreate',
+  SHADOW_RUN: 'Parallel Run',
+  EVOLVE: 'Continuous Modernization',
 };
 
 // ─── Stage Approval ────────────────────────────────────────────────
 
 const STAGES_REQUIRING_APPROVAL = new Set<string>([
-  'SPEC_LOCK',
+  'SCAN',
+  'DECODE',
   'BLUEPRINT',
+  'SPEC_LOCK',
   'ARCHITECT',
+  'FORGE',
+  'SHADOW_RUN',
+  'EVOLVE',
 ]);
 
 export function stageRequiresApproval(stage: string): boolean {
@@ -63,17 +68,43 @@ export interface StageArtifact {
   createdAt: string;
 }
 
+export interface ValidationDimensionScore {
+  name: string;
+  score: number;
+  weight: number;
+  details: string;
+}
+
+export interface ValidationFinding {
+  id: string;
+  category: string;
+  severity: 'critical' | 'warning' | 'info';
+  message: string;
+  codeLocation?: string;
+}
+
 export interface StageValidation {
   passed: boolean;
-  score: number;
+  score: number;  // 0-100 composite confidence score
   criteria: Array<{
     name: string;
     passed: boolean;
     score: number;
     feedback: string;
   }>;
+  dimensionScores?: ValidationDimensionScore[];
+  findings?: ValidationFinding[];
   summary: string;
   validatedAt: string;
+}
+
+export interface ApprovalHistoryEntry {
+  action: 'approved' | 'rejected' | 'rerun' | 'auto_approved' | 'failed';
+  timestamp: string;
+  user: string;
+  comment: string;
+  autoApproved?: boolean;
+  confidenceScore?: number;
 }
 
 export interface ScanSubtaskState {
@@ -96,12 +127,20 @@ export interface StageState {
   startedAt: string | null;
   completedAt: string | null;
   validation: StageValidation | null;
+  /** Preserved on re-run for comparison */
+  previousValidation: StageValidation | null;
+  /** Full audit trail of approve/reject/rerun actions */
+  approvalHistory: ApprovalHistoryEntry[];
+  /** ISO timestamp when approval was first requested */
+  pendingApprovalSince: string | null;
   artifacts: StageArtifact[];
   subtasks: ScanSubtaskState[];
   tokenUsage: { input: number; output: number; cost: number } | null;
   errorMessage: string | null;
   /** Alias for errorMessage — used by some components as stage.error */
   error?: string | null;
+  /** Number of times this stage has been executed */
+  runCount: number;
 }
 
 interface RunUsage {
@@ -165,9 +204,13 @@ interface PipelineState {
   setStageOutput: (index: number, output: string) => void;
   appendStreamingText: (text: string) => void;
   clearStreamingText: () => void;
-  setStageApproval: (index: number, status: 'approved' | 'rejected') => void;
+  setStageApproval: (index: number, status: 'approved' | 'rejected', comment?: string) => void;
   setStageValidation: (index: number, validation: StageValidation) => void;
   resetStage: (index: number) => void;
+  /** Re-run a stage: preserves previous validation, clears output, cascades reset to downstream stages */
+  rerunStage: (index: number, user?: string) => void;
+  /** Mark stage as awaiting approval (sets pendingApprovalSince) */
+  setPendingApproval: (index: number) => void;
   addLog: (entry: any) => void;
   clearLogs: () => void;
   addToolCall: (toolCall: any) => void;
@@ -202,8 +245,12 @@ function createDefaultStage(name: string): StageState {
     startedAt: null,
     completedAt: null,
     validation: null,
+    previousValidation: null,
+    approvalHistory: [],
+    pendingApprovalSince: null,
     artifacts: [],
     subtasks: [],
+    runCount: 0,
     tokenUsage: null,
     errorMessage: null,
   };
@@ -308,14 +355,38 @@ export const usePipelineStore = create<PipelineState>()(
 
       clearStreamingText: () => set({ streamingText: '' }),
 
-      setStageApproval: (index, status) => {
+      setStageApproval: (index, status, comment = '') => {
         set((state) => {
           const stages = [...state.stages];
+          const stage = stages[index];
+
+          // Only record real approval actions in history (not config states)
+          const isRealAction = status === 'approved' || status === 'rejected';
+          const history = isRealAction
+            ? [...stage.approvalHistory, {
+                action: status as 'approved' | 'rejected',
+                timestamp: new Date().toISOString(),
+                user: 'User',
+                comment,
+                confidenceScore: stage.validation?.score,
+              }]
+            : stage.approvalHistory;
+
           stages[index] = {
-            ...stages[index],
+            ...stage,
             approvalStatus: status,
-            status: status === 'approved' ? 'approved' : stages[index].status,
+            status: status === 'approved' ? 'approved' : stage.status,
+            pendingApprovalSince: status === 'approved' ? null : stage.pendingApprovalSince,
+            approvalHistory: history,
           };
+
+          // If approved, unlock next stage
+          if (status === 'approved' && index + 1 < stages.length) {
+            if (stages[index + 1].status === 'idle' || stages[index + 1].status === 'locked') {
+              stages[index + 1] = { ...stages[index + 1], status: 'pending' };
+            }
+          }
+
           return { stages };
         });
       },
@@ -331,8 +402,66 @@ export const usePipelineStore = create<PipelineState>()(
       resetStage: (index) => {
         set((state) => {
           const stages = [...state.stages];
-          stages[index] = createDefaultStage(stages[index].name);
+          stages[index] = {
+            ...createDefaultStage(stages[index].name),
+            approvalHistory: stages[index].approvalHistory, // preserve history
+            runCount: stages[index].runCount, // preserve run count
+          };
           return { stages, streamingText: '' };
+        });
+      },
+
+      rerunStage: (index, user = 'User') => {
+        set((state) => {
+          const stages = [...state.stages];
+          const current = stages[index];
+
+          // Preserve previous validation for comparison, clear current
+          const entry: ApprovalHistoryEntry = {
+            action: 'rerun',
+            timestamp: new Date().toISOString(),
+            user,
+            comment: 'Stage re-run initiated',
+          };
+
+          stages[index] = {
+            ...current,
+            status: 'pending',
+            output: '',
+            streamingOutput: '',
+            approvalStatus: stageRequiresApproval(current.name) ? 'pending' : 'not_required',
+            previousValidation: current.validation || current.previousValidation,
+            validation: null,
+            pendingApprovalSince: null,
+            errorMessage: null,
+            error: null,
+            approvalHistory: [...current.approvalHistory, entry],
+          };
+
+          // Cascade: reset all downstream stages (they depend on this output)
+          for (let i = index + 1; i < stages.length; i++) {
+            if (stages[i].status === 'completed' || stages[i].status === 'approved') {
+              stages[i] = {
+                ...createDefaultStage(stages[i].name),
+                approvalHistory: stages[i].approvalHistory,
+                runCount: stages[i].runCount,
+              };
+            }
+          }
+
+          return { stages, activeStageIndex: index, streamingText: '' };
+        });
+      },
+
+      setPendingApproval: (index) => {
+        set((state) => {
+          const stages = [...state.stages];
+          stages[index] = {
+            ...stages[index],
+            approvalStatus: 'pending',
+            pendingApprovalSince: new Date().toISOString(),
+          };
+          return { stages };
         });
       },
 
@@ -508,9 +637,34 @@ export const usePipelineStore = create<PipelineState>()(
     }),
     {
       name: 'pipeline-storage',
+      version: 4,
       storage: createJSONStorage(() =>
         typeof window !== 'undefined' ? localStorage : ({} as Storage),
       ),
+      migrate: (persisted: any, version: number) => {
+        if (persisted && Array.isArray(persisted.stages)) {
+          persisted.stages = persisted.stages.map((s: any) => {
+            // v3: clean stale data, add new fields, reset stages with no output
+            const hasRealOutput = !!(s.output && s.output.length > 10);
+            const isStaleCompleted = (s.status === 'completed' || s.status === 'approved') && !hasRealOutput;
+            return {
+              ...s,
+              label: STAGE_LABELS[s.name] ?? s.name,
+              // Reset stale "completed" stages that have no output back to pending
+              status: isStaleCompleted ? 'pending' : s.status,
+              approvalStatus: isStaleCompleted ? 'not_required' : s.approvalStatus,
+              // Clean 'not_required' from history
+              approvalHistory: (s.approvalHistory || []).filter(
+                (e: any) => e.action !== 'not_required',
+              ),
+              previousValidation: s.previousValidation ?? null,
+              pendingApprovalSince: s.pendingApprovalSince ?? null,
+              runCount: s.runCount ?? 0,
+            };
+          });
+        }
+        return persisted;
+      },
       // Exclude large streaming/output fields from persistence
       partialize: (state) => ({
         activeStageIndex: state.activeStageIndex,
@@ -534,11 +688,20 @@ export const usePipelineStore = create<PipelineState>()(
 
 // ─── Selectors / Helpers ────────────────────────────────────────────
 
+/** Default confidence threshold — can be overridden per-project via settings.confidenceThreshold */
+export const DEFAULT_CONFIDENCE_THRESHOLD = 75;
+
 /**
  * Returns true if a stage at the given index can be executed.
- * All previous stages must be completed or approved.
+ * Rules:
+ *   - All previous stages must be completed or approved
+ *   - Current stage must NOT have a pending approval gate
  */
 export function canExecuteStage(stages: StageState[], index: number): boolean {
+  const current = stages[index];
+  // Block if awaiting approval — user must approve/reject first
+  if (current?.approvalStatus === 'pending' && current?.pendingApprovalSince) return false;
+
   if (index === 0) return true;
   for (let i = 0; i < index; i++) {
     const s = stages[i].status;
@@ -547,10 +710,48 @@ export function canExecuteStage(stages: StageState[], index: number): boolean {
   return true;
 }
 
+/** Returns true if approval should be blocked due to low confidence score. */
+export function isApprovalBlocked(stage: StageState, threshold = DEFAULT_CONFIDENCE_THRESHOLD): boolean {
+  if (!stage.validation) return false;
+  return stage.validation.score < threshold;
+}
+
+/** Returns true if this stage has been executed at least once. */
+export function hasBeenExecuted(stage: StageState): boolean {
+  return stage.runCount > 0 || stage.status === 'completed' || stage.status === 'approved' || stage.status === 'failed';
+}
+
+/**
+ * Central guard: should the approval gate UI be shown for this stage?
+ *
+ * Rules (matching legacy-bridge):
+ *   - Stage must have completed successfully (status = 'completed' or 'approved')
+ *   - Stage must require approval
+ *   - Stage must NOT be failed/pending/generating
+ *   - Approval gate is for reviewing OUTPUT, not for recovering from errors
+ */
+export function shouldShowApprovalGate(stage: StageState): boolean {
+  // Never show approval gate for failed, pending, generating, or idle stages
+  if (stage.status === 'failed' || stage.status === 'pending' || stage.status === 'idle' ||
+      stage.status === 'generating' || stage.status === 'validating' || stage.status === 'locked') {
+    return false;
+  }
+  // Only show for stages that require approval
+  if (!stageRequiresApproval(stage.name)) return false;
+  // Show when completed (awaiting review) or already approved (can re-run)
+  return stage.status === 'completed' || stage.status === 'approved';
+}
+
 /**
  * Returns a human-readable reason why a stage cannot be executed yet.
  */
 export function getStageBlockReason(stages: StageState[], index: number): string | null {
+  // Check if current stage has pending approval
+  const current = stages[index];
+  if (current?.approvalStatus === 'pending') {
+    return `This stage is awaiting approval. Review and approve or reject before re-running.`;
+  }
+
   if (index === 0) return null;
   for (let i = 0; i < index; i++) {
     const s = stages[i];

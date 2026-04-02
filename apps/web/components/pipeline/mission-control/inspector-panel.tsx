@@ -18,7 +18,7 @@ import { ValidationResults } from '@/components/pipeline/validation-results';
 import { ApprovalGate } from '@/components/pipeline/approval-gate';
 import { apiClient } from '@/lib/api-client';
 import type { StageState } from '@/lib/stores/pipeline-store';
-import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import { usePipelineStore, shouldShowApprovalGate } from '@/lib/stores/pipeline-store';
 import { useUIPreferencesStore, type InspectorTab } from '@/lib/stores/ui-preferences-store';
 import { useStageTrajectory } from '@/lib/hooks/use-agents';
 import type { RetrievalStep } from '@/lib/hooks/use-agents';
@@ -44,6 +44,7 @@ interface InspectorPanelProps {
   /** Approval handlers */
   onApprove: (comment?: string) => void;
   onReject: (reason: string) => void;
+  onRerun?: () => void;
   /** Current user role for approval gates */
   userRole: string;
   /** Pipeline run ID for context retrieval trajectory */
@@ -55,6 +56,7 @@ export const InspectorPanel = memo(function InspectorPanel({
   stage,
   onApprove,
   onReject,
+  onRerun,
   userRole,
   pipelineRunId,
   className,
@@ -102,6 +104,37 @@ export const InspectorPanel = memo(function InspectorPanel({
         : [],
     };
   }, [stage.validation]);
+
+  // Right panel is only shown when stage has completed (successfully or approved).
+  // Failed/pending/generating stages don't need review — user should re-run first.
+  const stageCompleted = stage.status === 'completed' || stage.status === 'approved';
+
+  if (!stageCompleted) {
+    return (
+      <div className={cn('flex flex-col h-full items-center justify-center text-center p-6', className)}>
+        <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center mb-3">
+          {stage.status === 'failed' ? (
+            <RotateCcw className="w-5 h-5 text-amber-400" />
+          ) : stage.status === 'generating' || stage.status === 'validating' ? (
+            <div className="w-5 h-5 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+          ) : (
+            <ShieldCheck className="w-5 h-5 text-slate-300 dark:text-slate-600" />
+          )}
+        </div>
+        <p className="text-sm font-medium text-slate-600 dark:text-slate-300">
+          {stage.status === 'failed' ? 'Stage failed' :
+           stage.status === 'generating' ? 'Generating...' :
+           stage.status === 'validating' ? 'Validating...' :
+           'Waiting for execution'}
+        </p>
+        <p className="text-xs text-slate-400 dark:text-slate-500 mt-1 max-w-[200px]">
+          {stage.status === 'failed'
+            ? 'Re-run the stage from the main panel.'
+            : 'Validation, approval, and artifacts will appear here after the stage completes.'}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className={cn('flex flex-col h-full', className)}>
@@ -169,19 +202,39 @@ export const InspectorPanel = memo(function InspectorPanel({
         {/* Approval Tab */}
         {inspectorTab === 'approval' && (
           <div className="space-y-4">
-            {stage.approvalStatus !== 'none' ? (
+            {shouldShowApprovalGate(stage) ? (
               <ApprovalGate
                 stage={stage.label}
-                status={stage.approvalStatus === 'pending' ? 'pending' : stage.approvalStatus === 'approved' ? 'approved' : 'rejected'}
+                status={stage.approvalStatus === 'approved' ? 'approved' : 'pending'}
                 requiredRole={approvalRequiredRole}
                 onApprove={onApprove}
-                onReject={onReject}
+                onRerun={onRerun || (() => {})}
                 userRole={userRole}
+                validation={stage.validation}
+                approvalHistory={(stage as any).approvalHistory}
               />
+            ) : stage.status === 'failed' ? (
+              <div className="flex flex-col items-center justify-center py-6 text-slate-400 dark:text-slate-500">
+                <RotateCcw className="w-6 h-6 mb-2 text-amber-400" />
+                <p className="text-sm font-medium text-slate-600 dark:text-slate-300">Stage failed</p>
+                <p className="text-xs mt-1">Re-run the stage to generate output for review.</p>
+                {onRerun && (
+                  <button
+                    onClick={onRerun}
+                    className="mt-3 px-3 py-1.5 text-xs font-medium rounded-md bg-primary-600 text-white hover:bg-primary-700 transition-colors"
+                  >
+                    Re-run Stage
+                  </button>
+                )}
+              </div>
             ) : (
               <div className="flex flex-col items-center justify-center py-4 text-slate-400 dark:text-slate-500">
                 <CheckCircle className="w-6 h-6 mb-1.5 opacity-50" />
-                <p className="text-xs">No approval gate for this stage</p>
+                <p className="text-xs">
+                  {stage.status === 'pending' || stage.status === 'idle'
+                    ? 'Execute the stage first to enable approval review.'
+                    : 'No approval gate for this stage.'}
+                </p>
               </div>
             )}
 

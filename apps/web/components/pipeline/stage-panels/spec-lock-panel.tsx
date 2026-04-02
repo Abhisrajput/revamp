@@ -1,261 +1,133 @@
 'use client';
 
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import {
-  Play, FileCheck, BookOpen, FlaskConical, AlertTriangle,
-  Table2, ClipboardList, CheckCircle, XCircle, Info,
+  Play, BookOpen, FlaskConical, AlertTriangle, ClipboardList,
+  FileText, Table2, FileCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
-import { RefinableMarkdown } from '@/components/pipeline/refinable-markdown';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
 import { usePipelineStore, canExecuteStage } from '@/lib/stores/pipeline-store';
 import { cn } from '@/lib/utils';
+import { TabFallback } from './tab-fallback';
 import type { StagePanelProps } from './types';
 
-// ─── Parsers ──────────────────────────────────────────────────────
+// ─── Parsers ──────────────────────────────────────────────────
 
 interface FeatureFileBlock {
   path: string;
   content: string;
-  scenarios: GherkinScenario[];
+  scenarios: number;
 }
 
-interface GherkinScenario {
-  feature: string;
-  scenario: string;
-  steps: string[];
-  tags: string[];
-  isOutline: boolean;
-}
-
-interface TestResult {
-  index: number;
-  feature: string;
-  scenario: string;
-  tags: string;
-  result: 'PASS' | 'FAIL';
-  duration: string;
-  failureReason: string;
-}
-
-interface ValidationFinding {
-  index: number;
-  severity: 'Critical' | 'Warning' | 'Info';
-  finding: string;
-  evidence: string;
-  recommendation: string;
-}
-
-interface TraceabilityRow {
-  ruleId: string;
-  ruleDescription: string;
-  featureFile: string;
-  scenarios: string;
-  coverage: string;
-  regressionCheck: string;
-}
-
-/** Extract ```gherkin blocks with # File: headers */
 function extractFeatureFiles(text: string): FeatureFileBlock[] {
   const files: FeatureFileBlock[] = [];
-  const blockPattern = /```gherkin\n([\s\S]*?)```/g;
+  const blockPattern = /```(?:gherkin|feature)\n([\s\S]*?)```/g;
   let match;
-
   while ((match = blockPattern.exec(text)) !== null) {
     const content = match[1].trim();
     const pathMatch = content.match(/^#\s*File:\s*(.+)/m);
     const path = pathMatch ? pathMatch[1].trim() : `feature-${files.length + 1}.feature`;
-
-    const scenarios = parseGherkinScenarios(content, path);
+    const scenarios = (content.match(/Scenario[:\s]/g) || []).length;
     files.push({ path, content, scenarios });
   }
-
   return files;
 }
 
-function parseGherkinScenarios(text: string, featurePath: string): GherkinScenario[] {
-  const scenarios: GherkinScenario[] = [];
-  const featureMatch = text.match(/Feature:\s*(.+)/);
-  const featureName = featureMatch ? featureMatch[1].trim() : featurePath;
-
-  const scenarioPattern = /(?:(@[\w@. -]+)\s*\n\s*)?Scenario(?: Outline)?:\s*(.+?)(?=\n(?:\s*@|\s*Scenario|\s*Feature:|$))/gs;
-  let match;
-
-  while ((match = scenarioPattern.exec(text)) !== null) {
-    const tagLine = match[1] || '';
-    const fullBlock = match[0];
-    const scenarioName = match[2].trim();
-    const isOutline = fullBlock.includes('Scenario Outline:');
-
-    const tags = tagLine.match(/@[\w.-]+/g) || [];
-    const steps = fullBlock
-      .split('\n')
-      .filter((line) => /^\s*(Given|When|Then|And|But)\s/.test(line))
-      .map((line) => line.trim());
-
-    scenarios.push({ feature: featureName, scenario: scenarioName, steps, tags, isOutline });
+function extractSection(text: string, ...headings: string[]): string | null {
+  for (const heading of headings) {
+    const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(
+      `(?:^|\\n)(#{1,3})\\s*(?:\\d+\\.?\\s*)?${escaped}[^\\n]*\\n([\\s\\S]*?)(?=\\n\\1(?!#)\\s|$)`,
+      'i',
+    );
+    const match = pattern.exec(text);
+    if (match && match[2].trim()) return match[2].trim();
+    const fallback = new RegExp(
+      `(?:^|\\n)#{1,3}\\s*(?:\\d+\\.?\\s*)?${escaped}[^\\n]*\\n([\\s\\S]*?)(?=\\n#{1,2}\\s|$)`,
+      'i',
+    );
+    const fm = fallback.exec(text);
+    if (fm && fm[1].trim()) return fm[1].trim();
   }
-
-  return scenarios;
+  return null;
 }
 
-/** Extract test execution results from markdown table */
-function extractTestResults(text: string): TestResult[] {
-  const results: TestResult[] = [];
-  const section = extractSection(text, 'Test Execution Results');
-  if (!section) return results;
-
-  const rows = section.split('\n').filter((line) =>
-    /^\|/.test(line) && !/^[\s|:-]+$/.test(line) && !/^\|\s*#\s*\|/.test(line)
-  );
-
-  for (const row of rows) {
-    const cells = row.split('|').map((c) => c.trim()).filter(Boolean);
-    if (cells.length < 6) continue;
-
-    const idx = parseInt(cells[0], 10);
-    if (isNaN(idx)) continue;
-
-    results.push({
-      index: idx,
-      feature: cells[1],
-      scenario: cells[2],
-      tags: cells[3],
-      result: cells[4].includes('PASS') ? 'PASS' : 'FAIL',
-      duration: cells[5],
-      failureReason: cells[6] || '—',
-    });
-  }
-
-  return results;
-}
-
-/** Extract validation findings from markdown table */
-function extractValidationFindings(text: string): ValidationFinding[] {
-  const findings: ValidationFinding[] = [];
-  const section = extractSection(text, 'Validation Findings');
-  if (!section) return findings;
-
-  const rows = section.split('\n').filter((line) =>
-    /^\|/.test(line) && !/^[\s|:-]+$/.test(line) && !/^\|\s*#\s*\|/.test(line)
-  );
-
-  for (const row of rows) {
-    const cells = row.split('|').map((c) => c.trim()).filter(Boolean);
-    if (cells.length < 4) continue;
-
-    // Index can be a number (1, 2) or an ID (VF-1, VF-2)
-    const idCell = cells[0];
-    const idx = parseInt(idCell.replace(/\D+/g, ''), 10);
-    if (isNaN(idx) && !idCell) continue;
-
-    const severityRaw = cells[1];
-    const severity = /critical/i.test(severityRaw) ? 'Critical'
-      : /warning|high/i.test(severityRaw) ? 'Warning' : 'Info';
-
-    findings.push({
-      index: idx || findings.length + 1,
-      severity,
-      finding: cells[2],
-      evidence: cells[3],
-      recommendation: cells[4] || '',
-    });
-  }
-
-  return findings;
-}
-
-/** Extract traceability matrix rows from markdown table */
-function extractTraceability(text: string): TraceabilityRow[] {
-  const rows: TraceabilityRow[] = [];
-  const section = extractSection(text, 'Traceability Matrix');
-  if (!section) return rows;
-
-  const lines = section.split('\n').filter((line) =>
-    /^\|/.test(line) && !/^[\s|:-]+$/.test(line) && !/^\|\s*Rule ID\s*\|/.test(line)
-  );
-
-  for (const line of lines) {
-    const cells = line.split('|').map((c) => c.trim()).filter(Boolean);
-    if (cells.length < 5) continue;
-
-    rows.push({
-      ruleId: cells[0],
-      ruleDescription: cells[1],
-      featureFile: cells[2],
-      scenarios: cells[3],
-      coverage: cells[4],
-      regressionCheck: cells[5] || '',
-    });
-  }
-
-  return rows;
-}
-
-/** Extract a markdown section by heading */
-function extractSection(text: string, heading: string): string | null {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const headingMatch = new RegExp(`(?:^|\\n)(#{1,3})\\s*(?:\\d+\\.?\\s*)?${escaped}[^\\n]*\\n`, 'i').exec(text);
-  if (!headingMatch) return null;
-  const level = headingMatch[1].length;
-  const startIndex = headingMatch.index + headingMatch[0].length;
-  const endMatch = new RegExp(`\\n#{1,${level}}\\s`).exec(text.slice(startIndex));
-  const content = endMatch ? text.slice(startIndex, startIndex + endMatch.index) : text.slice(startIndex);
-  return content.trim() || null;
-}
-
-/** Build file tree from feature file paths */
-function buildFeatureTree(files: FeatureFileBlock[]): FileNode[] {
+function buildFileTree(files: FeatureFileBlock[]): FileNode[] {
   const root: FileNode[] = [];
-
-  for (const file of files) {
-    const parts = file.path.split('/').filter(Boolean);
+  for (const f of files) {
+    const parts = f.path.split('/');
     let current = root;
-
     for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      const isLast = i === parts.length - 1;
-
-      if (isLast) {
-        current.push({ name: part, type: 'file', path: file.path });
+      const name = parts[i];
+      if (i === parts.length - 1) {
+        current.push({ name, type: 'file', path: f.path, language: 'gherkin' });
       } else {
-        let dir = current.find((n) => n.name === part && n.type === 'dir');
+        let dir = current.find((n) => n.type === 'dir' && n.name === name);
         if (!dir) {
-          dir = { name: part, type: 'dir', children: [] };
+          dir = { name, type: 'dir', children: [] };
           current.push(dir);
         }
         current = dir.children!;
       }
     }
   }
-
   return root;
 }
 
-// ─── Component ────────────────────────────────────────────────────
+// ─── Gherkin Syntax Highlighter ──────────────────────────────
+
+function GherkinViewer({ content }: { content: string }) {
+  const lines = content.split('\n');
+  return (
+    <pre className="p-4 text-[12px] font-mono leading-relaxed overflow-auto bg-slate-950 text-slate-300 rounded-b-lg">
+      {lines.map((line, i) => {
+        const trimmed = line.trimStart();
+        let cls = 'text-slate-400';
+        if (/^Feature:/i.test(trimmed)) cls = 'text-blue-400 font-bold';
+        else if (/^Scenario Outline:/i.test(trimmed)) cls = 'text-purple-400 font-semibold';
+        else if (/^Scenario:/i.test(trimmed)) cls = 'text-purple-400 font-semibold';
+        else if (/^Background:/i.test(trimmed)) cls = 'text-cyan-400 font-semibold';
+        else if (/^(Given|When|Then|And|But)\s/i.test(trimmed)) cls = 'text-green-400';
+        else if (/^@/i.test(trimmed)) cls = 'text-amber-400';
+        else if (/^Examples:/i.test(trimmed)) cls = 'text-pink-400 font-semibold';
+        else if (/^\|/.test(trimmed)) cls = 'text-slate-300';
+        else if (/^#/.test(trimmed)) cls = 'text-slate-600 italic';
+        return (
+          <div key={i} className="flex hover:bg-slate-900/50">
+            <span className="w-8 text-right pr-3 text-slate-600 select-none shrink-0">{i + 1}</span>
+            <span className={cls}>{line}</span>
+          </div>
+        );
+      })}
+    </pre>
+  );
+}
+
+// ─── Tab definitions ─────────────────────────────────────────
 
 type TabKey = 'features' | 'results' | 'findings' | 'traceability' | 'regression' | 'output';
 
-const TABS: Array<{ key: TabKey; label: string; icon: typeof BookOpen }> = [
-  { key: 'features', label: 'Features', icon: BookOpen },
+const TABS: Array<{ key: TabKey; label: string; icon: typeof FileText }> = [
+  { key: 'features', label: 'Feature Files', icon: BookOpen },
   { key: 'results', label: 'Test Results', icon: FlaskConical },
   { key: 'findings', label: 'Findings', icon: AlertTriangle },
   { key: 'traceability', label: 'Traceability', icon: Table2 },
   { key: 'regression', label: 'Regression', icon: ClipboardList },
-  { key: 'output', label: 'Full Output', icon: FileCheck },
+  { key: 'output', label: 'Full Output', icon: FileText },
 ];
+
+// ─── Component ───────────────────────────────────────────────
 
 export default function SpecLockPanel({
   stage,
   stageIndex,
   streamingText,
   onExecute,
-  onApprove: _onApprove,
-  onReject: _onReject,
   isExecuting,
   onRefineRequest,
 }: StagePanelProps) {
@@ -265,83 +137,33 @@ export default function SpecLockPanel({
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const isRunning = stage.status === 'generating' || stage.status === 'validating';
   const hasOutput = !!(stage.output || streamingText);
-  const canExecute = (stage.status === 'pending' || stage.status === 'failed') && !isExecuting && canExecuteStage(stages, stageIndex);
+  const canRun = (stage.status === 'pending' || stage.status === 'failed') && !isExecuting && canExecuteStage(stages, stageIndex);
 
-  // ─── Parse output ──────────────────────────────────────────────
-  const featureFiles = useMemo(() => {
-    if (!stage.output) return [];
-    return extractFeatureFiles(stage.output);
-  }, [stage.output]);
-
-  const testResults = useMemo(() => {
-    if (!stage.output) return [];
-    return extractTestResults(stage.output);
-  }, [stage.output]);
-
-  const findings = useMemo(() => {
-    if (!stage.output) return [];
-    return extractValidationFindings(stage.output);
-  }, [stage.output]);
-
-  const traceability = useMemo(() => {
-    if (!stage.output) return [];
-    return extractTraceability(stage.output);
-  }, [stage.output]);
-
-  const regressionSection = useMemo(() => {
-    if (!stage.output) return null;
-    return extractSection(stage.output, 'Regression Checklist');
-  }, [stage.output]);
-
-  // ─── Derived stats ─────────────────────────────────────────────
-  const totalScenarios = featureFiles.reduce((sum, f) => sum + f.scenarios.length, 0);
-  const passCount = testResults.filter((r) => r.result === 'PASS').length;
-  const failCount = testResults.filter((r) => r.result === 'FAIL').length;
-  const passRate = testResults.length > 0 ? Math.round((passCount / testResults.length) * 100) : 0;
-  const criticalFindings = findings.filter((f) => f.severity === 'Critical').length;
-
-  // ─── Feature file tree ─────────────────────────────────────────
-  const fileTree = useMemo(() => buildFeatureTree(featureFiles), [featureFiles]);
+  // ─── Parsed data ───────────────────────────────────────────
+  const featureFiles = useMemo(() => stage.output ? extractFeatureFiles(stage.output) : [], [stage.output]);
+  const fileTree = useMemo(() => buildFileTree(featureFiles), [featureFiles]);
   const currentFile = useMemo(() => {
-    if (!selectedFile) return featureFiles[0] || null;
-    return featureFiles.find((f) => f.path === selectedFile) || null;
-  }, [selectedFile, featureFiles]);
-
-  const handleFileClick = useCallback((node: FileNode) => {
-    if (node.type === 'file') {
-      setSelectedFile(node.path || null);
-      setActiveTab('features');
-    }
-  }, []);
-
-  // Auto-select first file
-  useEffect(() => {
-    if (featureFiles.length > 0 && !selectedFile) {
-      setSelectedFile(featureFiles[0].path);
-    }
+    if (!selectedFile) return featureFiles[0] ?? null;
+    return featureFiles.find((f) => f.path === selectedFile) ?? featureFiles[0] ?? null;
   }, [featureFiles, selectedFile]);
 
-  // Populate store feature files
-  useEffect(() => {
-    if (featureFiles.length === 0) return;
-    const store = usePipelineStore.getState();
-    store.clearFeatureFiles();
-    for (const f of featureFiles) {
-      const pass = testResults.filter((r) => r.feature === f.scenarios[0]?.feature && r.result === 'PASS').length;
-      const fail = testResults.filter((r) => r.feature === f.scenarios[0]?.feature && r.result === 'FAIL').length;
-      store.addFeatureFile({
-        path: f.path,
-        content: f.content,
-        scenarioCount: f.scenarios.length,
-        passCount: pass,
-        failCount: fail,
-      });
-    }
-  }, [featureFiles, testResults]);
+  const resultsSection = useMemo(() => stage.output ? extractSection(stage.output, 'Test Execution Results', 'Test Results') : null, [stage.output]);
+  const findingsSection = useMemo(() => stage.output ? extractSection(stage.output, 'Validation Findings', 'Findings') : null, [stage.output]);
+  const traceabilitySection = useMemo(() => stage.output ? extractSection(stage.output, 'Traceability Matrix', 'Traceability') : null, [stage.output]);
+  const regressionSection = useMemo(() => stage.output ? extractSection(stage.output, 'Regression Checklist', 'Regression') : null, [stage.output]);
+
+  const stats = useMemo(() => ({
+    files: featureFiles.length,
+    scenarios: featureFiles.reduce((sum, f) => sum + f.scenarios, 0),
+  }), [featureFiles]);
+
+  const handleFileClick = useCallback((node: FileNode) => {
+    if (node.type === 'file' && node.path) setSelectedFile(node.path);
+  }, []);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* ── Pre-execution ────────────────────────────────────────── */}
+      {/* Pre-execution */}
       {!hasOutput && !isRunning && (
         <>
           <Card className="bg-slate-50 dark:bg-slate-900">
@@ -355,7 +177,7 @@ export default function SpecLockPanel({
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Generates Cucumber-compatible Gherkin .feature files that lock the behavioral
                 contracts of the legacy system. Includes simulated test execution, validation
-                findings, and full traceability back to DECODE business rules.
+                findings, and full traceability back to business rules.
               </p>
               <div className="flex flex-wrap gap-2 mt-3">
                 <Badge variant="outline" className="text-[10px]">.feature Files</Badge>
@@ -367,7 +189,7 @@ export default function SpecLockPanel({
             </CardContent>
           </Card>
 
-          {canExecute && (
+          {canRun && (
             <div className="flex justify-center pt-2">
               <Button size="lg" onClick={onExecute} className="gap-2">
                 <Play className="w-4 h-4" />
@@ -378,7 +200,7 @@ export default function SpecLockPanel({
         </>
       )}
 
-      {/* ── During execution ─────────────────────────────────────── */}
+      {/* During execution */}
       {isRunning && (
         <>
           {streamingText && <StageOutput output={streamingText} isStreaming />}
@@ -386,53 +208,22 @@ export default function SpecLockPanel({
         </>
       )}
 
-      {/* ── After execution ──────────────────────────────────────── */}
+      {/* After execution */}
       {stage.output && !isRunning && (
         <div className="flex flex-col flex-1 min-h-0">
-          {/* Stats Bar — sticky */}
-          <div className="flex-shrink-0 flex items-center justify-between bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 px-4 py-2">
-            <div className="flex items-center gap-4 text-xs">
-              <span className="flex items-center gap-1.5 text-slate-500">
-                <BookOpen className="w-3.5 h-3.5" />
-                {featureFiles.length} feature files
-              </span>
-              <span className="flex items-center gap-1.5 text-slate-500">
-                <FlaskConical className="w-3.5 h-3.5" />
-                {totalScenarios} scenarios
-              </span>
-              <span className={cn(
-                'flex items-center gap-1.5 font-medium',
-                passRate >= 80 ? 'text-emerald-600' : passRate >= 50 ? 'text-amber-600' : 'text-red-600',
-              )}>
-                <CheckCircle className="w-3.5 h-3.5" />
-                {passCount} passed
-              </span>
-              {failCount > 0 && (
-                <span className="flex items-center gap-1.5 text-red-600 font-medium">
-                  <XCircle className="w-3.5 h-3.5" />
-                  {failCount} failed
-                </span>
-              )}
-              {criticalFindings > 0 && (
-                <span className="flex items-center gap-1.5 text-orange-600 font-medium">
-                  <AlertTriangle className="w-3.5 h-3.5" />
-                  {criticalFindings} critical findings
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <Badge className={cn(
-                'text-[10px]',
-                passRate >= 80 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400'
-                  : passRate >= 50 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400'
-                  : 'bg-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-400',
-              )}>
-                {passRate}% pass rate
-              </Badge>
-            </div>
+          {/* Stats Bar */}
+          <div className="flex-shrink-0 flex items-center gap-4 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 px-4 py-2 text-xs">
+            <span className="flex items-center gap-1.5 text-slate-500">
+              <BookOpen className="w-3.5 h-3.5" />
+              {stats.files} feature files
+            </span>
+            <span className="flex items-center gap-1.5 text-slate-500">
+              <FlaskConical className="w-3.5 h-3.5" />
+              {stats.scenarios} scenarios
+            </span>
           </div>
 
-          {/* Tab Bar — sticky */}
+          {/* Tab Bar */}
           <div className="flex-shrink-0 flex gap-0.5 border-b border-slate-200 dark:border-slate-700 overflow-x-auto">
             {TABS.map(({ key, label, icon: Icon }) => (
               <button
@@ -447,389 +238,115 @@ export default function SpecLockPanel({
               >
                 <Icon className="w-3.5 h-3.5" />
                 {label}
-                {key === 'results' && testResults.length > 0 && (
-                  <span className="text-[9px] ml-0.5 opacity-70">({testResults.length})</span>
-                )}
-                {key === 'findings' && findings.length > 0 && (
-                  <span className="text-[9px] ml-0.5 opacity-70">({findings.length})</span>
+                {key === 'features' && stats.files > 0 && (
+                  <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400">
+                    {stats.files}
+                  </span>
                 )}
               </button>
             ))}
           </div>
 
-          {/* Tab content — scrollable area */}
-          <div className="flex-1 min-h-0 overflow-auto p-4">
+          {/* Tab Content */}
+          <div className="flex-1 min-h-0 overflow-hidden">
 
-          {/* ── Tab: Features ─────────────────────────────────────── */}
-          {activeTab === 'features' && (
-            <div className="grid grid-cols-[220px_1fr] rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden" style={{ height: 'calc(100vh - 280px)' }}>
-              {/* File tree sidebar */}
-              <div className="border-r border-slate-200 dark:border-slate-700 overflow-auto">
-                <FileTree
-                  nodes={fileTree}
-                  selectedPath={selectedFile || undefined}
-                  onFileClick={handleFileClick}
-                  showSearch={false}
-                  className="border-0 rounded-none"
-                />
-              </div>
-
-              {/* Gherkin viewer */}
-              <div className="overflow-auto bg-slate-950">
-                {currentFile ? (
-                  <GherkinViewer content={currentFile.content} />
+            {/* Feature Files — IDE-like split layout */}
+            {activeTab === 'features' && (
+              <div className="flex h-full">
+                {featureFiles.length > 0 ? (
+                  <>
+                    {/* File Tree Sidebar */}
+                    <div className="w-56 shrink-0 border-r border-slate-200 dark:border-slate-700 overflow-y-auto bg-slate-50 dark:bg-slate-900/50">
+                      <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Feature Files
+                      </div>
+                      <FileTree
+                        nodes={fileTree}
+                        onFileClick={handleFileClick}
+                        selectedPath={currentFile?.path}
+                      />
+                    </div>
+                    {/* Gherkin Code Viewer */}
+                    <div className="flex-1 min-w-0 flex flex-col">
+                      {currentFile ? (
+                        <>
+                          <div className="flex items-center gap-2 px-4 py-2 bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 text-xs shrink-0">
+                            <BookOpen className="w-3.5 h-3.5 text-primary-500" />
+                            <span className="font-mono text-slate-600 dark:text-slate-300 truncate">{currentFile.path}</span>
+                            <span className="text-slate-400 ml-auto shrink-0">{currentFile.scenarios} scenarios</span>
+                          </div>
+                          <div className="flex-1 overflow-auto">
+                            <GherkinViewer content={currentFile.content} />
+                          </div>
+                        </>
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-sm text-slate-400">
+                          Select a feature file
+                        </div>
+                      )}
+                    </div>
+                  </>
                 ) : (
-                  <div className="flex items-center justify-center h-full text-sm text-slate-400">
-                    Select a .feature file to view
+                  <div className="flex-1 overflow-auto p-4">
+                    <TabFallback stageOutput={stage.output} emptyLabel="No feature files found" />
                   </div>
                 )}
               </div>
-            </div>
-          )}
+            )}
 
-          {/* ── Tab: Test Results ──────────────────────────────────── */}
-          {activeTab === 'results' && (
-            <div className="flex-1 min-h-0 rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto">
-              {testResults.length > 0 ? (
-                <table className="w-full text-[11px]">
-                  <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10">
-                    <tr className="border-b border-slate-200 dark:border-slate-700">
-                      <th className="text-left py-2 px-3 text-slate-500 font-semibold w-8">#</th>
-                      <th className="text-left py-2 px-3 text-slate-500 font-semibold">Feature</th>
-                      <th className="text-left py-2 px-3 text-slate-500 font-semibold">Scenario</th>
-                      <th className="text-left py-2 px-3 text-slate-500 font-semibold">Tags</th>
-                      <th className="text-center py-2 px-3 text-slate-500 font-semibold w-16">Result</th>
-                      <th className="text-right py-2 px-3 text-slate-500 font-semibold w-16">Time</th>
-                      <th className="text-left py-2 px-3 text-slate-500 font-semibold">Failure Reason</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {testResults.map((r) => (
-                      <tr key={r.index} className={cn(
-                        'border-b border-slate-100 dark:border-slate-800',
-                        r.result === 'FAIL' && 'bg-red-50/50 dark:bg-red-950/20',
-                      )}>
-                        <td className="py-1.5 px-3 text-slate-400 font-mono">{r.index}</td>
-                        <td className="py-1.5 px-3 text-slate-600 dark:text-slate-400">{r.feature}</td>
-                        <td className="py-1.5 px-3 font-medium text-slate-900 dark:text-slate-50">{r.scenario}</td>
-                        <td className="py-1.5 px-3">
-                          <div className="flex flex-wrap gap-1">
-                            {r.tags.split(/\s+/).filter(Boolean).map((tag) => (
-                              <Badge key={tag} variant="outline" className="text-[8px] px-1 py-0">{tag}</Badge>
-                            ))}
-                          </div>
-                        </td>
-                        <td className="py-1.5 px-3 text-center">
-                          {r.result === 'PASS' ? (
-                            <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400 text-[9px] px-1.5">
-                              <CheckCircle className="w-2.5 h-2.5 mr-0.5 inline" />
-                              PASS
-                            </Badge>
-                          ) : (
-                            <Badge className="bg-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-400 text-[9px] px-1.5">
-                              <XCircle className="w-2.5 h-2.5 mr-0.5 inline" />
-                              FAIL
-                            </Badge>
-                          )}
-                        </td>
-                        <td className="py-1.5 px-3 text-right font-mono text-slate-400">{r.duration}</td>
-                        <td className="py-1.5 px-3 text-slate-500 max-w-[250px]">
-                          {r.result === 'FAIL' ? (
-                            <span className="text-red-600 dark:text-red-400">{r.failureReason}</span>
-                          ) : (
-                            <span className="text-slate-300 dark:text-slate-600">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <div className="flex items-center justify-center h-40 text-sm text-slate-400">
-                  No test execution results found in output
-                </div>
-              )}
-              {testResults.length > 0 && (
-                <div className="sticky bottom-0 bg-slate-50 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 px-3 py-2 text-xs text-slate-500 flex items-center gap-3">
-                  <span className="font-semibold">{testResults.length} scenarios executed</span>
-                  <span className="text-emerald-600">{passCount} passed</span>
-                  <span className="text-red-600">{failCount} failed</span>
-                  <span className={cn(
-                    'font-medium',
-                    passRate >= 80 ? 'text-emerald-600' : passRate >= 50 ? 'text-amber-600' : 'text-red-600',
-                  )}>
-                    ({passRate}% pass rate)
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
+            {/* Test Results */}
+            {activeTab === 'results' && (
+              <div className="p-4 overflow-auto h-full">
+                {resultsSection ? (
+                  <StageOutput output={`## Test Execution Results\n\n${resultsSection}`} isStreaming={false} />
+                ) : (
+                  <TabFallback stageOutput={stage.output} emptyLabel="No test results found" />
+                )}
+              </div>
+            )}
 
-          {/* ── Tab: Validation Findings ───────────────────────────── */}
-          {activeTab === 'findings' && (
-            <div className="space-y-3">
-              {findings.length > 0 ? (
-                <>
-                  {/* Summary badges */}
-                  <div className="flex gap-2">
-                    {criticalFindings > 0 && (
-                      <Badge className="bg-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-400 text-[10px]">
-                        {criticalFindings} Critical
-                      </Badge>
-                    )}
-                    {findings.filter((f) => f.severity === 'Warning').length > 0 && (
-                      <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400 text-[10px]">
-                        {findings.filter((f) => f.severity === 'Warning').length} Warning
-                      </Badge>
-                    )}
-                    {findings.filter((f) => f.severity === 'Info').length > 0 && (
-                      <Badge className="bg-blue-100 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400 text-[10px]">
-                        {findings.filter((f) => f.severity === 'Info').length} Info
-                      </Badge>
-                    )}
-                  </div>
+            {/* Validation Findings */}
+            {activeTab === 'findings' && (
+              <div className="p-4 overflow-auto h-full">
+                {findingsSection ? (
+                  <StageOutput output={`## Validation Findings\n\n${findingsSection}`} isStreaming={false} />
+                ) : (
+                  <TabFallback stageOutput={stage.output} emptyLabel="No validation findings found" />
+                )}
+              </div>
+            )}
 
-                  {/* Findings cards */}
-                  <div className="space-y-2">
-                    {findings.map((f) => (
-                      <Card key={f.index} className={cn(
-                        'overflow-hidden',
-                        f.severity === 'Critical' && 'border-red-200 dark:border-red-800',
-                        f.severity === 'Warning' && 'border-amber-200 dark:border-amber-800',
-                        f.severity === 'Info' && 'border-blue-200 dark:border-blue-800',
-                      )}>
-                        <CardContent className="p-3">
-                          <div className="flex items-start gap-2">
-                            <div className="mt-0.5">
-                              {f.severity === 'Critical' && <XCircle className="w-3.5 h-3.5 text-red-500" />}
-                              {f.severity === 'Warning' && <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />}
-                              {f.severity === 'Info' && <Info className="w-3.5 h-3.5 text-blue-500" />}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-1">
-                                <Badge className={cn(
-                                  'text-[9px] px-1.5',
-                                  f.severity === 'Critical' && 'bg-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-400',
-                                  f.severity === 'Warning' && 'bg-amber-100 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400',
-                                  f.severity === 'Info' && 'bg-blue-100 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400',
-                                )}>
-                                  {f.severity}
-                                </Badge>
-                                <span className="text-xs font-medium text-slate-900 dark:text-slate-50 truncate">
-                                  {f.finding}
-                                </span>
-                              </div>
-                              <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                                <span className="font-semibold text-slate-600 dark:text-slate-300">Evidence:</span> {f.evidence}
-                              </p>
-                              {f.recommendation && (
-                                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                                  <span className="font-semibold text-slate-600 dark:text-slate-300">Action:</span> {f.recommendation}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <div className="flex items-center justify-center h-40 text-sm text-slate-400">
-                  No validation findings found in output
-                </div>
-              )}
-            </div>
-          )}
+            {/* Traceability Matrix */}
+            {activeTab === 'traceability' && (
+              <div className="p-4 overflow-auto h-full">
+                {traceabilitySection ? (
+                  <StageOutput output={`## Traceability Matrix\n\n${traceabilitySection}`} isStreaming={false} />
+                ) : (
+                  <TabFallback stageOutput={stage.output} emptyLabel="No traceability data found" />
+                )}
+              </div>
+            )}
 
-          {/* ── Tab: Traceability Matrix ───────────────────────────── */}
-          {activeTab === 'traceability' && (
-            <div className="flex-1 min-h-0 rounded-lg border border-slate-200 dark:border-slate-700 overflow-auto">
-              {traceability.length > 0 ? (
-                <table className="w-full text-[11px]">
-                  <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10">
-                    <tr className="border-b border-slate-200 dark:border-slate-700">
-                      <th className="text-left py-2 px-3 text-slate-500 font-semibold">Rule ID</th>
-                      <th className="text-left py-2 px-3 text-slate-500 font-semibold">Description</th>
-                      <th className="text-left py-2 px-3 text-slate-500 font-semibold">Feature File</th>
-                      <th className="text-left py-2 px-3 text-slate-500 font-semibold">Scenarios</th>
-                      <th className="text-center py-2 px-3 text-slate-500 font-semibold">Coverage</th>
-                      <th className="text-left py-2 px-3 text-slate-500 font-semibold">Regression</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {traceability.map((row, i) => (
-                      <tr key={i} className="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                        <td className="py-1.5 px-3">
-                          <span className="font-mono text-primary-600 dark:text-primary-400 font-semibold">
-                            {row.ruleId}
-                          </span>
-                        </td>
-                        <td className="py-1.5 px-3 text-slate-600 dark:text-slate-400 max-w-[200px] truncate">
-                          {row.ruleDescription}
-                        </td>
-                        <td className="py-1.5 px-3">
-                          <button
-                            onClick={() => {
-                              const match = featureFiles.find((f) => f.path.includes(row.featureFile) || row.featureFile.includes(f.path.split('/').pop() || ''));
-                              if (match) {
-                                setSelectedFile(match.path);
-                                setActiveTab('features');
-                              }
-                            }}
-                            className="text-blue-600 dark:text-blue-400 hover:underline font-mono text-[10px]"
-                          >
-                            {row.featureFile}
-                          </button>
-                        </td>
-                        <td className="py-1.5 px-3 font-mono text-slate-500">{row.scenarios}</td>
-                        <td className="py-1.5 px-3 text-center">
-                          <Badge className={cn(
-                            'text-[9px] px-1.5',
-                            row.coverage.toLowerCase().startsWith('full') && 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400',
-                            row.coverage.toLowerCase().startsWith('partial') && 'bg-amber-100 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400',
-                            row.coverage.toLowerCase().startsWith('missing') && 'bg-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-400',
-                          )}>
-                            {row.coverage.toLowerCase().startsWith('full') && <CheckCircle className="w-2.5 h-2.5 mr-0.5 inline" />}
-                            {row.coverage.toLowerCase().startsWith('partial') && <AlertTriangle className="w-2.5 h-2.5 mr-0.5 inline" />}
-                            {row.coverage.toLowerCase().startsWith('missing') && <XCircle className="w-2.5 h-2.5 mr-0.5 inline" />}
-                            {row.coverage}
-                          </Badge>
-                        </td>
-                        <td className="py-1.5 px-3 text-slate-500">{row.regressionCheck}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <div className="flex items-center justify-center h-40 text-sm text-slate-400">
-                  No traceability data found in output
-                </div>
-              )}
-              {traceability.length > 0 && (
-                <div className="sticky bottom-0 bg-slate-50 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 px-3 py-2 text-xs text-slate-500 flex items-center gap-3">
-                  <span className="font-semibold">{traceability.length} business rules mapped</span>
-                  <span className="text-emerald-600">
-                    {traceability.filter((r) => r.coverage.toLowerCase().startsWith('full')).length} fully covered
-                  </span>
-                  <span className="text-amber-600">
-                    {traceability.filter((r) => r.coverage.toLowerCase().startsWith('partial')).length} partial
-                  </span>
-                  <span className="text-red-600">
-                    {traceability.filter((r) => r.coverage.toLowerCase().startsWith('missing')).length} missing
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
+            {/* Regression Checklist */}
+            {activeTab === 'regression' && (
+              <div className="p-4 overflow-auto h-full">
+                {regressionSection ? (
+                  <StageOutput output={`## Regression Checklist\n\n${regressionSection}`} isStreaming={false} />
+                ) : (
+                  <TabFallback stageOutput={stage.output} emptyLabel="No regression checklist found" />
+                )}
+              </div>
+            )}
 
-          {/* ── Tab: Regression Checklist ──────────────────────────── */}
-          {activeTab === 'regression' && (
-            <div className="flex-1 min-h-0 rounded-lg border border-slate-200 dark:border-slate-700 p-4 overflow-auto">
-              {regressionSection ? (
-                <div className="prose prose-sm dark:prose-invert max-w-none text-xs">
-                  <RegressionMarkdown content={regressionSection} />
-                </div>
-              ) : (
-                <div className="flex items-center justify-center h-40 text-sm text-slate-400">
-                  No regression checklist found in output
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ── Tab: Full Output ───────────────────────────────────── */}
-          {activeTab === 'output' && (
-            <div className="flex-1 min-h-0 overflow-auto">
-              <RefinableMarkdown
-                text={stage.output}
-                onSectionRefined={(updated) => {
-                  usePipelineStore.getState().setStageOutput(stageIndex, updated);
-                }}
-                onRefineRequest={onRefineRequest}
-              />
-            </div>
-          )}
-
-          </div>{/* end scrollable tab content */}
+            {/* Full Output */}
+            {activeTab === 'output' && (
+              <div className="p-4 overflow-auto h-full">
+                <StageOutput output={stage.output} isStreaming={false} />
+              </div>
+            )}
+          </div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ─── Regression Markdown Renderer ─────────────────────────────────
-
-// ─── Gherkin Syntax Viewer ──────────────────────────────────────
-
-function GherkinViewer({ content }: { content: string }) {
-  const lines = content.split('\n');
-  return (
-    <pre className="p-4 text-[12px] font-mono leading-relaxed">
-      {lines.map((line, i) => {
-        const trimmed = line.trimStart();
-        let cls = 'text-slate-400'; // default
-
-        if (/^#/.test(trimmed)) cls = 'text-slate-500 italic';
-        else if (/^@/.test(trimmed)) cls = 'text-amber-400';
-        else if (/^Feature:/.test(trimmed)) cls = 'text-blue-400 font-bold';
-        else if (/^Scenario Outline:/.test(trimmed)) cls = 'text-purple-400 font-semibold';
-        else if (/^Scenario:/.test(trimmed)) cls = 'text-purple-400 font-semibold';
-        else if (/^Background:/.test(trimmed)) cls = 'text-cyan-400 font-semibold';
-        else if (/^Examples:/.test(trimmed)) cls = 'text-cyan-400 font-semibold';
-        else if (/^\s*(Given|When|Then|And|But)\s/.test(line)) cls = 'text-green-400';
-        else if (/^\|/.test(trimmed)) cls = 'text-slate-300';
-
-        return (
-          <div key={i} className="flex">
-            <span className="w-8 text-right text-slate-600 select-none mr-4 shrink-0">{i + 1}</span>
-            <span className={cls}>{line || '\u00A0'}</span>
-          </div>
-        );
-      })}
-    </pre>
-  );
-}
-
-function RegressionMarkdown({ content }: { content: string }) {
-  const lines = content.split('\n');
-
-  return (
-    <div className="space-y-3">
-      {lines.map((line, i) => {
-        const headingMatch = line.match(/^###\s+(.+)/);
-        if (headingMatch) {
-          return (
-            <h4 key={i} className="text-xs font-semibold text-slate-700 dark:text-slate-300 mt-3 first:mt-0">
-              {headingMatch[1]}
-            </h4>
-          );
-        }
-
-        const checkMatch = line.match(/^-\s+\[([ x])\]\s+(.+)/);
-        if (checkMatch) {
-          const checked = checkMatch[1] === 'x';
-          return (
-            <label key={i} className="flex items-start gap-2 text-[11px] text-slate-600 dark:text-slate-400 cursor-default">
-              <input
-                type="checkbox"
-                checked={checked}
-                readOnly
-                className="mt-0.5 rounded border-slate-300 dark:border-slate-600 text-primary-600"
-              />
-              <span>{checkMatch[2]}</span>
-            </label>
-          );
-        }
-
-        if (line.trim() === '') return null;
-
-        return (
-          <p key={i} className="text-[11px] text-slate-500 dark:text-slate-400">
-            {line}
-          </p>
-        );
-      })}
     </div>
   );
 }

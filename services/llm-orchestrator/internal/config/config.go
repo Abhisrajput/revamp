@@ -67,6 +67,12 @@ type Config struct {
 	// Database (for Agent Department coordinator)
 	DatabaseURL string `envconfig:"DATABASE_URL"`
 
+	// Jira Integration
+	JiraBaseURL    string `envconfig:"JIRA_BASE_URL"`
+	JiraEmail      string `envconfig:"JIRA_EMAIL"`
+	JiraAPIToken   string `envconfig:"JIRA_API_TOKEN"`
+	JiraProjectKey string `envconfig:"JIRA_PROJECT_KEY"`
+
 	// Metrics
 	MetricsPort string `envconfig:"METRICS_PORT" default:"9090"`
 }

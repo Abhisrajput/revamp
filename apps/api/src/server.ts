@@ -21,6 +21,7 @@ import { githubRoutes } from "@/routes/github.js";
 import { usageRoutes } from "@/routes/usage.js";
 import { exportRoutes } from "@/routes/export.js";
 import { agentDepartmentRoutes } from "@/routes/agent-department.js";
+import { jiraRoutes } from "@/routes/jira.js";
 import { agentEventsRoutes } from "@/routes/agent-events.js";
 import { agentTaskRoutes } from "@/routes/agent-tasks.js";
 import { agentFeatureRoutes } from "@/routes/agent-features.js";
@@ -114,6 +115,7 @@ async function bootstrap() {
   await fastify.register(agentEventsRoutes);
   await fastify.register(agentTaskRoutes);
   await fastify.register(agentFeatureRoutes);
+  await fastify.register(jiraRoutes);
 
   // Health check endpoint (includes BREE Engine status)
   fastify.get("/health", async (request, reply) => {

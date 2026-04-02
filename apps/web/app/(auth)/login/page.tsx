@@ -44,7 +44,7 @@ export default function LoginPage() {
           Welcome Back
         </h2>
         <p className="text-slate-600 dark:text-slate-400 mb-6">
-          Sign in to your REVAMP account
+          Sign in to your AIgnite account
         </p>
 
         {error && (
@@ -118,7 +118,7 @@ export default function LoginPage() {
 
         <div className="bg-slate-50 dark:bg-slate-800 p-4 rounded-lg space-y-2 text-sm">
           <p className="text-slate-600 dark:text-slate-400">
-            Email: <code className="font-mono text-primary-600 dark:text-primary-400">demo@revamp.ai</code>
+            Email: <code className="font-mono text-primary-600 dark:text-primary-400">demo@aignite.ai</code>
           </p>
           <p className="text-slate-600 dark:text-slate-400">
             Password: <code className="font-mono text-primary-600 dark:text-primary-400">demo1234</code>

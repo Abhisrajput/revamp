@@ -18,6 +18,25 @@ interface StageOutputProps {
  * before markdown structural patterns (headings, lists, code fences, etc.).
  * Also converts HTML `<br/>` tags to real newlines.
  */
+/** Minimal table cleanup — just normalize separator rows */
+function cleanupTables(text: string): string {
+  return text.replace(/^([\s|:\-]+)$/gm, (line) => {
+    const trimmed = line.trim();
+    if (/^\|/.test(trimmed) && trimmed.includes('-')) {
+      const cells = trimmed.replace(/^\|/, '').replace(/\|$/, '').split('|');
+      if (cells.length >= 1 && cells.every((c) => /^\s*:?-+:?\s*$/.test(c.trim()))) {
+        return '|' + cells.map((c) => {
+          const t = c.trim();
+          if (t.startsWith(':') && t.endsWith(':')) return ':---:';
+          if (t.endsWith(':')) return '---:';
+          return '---';
+        }).join('|') + '|';
+      }
+    }
+    return line;
+  });
+}
+
 function normalizeMarkdown(text: string): string {
   // Convert HTML break tags to newlines
   let out = text.replace(/<br\s*\/?>/gi, '\n');
@@ -26,7 +45,8 @@ function normalizeMarkdown(text: string): string {
   // Heuristic: fewer than 1 newline per 500 chars means newlines were stripped.
   const newlineCount = (out.match(/\n/g) || []).length;
   if (out.length > 200 && newlineCount > out.length / 500) {
-    return out;
+    // Still reassemble broken tables even if we skip other normalization
+    return cleanupTables(out);
   }
 
   // Re-insert newlines before markdown structural markers that appear mid-line.
@@ -54,6 +74,9 @@ function normalizeMarkdown(text: string): string {
 
   // Collapse any excessive whitespace that was left behind
   out = out.replace(/\n{4,}/g, '\n\n\n');
+
+  // Reassemble tables that got broken by the above newline insertions
+  out = cleanupTables(out);
 
   return out;
 }
@@ -100,7 +123,8 @@ function renderMarkdown(text: string): string {
     inTable = false;
   }
 
-  for (const line of lines) {
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
     if (line.startsWith('```') && !inCodeBlock) {
       if (inTable) flushTable();
       inCodeBlock = true;
@@ -131,27 +155,59 @@ function renderMarkdown(text: string): string {
       continue;
     }
 
-    // Table detection
-    if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
-      const cells = line.trim().slice(1, -1).split('|');
-      // Check if this is a separator row (e.g. |---|---|)
-      if (cells.every((c) => /^\s*:?-+:?\s*$/.test(c))) {
-        tableAlignments = cells.map((c) => {
-          const t = c.trim();
-          if (t.startsWith(':') && t.endsWith(':')) return 'center';
-          if (t.endsWith(':')) return 'right';
-          return 'left';
-        });
-        inTable = true;
-        continue;
+    // Table separator detection (may or may not start with |)
+    // e.g. |---|---|, ---|---|, |:---:|---:|, --------|--------|, |---------|
+    // Also handles malformed separators that are just dashes with optional pipes
+    {
+      const trimmedLine = line.trim();
+      // Check if line is entirely dashes, pipes, colons, and spaces (a separator row)
+      if (/^[\s|:\-]+$/.test(trimmedLine) && trimmedLine.includes('-') && trimmedLine.length >= 3) {
+        const stripped = trimmedLine.replace(/^\|/, '').replace(/\|$/, '');
+        const sepCells = stripped.split('|').filter((c) => c.trim().length > 0);
+        if (sepCells.length >= 1 && sepCells.every((c) => /^\s*:?-+:?\s*$/.test(c.trim()))) {
+          // Use column count from header row if separator has fewer cells
+          const headerColCount = tableRows.length > 0 ? tableRows[0].length : sepCells.length;
+          tableAlignments = [];
+          for (let ci = 0; ci < headerColCount; ci++) {
+            const cell = sepCells[ci]?.trim() ?? '';
+            if (cell.startsWith(':') && cell.endsWith(':')) tableAlignments.push('center');
+            else if (cell.endsWith(':')) tableAlignments.push('right');
+            else tableAlignments.push('left');
+          }
+          inTable = true;
+          continue;
+        }
       }
+    }
+
+    // Table data rows — accept lines starting with | (trailing | optional)
+    if (line.trim().startsWith('|') && line.trim().includes('|', 1)) {
+      let trimmed = line.trim();
+      if (!trimmed.endsWith('|')) trimmed += '|';
+      const cells = trimmed.slice(1, -1).split('|');
       tableRows.push(cells);
       inTable = true;
       continue;
     }
 
     // If we were in a table and this line isn't a table row, flush
-    if (inTable) flushTable();
+    // But allow blank lines within tables (LLM sometimes inserts them)
+    if (inTable) {
+      if (line.trim() === '') {
+        // Peek ahead: if a line within the next 2 starts with | or is a separator, stay in table
+        let stayInTable = false;
+        for (let peek = 1; peek <= 2 && li + peek < lines.length; peek++) {
+          const nextLine = lines[li + peek].trim();
+          if (nextLine.startsWith('|') || (/^[\s|:\-]+$/.test(nextLine) && nextLine.includes('-'))) {
+            stayInTable = true;
+            break;
+          }
+          if (nextLine !== '') break; // non-empty non-table line = flush
+        }
+        if (stayInTable) continue;
+      }
+      flushTable();
+    }
 
     // Headings
     if (line.startsWith('### ')) {

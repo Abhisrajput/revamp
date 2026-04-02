@@ -6,14 +6,14 @@ import {
   CheckCircle,
   Loader2,
   Lock,
+  Settings2,
   ScanSearch,
-  BrainCircuit,
-  Map as MapIcon,
-  ShieldCheck,
-  Building2,
-  Hammer,
-  PlayCircle,
-  Rocket,
+  PenLine,
+  BookOpen,
+  Compass,
+  Code2,
+  GitCompare,
+  Wrench,
 } from 'lucide-react';
 import type { StageState } from '@/lib/stores/pipeline-store';
 import { StageContextMenu } from './stage-context-menu';
@@ -21,14 +21,14 @@ import { StageContextMenu } from './stage-context-menu';
 // ─── Stage icons (unique per stage) ────────────────────────────
 
 const STAGE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  SCAN: ScanSearch,
-  DECODE: BrainCircuit,
-  BLUEPRINT: MapIcon,
-  SPEC_LOCK: ShieldCheck,
-  ARCHITECT: Building2,
-  FORGE: Hammer,
-  SHADOW_RUN: PlayCircle,
-  EVOLVE: Rocket,
+  SCAN: Settings2,
+  DECODE: ScanSearch,
+  BLUEPRINT: PenLine,
+  SPEC_LOCK: BookOpen,
+  ARCHITECT: Compass,
+  FORGE: Code2,
+  SHADOW_RUN: GitCompare,
+  EVOLVE: Wrench,
 };
 
 // ─── Status badge (tiny overlay on the stage icon) ─────────────

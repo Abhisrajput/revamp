@@ -337,6 +337,44 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
     },
   );
 
+  // Edit budget policy
+  fastify.put<{ Params: { id: string }; Body: Partial<z.infer<typeof CreateBudgetPolicySchema>> }>(
+    "/budget-policies/:id",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const body = request.body as Record<string, unknown>;
+      const updates: Record<string, unknown> = { updated_at: new Date() };
+      if (body.limit_cents !== undefined) updates.limit_cents = body.limit_cents;
+      if (body.window !== undefined) updates.window = body.window;
+      if (body.warn_percent !== undefined) updates.warn_percent = String(body.warn_percent);
+      if (body.hard_stop !== undefined) updates.hard_stop = body.hard_stop;
+      if (body.active !== undefined) updates.active = body.active;
+
+      const [updated] = await db.update(budgetPolicies)
+        .set(updates)
+        .where(eq(budgetPolicies.id, request.params.id))
+        .returning();
+
+      if (!updated) return reply.status(404).send({ error: "Policy not found" });
+      return reply.send(updated);
+    },
+  );
+
+  // Delete (deactivate) budget policy
+  fastify.delete<{ Params: { id: string } }>(
+    "/budget-policies/:id",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const [updated] = await db.update(budgetPolicies)
+        .set({ active: false, updated_at: new Date() })
+        .where(eq(budgetPolicies.id, request.params.id))
+        .returning();
+
+      if (!updated) return reply.status(404).send({ error: "Policy not found" });
+      return reply.send({ deleted: true, id: request.params.id });
+    },
+  );
+
   fastify.get(
     "/budget-incidents",
     { onRequest: [fastify.authenticate] },

@@ -10,8 +10,13 @@ export default function LandingPage() {
       {/* Navigation */}
       <nav className="border-b border-slate-200 dark:border-slate-800 sticky top-0 z-50 bg-white/80 dark:bg-slate-950/80 backdrop-blur-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
-          <div className="text-2xl font-bold text-primary-600 dark:text-primary-400">
-            REVAMP
+          <div className="flex items-center gap-2">
+            <span className="text-lg font-bold text-slate-400 tracking-widest">TAVANT</span>
+            <span className="text-slate-600 dark:text-slate-500">|</span>
+            <div className="w-7 h-7 rounded-lg bg-primary-500 flex items-center justify-center">
+              <span className="text-white text-xs font-bold">&lt;/&gt;</span>
+            </div>
+            <span className="text-2xl font-bold text-slate-900 dark:text-slate-50">AIgnite</span>
           </div>
           <div className="flex items-center gap-4">
             <Link href="/login">
@@ -39,7 +44,7 @@ export default function LandingPage() {
           </h1>
 
           <p className="text-xl text-slate-600 dark:text-slate-400 mb-8">
-            REVAMP uses advanced AI to analyze, understand, and modernize your legacy systems in 8 strategic stages. Reduce technical debt while maintaining behavior integrity.
+            AIgnite uses advanced AI to analyze, understand, and modernize your legacy systems in 8 strategic stages. Reduce technical debt while maintaining behavior integrity.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
@@ -168,7 +173,7 @@ export default function LandingPage() {
       {/* Footer */}
       <footer className="border-t border-slate-200 dark:border-slate-800 py-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center text-slate-600 dark:text-slate-400">
-          <p>© 2024 REVAMP. All rights reserved.</p>
+          <p>© 2024 Tavant Technologies. All rights reserved.</p>
         </div>
       </footer>
     </div>

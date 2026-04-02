@@ -95,9 +95,33 @@ func (e *Engine) Complete(ctx context.Context, req *CompletionRequest) (*Complet
 		}
 	}
 
-	// Route request to best provider
-	provider, routingStart := e.router.RouteRequest(ctx, req.CompletionRequest)
-	routingLatency := time.Since(routingStart)
+	// BYOK: if per-request credentials are provided, create an ephemeral provider
+	var provider providers.LLMProvider
+	var routingLatency time.Duration
+	if req.Credentials != nil {
+		routingStart := time.Now()
+		ephemeral, err := providers.CreateEphemeralProvider(req.Credentials, e.logger)
+		routingLatency = time.Since(routingStart)
+		if err != nil {
+			e.logger.Error("Ephemeral provider creation failed",
+				zap.Error(err),
+				zap.String("request_id", req.RequestID),
+				zap.String("provider", req.Credentials.Provider),
+			)
+			e.metrics.RecordError(req.Model, "ephemeral_provider_failed")
+			return nil, fmt.Errorf("failed to create provider from credentials: %w", err)
+		}
+		provider = ephemeral
+		e.logger.Info("Using ephemeral provider (BYOK)",
+			zap.String("request_id", req.RequestID),
+			zap.String("provider", req.Credentials.Provider),
+		)
+	} else {
+		// Standard routing via registered providers
+		var routingStart time.Time
+		provider, routingStart = e.router.RouteRequest(ctx, req.CompletionRequest)
+		routingLatency = time.Since(routingStart)
+	}
 
 	if provider == nil {
 		err := fmt.Errorf("no suitable provider found for model %s", req.Model)
@@ -170,8 +194,19 @@ func (e *Engine) Stream(ctx context.Context, req *CompletionRequest) (<-chan *St
 		zap.String("model", req.Model),
 	)
 
-	// Route request to best provider
-	provider, _ := e.router.RouteRequest(ctx, req.CompletionRequest)
+	// BYOK: ephemeral provider from per-request credentials
+	var provider providers.LLMProvider
+	if req.Credentials != nil {
+		ephemeral, err := providers.CreateEphemeralProvider(req.Credentials, e.logger)
+		if err != nil {
+			outChan := make(chan *StreamingChunk)
+			close(outChan)
+			return outChan, fmt.Errorf("failed to create provider from credentials: %w", err)
+		}
+		provider = ephemeral
+	} else {
+		provider, _ = e.router.RouteRequest(ctx, req.CompletionRequest)
+	}
 	if provider == nil {
 		err := fmt.Errorf("no suitable provider found for model %s", req.Model)
 		e.logger.Error("Routing failed", zap.Error(err), zap.String("request_id", req.RequestID))

@@ -4,7 +4,7 @@ import { memo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   DollarSign, ShieldAlert, CheckCircle, AlertTriangle,
-  Plus, TrendingUp, Pause, ArrowRight,
+  Plus, TrendingUp, Pause, ArrowRight, Pencil, Trash2, X, Save,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -50,6 +50,39 @@ export const BudgetsView = memo(function BudgetsView() {
     queryKey: ['budget-policies'],
     queryFn: async () => (await apiClient.get('/budget-policies')).data,
     staleTime: 15_000,
+  });
+
+  // Resolve scope names so we show "Firefly III" instead of "b2b811d5..."
+  const { data: scopeNames } = useQuery<Record<string, string>>({
+    queryKey: ['budget-scope-names', policiesData?.policies?.map(p => p.scope_id).join(',')],
+    queryFn: async () => {
+      const names: Record<string, string> = {};
+      if (!policiesData?.policies) return names;
+      const projectIds = new Set<string>();
+      const agentIds = new Set<string>();
+      for (const p of policiesData.policies) {
+        if (p.scope_type === 'project') projectIds.add(p.scope_id);
+        else if (p.scope_type === 'agent') agentIds.add(p.scope_id);
+        else names[p.scope_id] = 'Organization';
+      }
+      if (projectIds.size > 0) {
+        try {
+          const res = await apiClient.get('/projects');
+          const projects = Array.isArray(res.data) ? res.data : res.data?.projects || [];
+          for (const p of projects) if (projectIds.has(p.id)) names[p.id] = p.name;
+        } catch { /* ignore */ }
+      }
+      if (agentIds.size > 0) {
+        try {
+          const res = await apiClient.get('/agents');
+          const agents = Array.isArray(res.data) ? res.data : [];
+          for (const a of agents) if (agentIds.has(a.id)) names[a.id] = a.name;
+        } catch { /* ignore */ }
+      }
+      return names;
+    },
+    enabled: !!policiesData?.policies?.length,
+    staleTime: 60_000,
   });
 
   const { data: incidentsData } = useQuery<{ incidents: BudgetIncident[] }>({
@@ -138,7 +171,7 @@ export const BudgetsView = memo(function BudgetsView() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {policies.map(policy => (
-            <PolicyCard key={policy.id} policy={policy} incidents={incidents.filter(i => i.policy_id === policy.id)} />
+            <PolicyCard key={policy.id} policy={policy} incidents={incidents.filter(i => i.policy_id === policy.id)} scopeName={scopeNames?.[policy.scope_id]} />
           ))}
         </div>
       )}
@@ -171,11 +204,36 @@ export const BudgetsView = memo(function BudgetsView() {
 
 // ─── Policy Card ────────────────────────────────────────────────
 
-function PolicyCard({ policy, incidents }: { policy: BudgetPolicy; incidents: BudgetIncident[] }) {
-  // Simulate current usage (would come from cost tracking in production)
+function PolicyCard({ policy, incidents, scopeName }: { policy: BudgetPolicy; incidents: BudgetIncident[]; scopeName?: string }) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [editLimit, setEditLimit] = useState(String(policy.limit_cents / 100));
+  const [editWarn, setEditWarn] = useState(String(parseFloat(policy.warn_percent) * 100));
+  const [editHardStop, setEditHardStop] = useState(policy.hard_stop);
+  const [editWindow, setEditWindow] = useState(policy.window);
+
+  const updatePolicy = useMutation({
+    mutationFn: async (data: Record<string, unknown>) => {
+      return (await apiClient.put(`/budget-policies/${policy.id}`, data)).data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['budget-policies'] });
+      setEditing(false);
+    },
+  });
+
+  const deletePolicy = useMutation({
+    mutationFn: async () => {
+      return (await apiClient.delete(`/budget-policies/${policy.id}`)).data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['budget-policies'] });
+    },
+  });
+
   const latestIncident = incidents[0];
   const currentSpend = latestIncident?.current_spend_cents || 0;
-  const usagePct = Math.min(100, (currentSpend / policy.limit_cents) * 100);
+  const usagePct = Math.min(100, policy.limit_cents > 0 ? (currentSpend / policy.limit_cents) * 100 : 0);
   const warnPct = parseFloat(policy.warn_percent) * 100;
 
   const statusColor = usagePct >= 100 ? 'red' :
@@ -183,6 +241,15 @@ function PolicyCard({ policy, incidents }: { policy: BudgetPolicy; incidents: Bu
 
   const statusLabel = usagePct >= 100 ? (policy.hard_stop ? 'HARD STOP' : 'Over Limit') :
     usagePct >= warnPct ? 'Warning' : 'Healthy';
+
+  const handleSave = () => {
+    updatePolicy.mutate({
+      limit_cents: Math.round(parseFloat(editLimit) * 100),
+      warn_percent: parseFloat(editWarn) / 100,
+      hard_stop: editHardStop,
+      window: editWindow,
+    });
+  };
 
   return (
     <div className={cn(
@@ -212,45 +279,125 @@ function PolicyCard({ policy, incidents }: { policy: BudgetPolicy; incidents: Bu
             <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 capitalize">
               {policy.scope_type} Budget
             </p>
-            <p className="text-[10px] text-slate-400">{policy.window} · {policy.scope_id.slice(0, 8)}...</p>
+            <p className="text-[10px] text-slate-400">
+              {policy.window} · {scopeName || policy.scope_id.slice(0, 8) + '...'}
+            </p>
           </div>
         </div>
-        <Badge className={cn('text-[9px]',
-          statusColor === 'red' ? 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-400' :
-            statusColor === 'amber' ? 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400' :
-            'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400',
-        )}>
-          {statusLabel}
-        </Badge>
+        <div className="flex items-center gap-1.5">
+          <Badge className={cn('text-[9px]',
+            statusColor === 'red' ? 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-400' :
+              statusColor === 'amber' ? 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400' :
+              'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400',
+          )}>
+            {statusLabel}
+          </Badge>
+          {!editing && (
+            <>
+              <button
+                onClick={() => setEditing(true)}
+                className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+                title="Edit policy"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => { if (confirm('Delete this budget policy?')) deletePolicy.mutate(); }}
+                className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-900/20 text-slate-400 hover:text-red-500 transition-colors"
+                title="Delete policy"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
-      {/* Budget bar */}
-      <div className="mb-3">
-        <div className="flex items-center justify-between text-[10px] text-slate-500 mb-1">
-          <span>${(currentSpend / 100).toFixed(2)} spent</span>
-          <span>${(policy.limit_cents / 100).toFixed(2)} limit</span>
+      {/* Edit mode */}
+      {editing ? (
+        <div className="space-y-3 p-3 bg-slate-50 dark:bg-slate-700/30 rounded-lg mb-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-500 uppercase block mb-1">Limit ($)</label>
+              <input
+                type="number" step="0.01" min="0" value={editLimit}
+                onChange={(e) => setEditLimit(e.target.value)}
+                className="w-full px-2 py-1.5 text-xs rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 uppercase block mb-1">Warn at %</label>
+              <input
+                type="number" step="1" min="0" max="100" value={editWarn}
+                onChange={(e) => setEditWarn(e.target.value)}
+                className="w-full px-2 py-1.5 text-xs rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-500 uppercase block mb-1">Window</label>
+              <select
+                value={editWindow}
+                onChange={(e) => setEditWindow(e.target.value)}
+                className="w-full px-2 py-1.5 text-xs rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+              >
+                <option value="daily">Daily</option>
+                <option value="monthly">Monthly</option>
+                <option value="lifetime">Lifetime</option>
+              </select>
+            </div>
+            <div className="flex items-end">
+              <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox" checked={editHardStop}
+                  onChange={(e) => setEditHardStop(e.target.checked)}
+                  className="rounded border-slate-300"
+                />
+                Hard stop
+              </label>
+            </div>
+          </div>
+          <div className="flex gap-2 pt-1">
+            <Button size="sm" onClick={handleSave} disabled={updatePolicy.isPending} className="text-xs h-7 px-3">
+              <Save className="w-3 h-3 mr-1" />
+              {updatePolicy.isPending ? 'Saving...' : 'Save'}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setEditing(false)} className="text-xs h-7 px-3">
+              <X className="w-3 h-3 mr-1" /> Cancel
+            </Button>
+          </div>
         </div>
-        <div className="h-2.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden relative">
-          {/* Warning threshold marker */}
-          <div
-            className="absolute top-0 bottom-0 w-px bg-amber-400 z-10"
-            style={{ left: `${warnPct}%` }}
-            title={`Warning at ${warnPct}%`}
-          />
-          <div
-            className={cn('h-full rounded-full transition-all duration-500',
-              statusColor === 'red' ? 'bg-red-500' :
-                statusColor === 'amber' ? 'bg-amber-400' :
-                'bg-emerald-400',
-            )}
-            style={{ width: `${Math.min(100, usagePct)}%` }}
-          />
-        </div>
-        <div className="flex items-center justify-between mt-1 text-[9px] text-slate-400">
-          <span>{usagePct.toFixed(0)}% used</span>
-          <span>Warn at {warnPct}%</span>
-        </div>
-      </div>
+      ) : (
+        <>
+          {/* Budget bar */}
+          <div className="mb-3">
+            <div className="flex items-center justify-between text-[10px] text-slate-500 mb-1">
+              <span>${(currentSpend / 100).toFixed(2)} spent</span>
+              <span>${(policy.limit_cents / 100).toFixed(2)} limit</span>
+            </div>
+            <div className="h-2.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden relative">
+              <div
+                className="absolute top-0 bottom-0 w-px bg-amber-400 z-10"
+                style={{ left: `${warnPct}%` }}
+                title={`Warning at ${warnPct}%`}
+              />
+              <div
+                className={cn('h-full rounded-full transition-all duration-500',
+                  statusColor === 'red' ? 'bg-red-500' :
+                    statusColor === 'amber' ? 'bg-amber-400' :
+                    'bg-emerald-400',
+                )}
+                style={{ width: `${Math.min(100, usagePct)}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between mt-1 text-[9px] text-slate-400">
+              <span>{usagePct.toFixed(0)}% used</span>
+              <span>Warn at {warnPct}%</span>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Policy details */}
       <div className="flex items-center gap-3 text-[10px] text-slate-400">
@@ -283,6 +430,29 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
   const [warnPct, setWarnPct] = useState('80');
   const [hardStop, setHardStop] = useState(true);
 
+  // Load scope options dynamically based on scope type
+  const { data: scopeOptions } = useQuery<Array<{ id: string; label: string }>>({
+    queryKey: ['budget-scope-options', scopeType],
+    queryFn: async () => {
+      if (scopeType === 'project') {
+        const res = await apiClient.get('/projects');
+        const projects = Array.isArray(res.data) ? res.data : res.data?.projects || res.data?.data || [];
+        return projects.map((p: any) => ({ id: p.id, label: p.name || p.id }));
+      }
+      if (scopeType === 'agent') {
+        const res = await apiClient.get('/agents');
+        const agents = Array.isArray(res.data) ? res.data : [];
+        return agents.map((a: any) => ({ id: a.id, label: a.name || a.slug }));
+      }
+      if (scopeType === 'organization') {
+        // Usually one org — pull from current user context or list
+        return [{ id: '00000000-0000-0000-0000-000000000001', label: 'Default Organization' }];
+      }
+      return [];
+    },
+    staleTime: 30_000,
+  });
+
   const create = useMutation({
     mutationFn: async () => (await apiClient.post('/budget-policies', {
       scope_type: scopeType,
@@ -302,17 +472,24 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
       <div className="grid grid-cols-2 gap-4 mb-4">
         <div>
           <label className="text-[10px] font-medium uppercase tracking-wider text-slate-400 mb-1 block">Scope</label>
-          <select value={scopeType} onChange={e => setScopeType(e.target.value)}
+          <select value={scopeType} onChange={e => { setScopeType(e.target.value); setScopeId(''); }}
             className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200">
-            <option value="organization">Organization</option>
             <option value="project">Project</option>
             <option value="agent">Agent</option>
+            <option value="organization">Organization</option>
           </select>
         </div>
         <div>
-          <label className="text-[10px] font-medium uppercase tracking-wider text-slate-400 mb-1 block">Scope ID</label>
-          <input value={scopeId} onChange={e => setScopeId(e.target.value)} placeholder="UUID"
-            className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-mono" />
+          <label className="text-[10px] font-medium uppercase tracking-wider text-slate-400 mb-1 block">
+            {scopeType === 'project' ? 'Project' : scopeType === 'agent' ? 'Agent' : 'Organization'}
+          </label>
+          <select value={scopeId} onChange={e => setScopeId(e.target.value)}
+            className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200">
+            <option value="">Select...</option>
+            {(scopeOptions || []).map(opt => (
+              <option key={opt.id} value={opt.id}>{opt.label}</option>
+            ))}
+          </select>
         </div>
       </div>
 

@@ -161,7 +161,7 @@ export const CenterPanel = memo(function CenterPanel({
               </button>
             ) : (
               <>
-                {(stage.status === 'pending' || stage.status === 'failed') &&
+                {stage.status === 'pending' &&
                   !(stageRequiresApproval(stage.name) && stage.approvalStatus === 'pending') && (
                   <button
                     onClick={() => { try { onExecute(); } catch { /* error handled by stage panel */ } }}
@@ -169,6 +169,15 @@ export const CenterPanel = memo(function CenterPanel({
                   >
                     <Play className="w-3 h-3" />
                     Execute
+                  </button>
+                )}
+                {stage.status === 'failed' && onRerun && (
+                  <button
+                    onClick={() => { try { onRerun(); } catch { /* silent */ } }}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-amber-600 hover:bg-amber-700 text-white transition-colors"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Re-run
                   </button>
                 )}
                 {(stage.status === 'completed' || stage.status === 'approved') && stageIndex < totalStages - 1 && onAdvance && (
@@ -180,15 +189,7 @@ export const CenterPanel = memo(function CenterPanel({
                     Next
                   </button>
                 )}
-                {(stage.status === 'completed' || stage.status === 'approved' || stage.status === 'failed') && onRerun && (
-                  <button
-                    onClick={onRerun}
-                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    Re-run
-                  </button>
-                )}
+                {/* Re-run moved to approval gate (requires comment) */}
               </>
             )}
 

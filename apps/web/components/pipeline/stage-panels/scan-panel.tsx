@@ -4,7 +4,7 @@ import { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import {
   FolderGit2, Play, FileText, Cloud,
   Code2, GitBranch, CheckCircle2, Loader2,
-  Eye, EyeOff, Trash2, Upload, FolderOpen, X, Cpu,
+  Eye, EyeOff, Trash2, Upload, FolderOpen, X, Cpu, RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -15,7 +15,7 @@ import { RefinableMarkdown } from '@/components/pipeline/refinable-markdown';
 import { SubtaskProgressList } from '@/components/pipeline/subtask-progress-list';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
-import { usePipelineStore, canExecuteStage, getStageBlockReason } from '@/lib/stores/pipeline-store';
+import { usePipelineStore, canExecuteStage, getStageBlockReason, shouldShowApprovalGate } from '@/lib/stores/pipeline-store';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 import type { StagePanelProps } from './types';
@@ -190,7 +190,15 @@ function ScanOutputLoader({ stageIndex }: { stageIndex: number }) {
         if (outputArt?.metadata?.content) {
           usePipelineStore.getState().setStageOutput(stageIndex, outputArt.metadata.content);
         } else {
-          setError('Stage output not found in artifacts. Try re-running the stage.');
+          // No stage_output artifact — check if stage already has partial output (from failed LLM)
+          const currentStage = usePipelineStore.getState().stages[stageIndex];
+          if (currentStage?.output) {
+            // Already has partial output — don't overwrite with error
+          } else if (currentStage?.status === 'failed') {
+            // Stage failed — don't show "not found" error, the status banner handles it
+          } else {
+            setError('Stage output not found in artifacts. Try re-running the stage.');
+          }
         }
       } catch (err: any) {
         if (cancelled) return;
@@ -247,10 +255,10 @@ export default function ScanPanel({
   const isRunning = stage.status === 'generating' || stage.status === 'validating';
   const hasOutput = !!(stage.output || streamingText);
   const isCompleted = stage.status === 'completed' || stage.status === 'approved';
-  // Stage was executed if it's completed/approved, has a startedAt, OR the project already has folder_structure (codebase was cloned)
+  // Show post-clone view if project has files (clone worked) — even if LLM analysis failed
   const projectHasFiles = !!(project?.folder_structure && (project.folder_structure as any[]).length > 0);
-  const wasExecuted = isCompleted || stage.status === 'failed' || !!(stage.startedAt) || projectHasFiles;
-  const canExecute = (stage.status === 'pending' || stage.status === 'failed' || stage.status === 'completed') && !isExecuting && canExecuteStage(stages, stageIndex);
+  const wasExecuted = isCompleted || projectHasFiles || (stage.status === 'failed' && hasOutput);
+  const canExecute = (stage.status === 'pending' || stage.status === 'failed' || stage.status === 'completed' || stage.status === 'in_progress') && !isExecuting && canExecuteStage(stages, stageIndex);
   // Show post-clone view if stage was executed (even if output is still loading from API)
   const [showForm, setShowForm] = useState(!wasExecuted);
 
@@ -739,7 +747,9 @@ export default function ScanPanel({
                 )}
                 {!canExecute && !isSaving && canClone && (
                   <p className="text-xs text-amber-600 dark:text-amber-400">
-                    Stage cannot execute — check pipeline status.
+                    {stage.approvalStatus === 'pending'
+                      ? 'Stage is awaiting approval. Approve or reject before re-running.'
+                      : 'Stage cannot execute — check pipeline status.'}
                   </p>
                 )}
               </div>
@@ -853,19 +863,34 @@ export default function ScanPanel({
               <CheckCircle2 className="w-5 h-5" />
               <span className="text-sm font-semibold">
                 {stage.status === 'failed'
-                  ? 'Scan completed — validation needs attention'
+                  ? 'Codebase cloned — AI analysis needs re-run'
                   : 'Codebase acquired successfully'}
               </span>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowForm(true)}
-              className="gap-2 text-xs"
-            >
-              <FolderGit2 className="w-3.5 h-3.5" />
-              Re-configure Setup
-            </Button>
+            <div className="flex items-center gap-2">
+              {/* Re-run only when stage completed & not awaiting approval — failed stages use the top bar Re-run */}
+              {stage.status !== 'failed' && !shouldShowApprovalGate(stage) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCloneRepository}
+                  disabled={isSaving}
+                  className="gap-2 text-xs"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  {isSaving ? 'Running...' : 'Re-configure & Run'}
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowForm(true)}
+                className="gap-2 text-xs"
+              >
+                <FolderGit2 className="w-3.5 h-3.5" />
+                Re-configure Setup
+              </Button>
+            </div>
           </div>
 
           {/* ─── Source URL ───────────────────────────────────── */}

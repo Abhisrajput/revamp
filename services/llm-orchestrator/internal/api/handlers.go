@@ -35,6 +35,9 @@ type CompletionRequestBody struct {
 	ThinkingBudget    int  `json:"thinking_budget,omitempty"`
 	MaxThinkingTokens int  `json:"max_thinking_tokens,omitempty"` // default 10,000 when thinking enabled
 
+	// Per-request credentials (BYOK — Bring Your Own Key per project)
+	Credentials *providers.RequestCredentials `json:"credentials,omitempty"`
+
 	// Metadata for tracking
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
@@ -129,6 +132,7 @@ func (s *Server) handleCompletion(w http.ResponseWriter, r *http.Request) {
 			ResponseFormat:   convertResponseFormat(reqBody.ResponseFormat),
 			ExtendedThinking: reqBody.ExtendedThinking,
 			ThinkingBudget:   thinkingBudget,
+			Credentials:      reqBody.Credentials,
 			Metadata:         reqBody.Metadata,
 		},
 		ProjectID: r.Header.Get("X-Project-ID"),
@@ -206,6 +210,7 @@ func (s *Server) handleStreamCompletion(w http.ResponseWriter, r *http.Request) 
 			ResponseFormat:   convertResponseFormat(reqBody.ResponseFormat),
 			ExtendedThinking: reqBody.ExtendedThinking,
 			ThinkingBudget:   streamThinkingBudget,
+			Credentials:      reqBody.Credentials,
 			Metadata:         reqBody.Metadata,
 		},
 		ProjectID: r.Header.Get("X-Project-ID"),

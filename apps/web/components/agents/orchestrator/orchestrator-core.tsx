@@ -4,7 +4,7 @@ import { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import {
   Brain, Hammer, Shield, FileText, Crown, Merge,
-  Code2, CheckCheck, Lightbulb, AlertTriangle,
+  Bot, CheckCheck, Lightbulb, AlertTriangle,
 } from 'lucide-react';
 import type { AgentOrchestratorState, OrchestratorState } from '@/lib/hooks/use-orchestrator';
 
@@ -16,7 +16,7 @@ const DEPT_ICONS: Record<string, { icon: typeof Brain; color: string }> = {
 };
 
 const ROLE_ICONS: Record<string, typeof Brain> = {
-  director: Crown, lead: Merge, specialist: Code2,
+  director: Crown, lead: Merge, specialist: Bot,
 };
 
 interface Neuron {

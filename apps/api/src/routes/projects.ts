@@ -651,4 +651,23 @@ export async function projectRoutes(fastify: FastifyInstance) {
       });
     }
   );
+
+  // ── Project Budget ──────────────────────────────────────────────────
+  // Real-time project budget status from budget_policies + cost_events.
+
+  fastify.get<{ Params: { projectId: string } }>(
+    "/projects/:projectId/budget",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const { getProjectBudgetStatus } = await import("@/services/pipeline-budget.js");
+      const status = await getProjectBudgetStatus(request.params.projectId);
+      if (!status) {
+        return reply.send({
+          configured: false,
+          message: "No budget policy configured for this project",
+        });
+      }
+      return reply.send({ configured: true, ...status });
+    }
+  );
 }

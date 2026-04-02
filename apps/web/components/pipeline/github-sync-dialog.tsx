@@ -48,7 +48,7 @@ export function GitHubSyncDialog({
   const [token, setToken] = useState('');
   const [repoUrl, setRepoUrl] = useState('');
   const [branch, setBranch] = useState('');
-  const [commitMessage, setCommitMessage] = useState('feat: modernized codebase via REVAMP');
+  const [commitMessage, setCommitMessage] = useState('feat: modernized codebase via AIgnite');
   const [authUser, setAuthUser] = useState<string | null>(null);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isPushing, setIsPushing] = useState(false);

@@ -327,10 +327,16 @@ export class LLMProxyService {
       const messages: ChatMessage[] = [];
 
       // System prompt — mark as cacheable for Anthropic
+      // Append markdown formatting rules to ensure clean, parseable output
       if (req.systemPrompt) {
+        let formattingRules = "";
+        try {
+          const coreEngine = await import("@revamp/core-engine");
+          formattingRules = (coreEngine as any).MARKDOWN_FORMATTING_RULES || "";
+        } catch { /* non-fatal */ }
         messages.push({
           role: "system",
-          content: req.systemPrompt,
+          content: req.systemPrompt + formattingRules,
           cache_control: { type: "ephemeral" },
         });
       }

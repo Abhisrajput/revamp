@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awscreds "github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrock"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brdocument "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
@@ -50,6 +52,27 @@ func NewBedrockProvider(client *bedrockruntime.Client, bedrockClient *bedrock.Cl
 		bedrockClient: bedrockClient,
 		logger:        logger,
 	}
+}
+
+// NewBedrockProviderWithCreds creates an ephemeral Bedrock provider with explicit credentials (BYOK).
+func NewBedrockProviderWithCreds(accessKeyID, secretKey, sessionToken, region string, logger *zap.Logger) (*BedrockProvider, error) {
+	ctx := context.Background()
+	creds := awscreds.NewStaticCredentialsProvider(accessKeyID, secretKey, sessionToken)
+
+	cfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion(region),
+		awsconfig.WithCredentialsProvider(creds),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AWS config: %w", err)
+	}
+
+	p := NewBedrockProvider(
+		bedrockruntime.NewFromConfig(cfg),
+		bedrock.NewFromConfig(cfg),
+		logger,
+	)
+	return p, nil
 }
 
 // IsAvailable checks if the Bedrock provider is available

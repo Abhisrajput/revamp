@@ -643,12 +643,12 @@ fn pipeline_runs_end_to_end() {
     assert!(!report.llm_strategy.families_detected.is_empty());
 }
 
-// ─── All 32 Languages Have Entries ──────────────────────────────
+// ─── All 34 Languages Have Entries ──────────────────────────────
 
 #[test]
-fn all_languages_count_is_32() {
+fn all_languages_count_is_34() {
     let all = all_languages();
-    assert_eq!(all.len(), 32, "Expected 32 languages, got {}", all.len());
+    assert_eq!(all.len(), 34, "Expected 34 languages, got {}", all.len());
 }
 
 #[test]

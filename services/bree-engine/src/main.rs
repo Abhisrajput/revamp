@@ -117,6 +117,7 @@ fn register_tier1_parsers(registry: &mut ParserRegistry) {
         delphi::DelphiParser, powerbuilder::PowerBuilderParser,
         natural::NaturalParser, plsql::PlsqlParser,
         fortran::FortranParser, mumps::MumpsParser,
+        csharp::CsharpParser, php::PhpParser,
         remaining::*,
     };
 
@@ -141,6 +142,8 @@ fn register_tier1_parsers(registry: &mut ParserRegistry) {
     registry.register(Box::new(OracleFormsParser::new()));
     registry.register(Box::new(TsqlParser::new()));
     registry.register(Box::new(Db2SqlParser::new()));
+    registry.register(Box::new(CsharpParser::new()));
+    registry.register(Box::new(PhpParser::new()));
 
     // Tier 3: Specialist (Months 13-18)
     registry.register(Box::new(FortranParser::new()));

@@ -10,9 +10,14 @@ export default function AuthLayout({
       <div className="w-full max-w-md">
         {/* Logo */}
         <Link href="/" className="inline-block mb-8">
-          <h1 className="text-3xl font-bold text-primary-600 dark:text-primary-400">
-            REVAMP
-          </h1>
+          <div className="flex items-center gap-3">
+            <span className="text-2xl font-bold text-slate-400 tracking-wider">TAVANT</span>
+            <span className="text-slate-600 dark:text-slate-500">|</span>
+            <div className="w-8 h-8 rounded-lg bg-primary-500 flex items-center justify-center">
+              <span className="text-white text-sm font-bold">&lt;/&gt;</span>
+            </div>
+            <span className="text-2xl font-bold text-slate-900 dark:text-slate-50">AIgnite</span>
+          </div>
         </Link>
 
         {/* Auth Card */}
@@ -20,7 +25,7 @@ export default function AuthLayout({
 
         {/* Footer */}
         <p className="text-center text-sm text-slate-600 dark:text-slate-400 mt-8">
-          By using REVAMP, you agree to our Terms of Service and Privacy Policy
+          By using AIgnite, you agree to our Terms of Service and Privacy Policy
         </p>
       </div>
     </div>

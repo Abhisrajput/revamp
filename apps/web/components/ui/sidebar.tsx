@@ -12,20 +12,19 @@ import {
   ChevronRight,
   Menu,
   X,
-  Zap,
   HelpCircle,
   ChevronsUpDown,
   Lock,
   CheckCircle,
   Loader2,
+  Settings2,
   ScanSearch,
-  BrainCircuit,
-  Map as MapIcon,
-  ShieldCheck,
-  Building2,
-  Hammer,
-  PlayCircle,
-  Rocket,
+  PenLine,
+  BookOpen,
+  Compass,
+  Code2,
+  GitCompare,
+  Wrench,
   Bot,
   Cpu,
   ShieldAlert,
@@ -84,14 +83,14 @@ const navigationItems: NavItem[] = [
 // --- Pipeline Stage Icons ---
 
 const STAGE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  SCAN: ScanSearch,
-  DECODE: BrainCircuit,
-  BLUEPRINT: MapIcon,
-  SPEC_LOCK: ShieldCheck,
-  ARCHITECT: Building2,
-  FORGE: Hammer,
-  SHADOW_RUN: PlayCircle,
-  EVOLVE: Rocket,
+  SCAN: Settings2,
+  DECODE: ScanSearch,
+  BLUEPRINT: PenLine,
+  SPEC_LOCK: BookOpen,
+  ARCHITECT: Compass,
+  FORGE: Code2,
+  SHADOW_RUN: GitCompare,
+  EVOLVE: Wrench,
 };
 
 function StageStatusIndicator({ status }: { status: StageState['status'] }) {
@@ -227,13 +226,12 @@ export const Sidebar = memo(function Sidebar() {
         </button>
         {!collapsed && (
           <Link href="/projects" className="flex items-center gap-2 min-w-0">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center shrink-0">
-              <Zap className="w-3.5 h-3.5 text-white" />
+            <span className="text-[13px] font-bold text-slate-400 tracking-widest shrink-0">TAVANT</span>
+            <span className="text-slate-600 text-sm">|</span>
+            <div className="w-7 h-7 rounded-lg bg-primary-500 flex items-center justify-center shrink-0">
+              <Code2 className="w-3.5 h-3.5 text-white" />
             </div>
-            <div className="flex flex-col">
-              <span className="text-[15px] font-bold text-white tracking-tight leading-none">REVAMP</span>
-              <span className="text-[8px] font-medium text-primary-400 uppercase tracking-widest">10X Platform</span>
-            </div>
+            <span className="text-[15px] font-bold text-white tracking-tight leading-none">AIgnite</span>
           </Link>
         )}
       </div>
@@ -350,7 +348,7 @@ export const Sidebar = memo(function Sidebar() {
           {!collapsed && (
             <div className="px-4 py-3 border-b border-slate-700">
               <p className="text-[13px] text-slate-400 truncate">
-                {user?.email || 'user@revamp.dev'}
+                {user?.email || 'user@aignite.dev'}
               </p>
             </div>
           )}

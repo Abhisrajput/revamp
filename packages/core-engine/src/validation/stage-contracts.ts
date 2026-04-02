@@ -16,6 +16,7 @@ import { PipelineStageName } from '@revamp/shared-types/pipeline';
 
 export interface SectionRequirement {
   heading: string;
+  aliases?: string[]; // alternative heading names the LLM might use
   required: boolean;
   minWordCount?: number;
   mustContain?: string[]; // keywords that must appear in this section
@@ -108,13 +109,13 @@ export const stageContracts: StageContract[] = [
     maxRefinementPasses: 2,
     hardGate: true,
     requiredSections: [
-      { heading: 'Business Rules', required: true, minWordCount: 200, mustContain: ['rule', 'condition'] },
-      { heading: 'Workflows', required: true, minWordCount: 150 },
-      { heading: 'Data', required: true, minWordCount: 120 },
-      { heading: 'Integration', required: true, minWordCount: 80 },
-      { heading: 'Domain Entities', required: true, minWordCount: 100 },
-      { heading: 'Technical Debt', required: true, minWordCount: 80 },
-      { heading: 'Open Questions', required: true, minWordCount: 40 },
+      { heading: 'Business Rules', aliases: ['Business Rules Inventory', 'Business Rules & Domain Logic'], required: true, minWordCount: 200, mustContain: ['rule', 'condition'] },
+      { heading: 'Workflows', aliases: ['Key Workflows', 'Workflow Extraction', 'User Workflows', 'Business Workflows'], required: true, minWordCount: 150 },
+      { heading: 'Data', aliases: ['Data Flows', 'Data Flow Analysis', 'Data Entry Points', 'Data Model'], required: true, minWordCount: 120 },
+      { heading: 'Integration', aliases: ['Integration Points', 'Integration Mapping', 'External API Integrations', 'External Integrations'], required: true, minWordCount: 80 },
+      { heading: 'Domain Entities', aliases: ['Entity Inventory', 'Entity Relationships', 'Domain Entity Modeling'], required: true, minWordCount: 100 },
+      { heading: 'Technical Debt', aliases: ['Technical Debt Inventory', 'Constraints & Technical Debt', 'Constraints & Assumptions'], required: true, minWordCount: 80 },
+      { heading: 'Open Questions', aliases: ['Open Questions for SME', 'Open Questions for SME Clarification'], required: true, minWordCount: 40 },
     ],
     requiredArtifacts: [
       { type: 'diagram', description: 'Entity relationship or workflow diagram (Mermaid)', required: true },
@@ -314,8 +315,19 @@ export function enforceContract(
 
   // 2. Check required sections
   for (const section of contract.requiredSections) {
-    const headingPattern = new RegExp(`^#{1,3}\\s*${escapeRegex(section.heading)}`, 'im');
-    const match = headingPattern.exec(output);
+    // Try primary heading and all aliases, with support for numbered prefixes (e.g. "## 1. Business Rules")
+    const candidates = [section.heading, ...(section.aliases || [])];
+    let match: RegExpExecArray | null = null;
+    let matchLevel = 0;
+    for (const candidate of candidates) {
+      const headingPattern = new RegExp(`^(#{1,3})\\s*(?:\\d+\\.?\\s*)?${escapeRegex(candidate)}`, 'im');
+      const boldPattern = new RegExp(`^\\*\\*(?:\\d+\\.?\\s*)?${escapeRegex(candidate)}\\*\\*`, 'im');
+      match = headingPattern.exec(output) || boldPattern.exec(output);
+      if (match) {
+        matchLevel = (match[1] || '##').length; // number of '#' symbols
+        break;
+      }
+    }
 
     if (!match) {
       if (section.required) {
@@ -329,9 +341,11 @@ export function enforceContract(
       continue;
     }
 
-    // Extract section content (until next heading of same or higher level)
+    // Extract section content until next heading of SAME or higher level (fewer or equal '#')
+    // This ensures sub-headings (###) are included in the parent (##) section body
     const sectionStart = match.index + match[0].length;
-    const nextHeading = output.slice(sectionStart).search(/^#{1,3}\s/m);
+    const sameLevelPattern = new RegExp(`^#{1,${matchLevel}}\\s`, 'm');
+    const nextHeading = output.slice(sectionStart).search(sameLevelPattern);
     const sectionContent = nextHeading === -1
       ? output.slice(sectionStart)
       : output.slice(sectionStart, sectionStart + nextHeading);

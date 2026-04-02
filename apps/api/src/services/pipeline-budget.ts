@@ -12,8 +12,8 @@
  */
 
 import { db } from "@/db/index.js";
-import { pipelineRuns } from "@/db/schema.js";
-import { eq, sql } from "drizzle-orm";
+import { pipelineRuns, budgetPolicies, budgetIncidents, costEvents } from "@/db/schema.js";
+import { eq, and, sql, gte } from "drizzle-orm";
 
 // ─── TYPES ──────────────────────────────────────────────────────
 
@@ -38,6 +38,30 @@ export class PipelineBudgetExceededError extends Error {
     );
     this.name = "PipelineBudgetExceededError";
   }
+}
+
+export class ProjectBudgetExceededError extends Error {
+  constructor(
+    public projectId: string,
+    public budgetCents: number,
+    public usedCents: number,
+  ) {
+    super(
+      `Project budget exceeded: used ${usedCents}¢ of ${budgetCents}¢`,
+    );
+    this.name = "ProjectBudgetExceededError";
+  }
+}
+
+export interface ProjectBudgetStatus {
+  projectId: string;
+  budgetCents: number | null;
+  usedCents: number;
+  remainingCents: number | null;
+  percentUsed: number | null;
+  exceeded: boolean;
+  hardStop: boolean;
+  window: string;
 }
 
 // ─── COST ESTIMATION ─────────────────────────────────────────────
@@ -105,26 +129,42 @@ export async function getPipelineBudgetStatus(
 }
 
 /**
- * Pre-flight budget check. Throws PipelineBudgetExceededError if over.
+ * Pre-flight budget check. Checks BOTH pipeline-run budget AND project-level budget.
+ * Throws PipelineBudgetExceededError or ProjectBudgetExceededError if over.
  */
 export async function checkPipelineBudget(
   pipelineRunId: string,
   estimatedCents: number = 0,
 ): Promise<boolean> {
+  // 1. Check pipeline-run budget
   const status = await getPipelineBudgetStatus(pipelineRunId);
 
-  if (status.budgetCents === null) return true;
-
-  if (status.exceeded) {
-    throw new PipelineBudgetExceededError(
-      pipelineRunId, status.budgetCents, status.usedCents, estimatedCents,
-    );
+  if (status.budgetCents !== null) {
+    if (status.exceeded) {
+      throw new PipelineBudgetExceededError(
+        pipelineRunId, status.budgetCents, status.usedCents, estimatedCents,
+      );
+    }
+    if (estimatedCents > 0 && status.usedCents + estimatedCents > status.budgetCents) {
+      throw new PipelineBudgetExceededError(
+        pipelineRunId, status.budgetCents, status.usedCents, estimatedCents,
+      );
+    }
   }
 
-  if (estimatedCents > 0 && status.usedCents + estimatedCents > status.budgetCents) {
-    throw new PipelineBudgetExceededError(
-      pipelineRunId, status.budgetCents, status.usedCents, estimatedCents,
-    );
+  // 2. Check project-level budget policy
+  const run = await db.query.pipelineRuns.findFirst({
+    where: eq(pipelineRuns.id, pipelineRunId),
+    columns: { project_id: true },
+  });
+
+  if (run?.project_id) {
+    const projectStatus = await getProjectBudgetStatus(run.project_id);
+    if (projectStatus && projectStatus.hardStop && projectStatus.exceeded) {
+      throw new ProjectBudgetExceededError(
+        run.project_id, projectStatus.budgetCents!, projectStatus.usedCents,
+      );
+    }
   }
 
   return true;
@@ -196,4 +236,132 @@ export function withPipelineBudget(
 
     return result;
   };
+}
+
+// ─── PROJECT-LEVEL BUDGET ──────────────────────────────────────
+
+/**
+ * Get the active budget policy and current spend for a project.
+ * Queries budget_policies (scope_type='project') and aggregates cost_events.
+ */
+export async function getProjectBudgetStatus(
+  projectId: string,
+): Promise<ProjectBudgetStatus | null> {
+  // Find the active project budget policy
+  const policy = await db.query.budgetPolicies.findFirst({
+    where: and(
+      eq(budgetPolicies.scope_type, "project"),
+      eq(budgetPolicies.scope_id, projectId),
+      eq(budgetPolicies.active, true),
+    ),
+  });
+
+  if (!policy) return null;
+
+  // Calculate spend within the policy window
+  const windowStart = getWindowStart(policy.window);
+
+  const spendResult = await db.execute(sql`
+    SELECT COALESCE(SUM(cost_cents), 0)::int AS total_spent
+    FROM cost_events
+    WHERE project_id = ${projectId}
+      AND created_at >= ${windowStart}
+  `);
+
+  const usedCents = (spendResult.rows?.[0] as any)?.total_spent ?? 0;
+  const budgetCents = policy.limit_cents;
+  const remainingCents = Math.max(0, budgetCents - usedCents);
+  const percentUsed = budgetCents > 0 ? Math.round((usedCents / budgetCents) * 100) : 0;
+
+  return {
+    projectId,
+    budgetCents,
+    usedCents,
+    remainingCents,
+    percentUsed,
+    exceeded: usedCents >= budgetCents,
+    hardStop: policy.hard_stop,
+    window: policy.window,
+  };
+}
+
+/**
+ * Record a project-level budget incident when threshold is crossed.
+ */
+export async function enforceProjectBudget(projectId: string): Promise<void> {
+  const status = await getProjectBudgetStatus(projectId);
+  if (!status || status.budgetCents === null) return;
+
+  const policy = await db.query.budgetPolicies.findFirst({
+    where: and(
+      eq(budgetPolicies.scope_type, "project"),
+      eq(budgetPolicies.scope_id, projectId),
+      eq(budgetPolicies.active, true),
+    ),
+    columns: { id: true, warn_percent: true },
+  });
+
+  if (!policy) return;
+
+  const warnAt = parseFloat(policy.warn_percent);
+  const pctUsed = status.percentUsed! / 100;
+
+  // Hard stop reached
+  if (status.exceeded && status.hardStop) {
+    const existing = await db.query.budgetIncidents.findFirst({
+      where: and(
+        eq(budgetIncidents.policy_id, policy.id),
+        eq(budgetIncidents.incident_type, "hard_stop"),
+        eq(budgetIncidents.resolved, false),
+      ),
+    });
+    if (!existing) {
+      await db.insert(budgetIncidents).values({
+        policy_id: policy.id,
+        incident_type: "hard_stop",
+        current_spend_cents: status.usedCents,
+        limit_cents: status.budgetCents!,
+        percent_used: pctUsed.toFixed(2),
+        action_taken: "execution_blocked",
+      });
+    }
+    return;
+  }
+
+  // Warning threshold
+  if (pctUsed >= warnAt && !status.exceeded) {
+    const windowStart = getWindowStart(status.window);
+    const existing = await db.query.budgetIncidents.findFirst({
+      where: and(
+        eq(budgetIncidents.policy_id, policy.id),
+        eq(budgetIncidents.incident_type, "warning"),
+        eq(budgetIncidents.resolved, false),
+        gte(budgetIncidents.created_at, windowStart),
+      ),
+    });
+    if (!existing) {
+      await db.insert(budgetIncidents).values({
+        policy_id: policy.id,
+        incident_type: "warning",
+        current_spend_cents: status.usedCents,
+        limit_cents: status.budgetCents!,
+        percent_used: pctUsed.toFixed(2),
+        action_taken: "warning_logged",
+      });
+    }
+  }
+}
+
+function getWindowStart(window: string): Date {
+  const now = new Date();
+  switch (window) {
+    case "daily":
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    case "monthly":
+      return new Date(now.getFullYear(), now.getMonth(), 1);
+    case "lifetime":
+      return new Date(0);
+    default:
+      return new Date(now.getFullYear(), now.getMonth(), 1);
+  }
 }

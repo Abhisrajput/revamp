@@ -2,6 +2,43 @@
  * System prompts for different LLM roles in REVAMP pipeline
  */
 
+/**
+ * Shared markdown formatting rules appended to all stage prompts.
+ * Ensures clean, parseable output for the frontend renderer.
+ */
+export const MARKDOWN_FORMATTING_RULES = `
+
+## CRITICAL MARKDOWN FORMATTING RULES
+
+You MUST follow these rules for ALL output:
+
+1. **Tables**: Every table row MUST be a single line. NEVER break a table row across multiple lines.
+   - Each row must start and end with |
+   - The separator row must have the same number of columns as the header: |---|---|---|
+   - Do NOT use | as "or" inside table cells — use "or", "/", or "vs" instead
+   - Keep cell content short (under 50 chars). Put details in a "Rationale" or "Notes" column, or in text below the table
+
+   CORRECT:
+   | Category | Chosen | Alternative | Rationale |
+   |---|---|---|---|
+   | Language | Java 21 | Go 1.21 | Team expertise in OOP |
+
+   WRONG (broken across lines):
+   | Category | Chosen
+   | Alternative | Rationale |
+
+   WRONG (pipe as "or"):
+   | Java 21 + Spring Boot | Go 1.21 + Chi | Node.js 20 | reason |
+
+2. **Headings**: Use ## for major sections, ### for subsections. Always put a blank line before and after headings.
+
+3. **Code blocks**: Always use triple backticks with language identifier: \`\`\`java, \`\`\`python, \`\`\`mermaid
+
+4. **Lists**: Use - for unordered, 1. for ordered. Each item on its own line.
+
+5. **Mermaid diagrams**: Always wrap in \`\`\`mermaid code blocks. Use ASCII characters only (no Unicode arrows).
+`;
+
 export const systemPrompts = {
   architect: `You are an expert cloud architect specializing in modernization and migration strategies. You have deep knowledge of:
 - Monolith decomposition and microservices architecture

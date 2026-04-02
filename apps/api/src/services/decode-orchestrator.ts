@@ -63,6 +63,7 @@ import {
 import {
   checkPipelineBudget,
   PipelineBudgetExceededError,
+  ProjectBudgetExceededError,
 } from "./pipeline-budget.js";
 
 // ─── TYPES ──────────────────────────────────────────────────────
@@ -224,8 +225,8 @@ export async function orchestrateDecodeStage(
       try {
         await checkPipelineBudget(opts.pipelineRunId);
       } catch (budgetErr) {
-        if (budgetErr instanceof PipelineBudgetExceededError) {
-          emit("failed", { message: budgetErr.message, budgetExceeded: true });
+        if (budgetErr instanceof PipelineBudgetExceededError || budgetErr instanceof ProjectBudgetExceededError) {
+          emit("failed", { message: (budgetErr as Error).message, budgetExceeded: true });
           break;
         }
         throw budgetErr;

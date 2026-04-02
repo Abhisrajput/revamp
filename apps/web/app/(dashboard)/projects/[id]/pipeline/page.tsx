@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
@@ -87,7 +87,22 @@ export default function PipelinePage() {
     githubSyncOpen,
     leftRailCollapsed,
     rightPanelCollapsed,
+    setRightPanelCollapsed,
   } = useUIPreferencesStore();
+
+  // ─── Auto-collapse right panel until stage truly completes (has output) ──
+  const activeStageStatus2 = usePipelineStore((s) => s.stages[s.activeStageIndex]?.status);
+  const activeStageHasOutput = usePipelineStore((s) => !!s.stages[s.activeStageIndex]?.output);
+  const prevAutoCollapseRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const shouldShow = (activeStageStatus2 === 'completed' || activeStageStatus2 === 'approved') && activeStageHasOutput;
+    const shouldCollapse = !shouldShow;
+    // Only update if the value actually changed to prevent loops
+    if (prevAutoCollapseRef.current !== shouldCollapse) {
+      prevAutoCollapseRef.current = shouldCollapse;
+      setRightPanelCollapsed(shouldCollapse);
+    }
+  }, [activeStageStatus2, activeStageHasOutput, setRightPanelCollapsed]);
 
   // ─── Stage Execution ──────────────────────────────────────
   const {
@@ -155,32 +170,56 @@ export default function PipelinePage() {
           const storeStage = s.stages[i];
           const dbStatus = stageProgress[storeStage.name]?.status;
           if (dbStatus && dbStatus !== storeStage.status) {
+            // Map `in_progress` from DB to `pending` in store (stage was initialized but not yet executed by user)
+            const mappedStatus = dbStatus === 'in_progress' ? 'pending' : dbStatus;
             console.warn(
-              `[Rehydrate] Stage ${storeStage.name} "${storeStage.status}" → "${dbStatus}"`,
+              `[Rehydrate] Stage ${storeStage.name} "${storeStage.status}" → "${mappedStatus}"`,
             );
-            usePipelineStore.getState().setStageStatus(i, dbStatus as any);
+            usePipelineStore.getState().setStageStatus(i, mappedStatus as any);
           }
-          // Sync approval status from stage progress
+          // Sync approval status from stage progress — DB is authoritative
           if (dbStatus === 'approved' && storeStage.approvalStatus !== 'approved') {
             usePipelineStore.getState().setStageApproval(i, 'approved');
-          }
-          if (dbStatus === 'awaiting_approval' && storeStage.approvalStatus !== 'pending') {
+          } else if (dbStatus === 'awaiting_approval' && storeStage.approvalStatus !== 'pending') {
             usePipelineStore.getState().setStageStatus(i, 'completed' as any);
             usePipelineStore.getState().setStageApproval(i, 'pending');
+          } else if (dbStatus === 'pending' || dbStatus === 'failed') {
+            // Stage is pending/failed in DB — clear stale approval without recording in history
+            // Use direct set() to avoid polluting approvalHistory with 'not_required'
+            if (storeStage.approvalStatus === 'pending' || storeStage.approvalStatus === 'rejected') {
+              usePipelineStore.setState((s) => {
+                const stages = [...s.stages];
+                stages[i] = { ...stages[i], approvalStatus: 'not_required', pendingApprovalSince: null };
+                return { stages };
+              });
+            }
           }
         }
       }
 
-      // Sync approval gates
-      const approvalGates = res.data?.approval_gates;
-      if (approvalGates) {
-        const s = usePipelineStore.getState();
-        for (const gate of approvalGates) {
-          const stageIdx = s.stages.findIndex((st) => st.name === gate.stage_name);
-          if (stageIdx >= 0) {
-            const currentApproval = s.stages[stageIdx].approvalStatus;
-            if (gate.status !== currentApproval) {
-              usePipelineStore.getState().setStageApproval(stageIdx, gate.status as any);
+      // Sync approval gates — clear stale gates not present in DB
+      const approvalGates = res.data?.approval_gates || [];
+      const gateStageNames = new Set(approvalGates.map((g: any) => g.stage_name));
+      const s2 = usePipelineStore.getState();
+
+      for (let i = 0; i < s2.stages.length; i++) {
+        const storeStage = s2.stages[i];
+        if (gateStageNames.has(storeStage.name)) {
+          // Gate exists in DB — sync its status
+          const gate = approvalGates.find((g: any) => g.stage_name === storeStage.name);
+          if (gate && gate.status !== storeStage.approvalStatus) {
+            usePipelineStore.getState().setStageApproval(i, gate.status as any);
+          }
+        } else {
+          // No gate in DB — clear stale approval without recording in history
+          if (storeStage.approvalStatus === 'pending' || storeStage.approvalStatus === 'rejected') {
+            const dbStatus = stageProgress?.[storeStage.name]?.status;
+            if (dbStatus !== 'awaiting_approval') {
+              usePipelineStore.setState((s) => {
+                const stages = [...s.stages];
+                stages[i] = { ...stages[i], approvalStatus: 'not_required', pendingApprovalSince: null };
+                return { stages };
+              });
             }
           }
         }
@@ -490,15 +529,28 @@ export default function PipelinePage() {
     const s = usePipelineStore.getState();
     const stage = s.stages[s.activeStageIndex];
     if (!s.currentPipelineRunId || !stage) return;
-    // Guardrail: check prerequisites before re-run (prior stages must still be complete)
+    // Guardrail: check prerequisites before re-run
     if (s.activeStageIndex > 0) {
       for (let i = 0; i < s.activeStageIndex; i++) {
         const prior = s.stages[i];
         if (prior.status !== 'completed' && prior.status !== 'approved') return;
       }
     }
-    resetStage(s.activeStageIndex);
-    executeStage(s.currentPipelineRunId, stage.name, { skipLlmEval });
+    // Use rerunStage for cascade + history tracking, then re-execute
+    const rerunStage = usePipelineStore.getState().rerunStage;
+    if (rerunStage) {
+      rerunStage(s.activeStageIndex);
+    } else {
+      resetStage(s.activeStageIndex);
+    }
+    // Reset backend stage progress before re-executing
+    if (s.currentPipelineRunId) {
+      apiClient.post(`/pipeline/${s.currentPipelineRunId}/reset/${stage.name}`, {}).catch(() => {});
+    }
+    setTimeout(() => {
+      const updated = usePipelineStore.getState();
+      executeStage(updated.currentPipelineRunId!, stage.name, { skipLlmEval });
+    }, 100);
   }, [resetStage, executeStage, skipLlmEval]);
 
   const handleAdvance = useCallback(() => {
@@ -933,6 +985,7 @@ export default function PipelinePage() {
               stage={activeStage}
               onApprove={handleApprove}
               onReject={handleReject}
+              onRerun={handleRerunStage}
               userRole={userRole}
               pipelineRunId={currentPipelineRunId ?? undefined}
             />

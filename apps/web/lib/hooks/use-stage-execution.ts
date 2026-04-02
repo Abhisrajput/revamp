@@ -1,8 +1,36 @@
 'use client';
 
 import { useState, useCallback, useRef } from 'react';
+import { toast } from 'sonner';
 import { usePipelineStore } from '@/lib/stores/pipeline-store';
 import { useAuthStore } from '@/lib/stores/auth-store';
+import { useNotificationStore } from '@/lib/stores/notification-store';
+
+/** Flash an error to toast + notification bell */
+function flashError(stageName: string, message: string) {
+  toast.error(`${stageName} failed`, { description: message, duration: 8000 });
+  try {
+    useNotificationStore.getState().addNotification({
+      type: 'stage_failed',
+      title: `${stageName} failed`,
+      message,
+      metadata: { stage: stageName },
+    });
+  } catch { /* non-fatal */ }
+}
+
+/** Flash a success to toast + notification bell */
+function flashSuccess(stageName: string, message: string) {
+  toast.success(`${stageName} completed`, { description: message, duration: 5000 });
+  try {
+    useNotificationStore.getState().addNotification({
+      type: 'stage_completed',
+      title: `${stageName} completed`,
+      message,
+      metadata: { stage: stageName },
+    });
+  } catch { /* non-fatal */ }
+}
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787';
 
@@ -46,7 +74,7 @@ export function useStageExecution(): UseStageExecutionReturn {
 
       const authToken = useAuthStore.getState().token;
 
-      fetch(`${BASE_URL}/pipeline/${pipelineRunId}/execute/${stageName}`, {
+      fetch(`${BASE_URL}/pipeline/${pipelineRunId}/stage/${stageName}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -68,14 +96,32 @@ export function useStageExecution(): UseStageExecutionReturn {
           function processChunk(): Promise<void> {
             return reader.read().then(({ done, value }) => {
               if (done) {
-                // Finalize
+                // Finalize — only mark completed if there's actual output
                 const s = store.getState();
                 const idx = s.stages.findIndex((st) => st.name === stageName);
                 if (idx >= 0) {
                   const stage = s.stages[idx];
+                  const output = s.streamingText;
+                  const hasRealOutput = output && output.trim().length > 20;
                   if (stage.status === 'generating' || stage.status === 'validating') {
-                    s.setStageOutput(idx, s.streamingText);
-                    s.setStageStatus(idx, 'completed');
+                    if (hasRealOutput) {
+                      s.setStageOutput(idx, output);
+                      s.setStageStatus(idx, 'completed');
+                      flashSuccess(stageName, `Output generated (${output.length} chars)`);
+                    } else {
+                      // Stream ended but no LLM output — set partial output if any artifacts exist
+                      const hasArtifacts = stage.artifacts.length > 0;
+                      if (hasArtifacts) {
+                        // Partial success: clone/setup worked but LLM analysis failed
+                        const partialMsg = `## ${stageName} — Partial Result\n\nCodebase setup completed successfully, but the AI analysis did not produce output.\n\n**What worked:** Codebase cloned, file structure detected\n**What failed:** LLM analysis — the model may be unavailable or the request timed out.\n\n> Re-run the stage to retry the AI analysis.`;
+                        s.setStageOutput(idx, partialMsg);
+                        s.setStageStatus(idx, 'failed');
+                        flashError(stageName, 'Codebase cloned but AI analysis failed. Re-run to retry.');
+                      } else {
+                        s.setStageStatus(idx, 'failed');
+                        flashError(stageName, 'No output generated. The LLM may have failed — try re-running.');
+                      }
+                    }
                   }
                 }
                 setIsExecuting(false);
@@ -115,11 +161,9 @@ export function useStageExecution(): UseStageExecutionReturn {
           const idx = s.stages.findIndex((st) => st.name === stageName);
           if (idx >= 0) {
             s.setStageStatus(idx, 'failed');
-            s.addLog({
-              type: 'error',
-              message: err.message ?? 'Stage execution failed',
-              timestamp: new Date().toISOString(),
-            });
+            const errMsg = err.message ?? 'Stage execution failed';
+            s.addLog({ type: 'error', message: errMsg, timestamp: new Date().toISOString() });
+            flashError(stageName, errMsg);
           }
           setIsExecuting(false);
           setCurrentPhase(null);
@@ -257,8 +301,24 @@ export function useStageExecution(): UseStageExecutionReturn {
       case 'stage_completed': {
         const finalOutput = s.streamingText;
         if (idx >= 0) {
-          s.setStageOutput(idx, finalOutput);
-          s.setStageStatus(idx, 'completed');
+          const hasRealOutput = finalOutput && finalOutput.trim().length > 20;
+          if (hasRealOutput) {
+            s.setStageOutput(idx, finalOutput);
+            s.setStageStatus(idx, 'completed');
+            flashSuccess(stageName, `Output generated (${finalOutput.length} chars)`);
+          } else {
+            const stage = s.stages[idx];
+            const hasArtifacts = stage?.artifacts?.length > 0;
+            if (hasArtifacts) {
+              const partialMsg = `## ${stageName} — Partial Result\n\nSetup completed but AI analysis did not produce output.\n\n> Re-run the stage to retry.`;
+              s.setStageOutput(idx, partialMsg);
+              s.setStageStatus(idx, 'failed');
+              flashError(stageName, 'Setup succeeded but AI analysis failed. Re-run to retry.');
+            } else {
+              s.setStageStatus(idx, 'failed');
+              flashError(stageName, 'No output generated. The LLM may have failed — try re-running.');
+            }
+          }
         }
         setIsExecuting(false);
         setCurrentPhase(null);
@@ -297,18 +357,17 @@ export function useStageExecution(): UseStageExecutionReturn {
       }
 
       case 'failed':
-      case 'stage_failed':
+      case 'stage_failed': {
+        const errMsg = event.data?.error ?? event.error ?? 'Stage failed';
         if (idx >= 0) {
           s.setStageStatus(idx, 'failed');
-          s.addLog({
-            type: 'error',
-            message: event.data?.error ?? event.error ?? 'Stage failed',
-            timestamp: new Date().toISOString(),
-          });
+          s.addLog({ type: 'error', message: errMsg, timestamp: new Date().toISOString() });
+          flashError(stageName, errMsg);
         }
         setIsExecuting(false);
         setCurrentPhase(null);
         break;
+      }
 
       default:
         break;

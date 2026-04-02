@@ -584,22 +584,38 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
               <GitBranch className="w-4 h-4 text-slate-400" />
               <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Hierarchy</h3>
             </div>
-            <dl className="space-y-2 text-sm">
+            <dl className="space-y-3 text-sm">
               <div>
-                <dt className="text-slate-500 dark:text-slate-400 text-xs">Reports To</dt>
-                <dd className="font-mono text-slate-900 dark:text-slate-100">
-                  {agent.reports_to ? agent.reports_to.slice(0, 8) + '...' : 'None (top-level)'}
+                <dt className="text-slate-500 dark:text-slate-400 text-xs mb-1">Reports To</dt>
+                <dd>
+                  {agent.reportsToAgent ? (
+                    <a href={`/agents/${agent.reportsToAgent.id}`} className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">
+                      <span className="w-6 h-6 rounded-full bg-sky-600 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                        {agent.reportsToAgent.name?.split(/[\s—]/)[0]?.slice(0, 2).toUpperCase() || '??'}
+                      </span>
+                      <span className="text-sm font-medium text-slate-900 dark:text-slate-100">{agent.reportsToAgent.name}</span>
+                      <span className="text-[10px] text-slate-400 capitalize">{agent.reportsToAgent.role}</span>
+                    </a>
+                  ) : (
+                    <span className="text-slate-400 text-xs">None (top-level)</span>
+                  )}
                 </dd>
               </div>
               {agent.subordinates && agent.subordinates.length > 0 && (
                 <div>
-                  <dt className="text-slate-500 dark:text-slate-400 text-xs mb-1">
+                  <dt className="text-slate-500 dark:text-slate-400 text-xs mb-1.5">
                     Subordinates ({agent.subordinates.length})
                   </dt>
                   <div className="space-y-1">
                     {agent.subordinates.map((sub: any) => (
-                      <dd key={sub.id} className="text-slate-900 dark:text-slate-100 text-xs">
-                        {sub.name} <span className="text-slate-400">({sub.slug})</span>
+                      <dd key={sub.id}>
+                        <a href={`/agents/${sub.id}`} className="inline-flex items-center gap-2 px-2.5 py-1 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
+                          <span className={`w-5 h-5 rounded-full text-white text-[9px] font-bold flex items-center justify-center shrink-0 ${sub.role === 'lead' ? 'bg-sky-600' : 'bg-slate-500'}`}>
+                            {sub.name?.split(/[\s—]/)[0]?.slice(0, 2).toUpperCase() || '??'}
+                          </span>
+                          <span className="text-xs font-medium text-slate-900 dark:text-slate-100">{sub.name}</span>
+                          <span className="text-[10px] text-slate-400 capitalize">{sub.role}</span>
+                        </a>
                       </dd>
                     ))}
                   </div>

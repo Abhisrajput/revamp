@@ -58,6 +58,38 @@ const AssignSkillSchema = z.object({
   proficiency: z.enum(["beginner", "intermediate", "expert"]).default("intermediate"),
 });
 
+/** Build a human-readable summary from action + raw details. */
+function buildDetailSummary(action: string, details: Record<string, unknown>, agentName: string): string {
+  switch (action) {
+    case 'persona_created':
+      return `Created agent: ${details.name || agentName}`;
+    case 'persona_updated': {
+      const fields = (details.fields as string[]) || [];
+      return fields.length > 0 ? `Updated ${fields.join(', ')} on ${agentName}` : `Updated ${agentName}`;
+    }
+    case 'persona_deleted':
+      return `Deleted agent: ${agentName}`;
+    case 'subtask_created':
+      return `Subtask: ${(details as any)?.title || 'New task'}`;
+    case 'subtask_completed':
+      return `Completed subtask for ${agentName}`;
+    case 'assignment_created':
+      return `Assigned ${(details as any)?.stage_name || 'task'} to ${agentName}`;
+    case 'budget_warning':
+      return `Budget warning for ${agentName} (${(details as any)?.percentUsed ? Math.round((details as any).percentUsed * 100) + '%' : 'over threshold'})`;
+    case 'budget_hard_stop':
+      return `Budget hard stop — ${agentName} paused`;
+    case 'agent_resumed':
+      return `${agentName} resumed from pause`;
+    case 'budgets_reconciled':
+      return `Monthly budgets reconciled (${(details as any)?.agentsReconciled || 0} agents)`;
+    default:
+      return typeof details === 'object' && Object.keys(details).length > 0
+        ? `${action}: ${Object.values(details).filter(v => typeof v === 'string').join(', ').slice(0, 80)}`
+        : action;
+  }
+}
+
 const ReportsToSchema = z.object({
   reports_to: z.string().uuid().nullable(),
 });
@@ -181,6 +213,17 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
         }),
       ]);
 
+      // Build agent name lookup (single query for all names)
+      const agentIds = [...new Set(recentActivity.map(a => a.agent_id).filter(Boolean))];
+      const agentNameMap: Record<string, string> = {};
+      if (agentIds.length > 0) {
+        const personas = await db.query.agentPersonas.findMany({
+          where: inArray(agentPersonas.id, agentIds),
+          columns: { id: true, name: true, department: true },
+        });
+        for (const p of personas) agentNameMap[p.id] = p.name;
+      }
+
       const log: any[] = [];
 
       for (const run of recentRuns) {
@@ -190,24 +233,36 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
           agentName: 'Pipeline',
           department: 'execution',
           action: run.status === 'completed' ? 'COMPLETE' : run.status === 'failed' ? 'FAIL' : 'EXECUTE',
-          details: `${run.stage_name} — ${run.model || 'default'} (${run.duration_ms ? `${(run.duration_ms / 1000).toFixed(1)}s` : 'pending'})`,
-          detail: `Stage: ${run.stage_name}`,
+          details: {
+            stage_name: run.stage_name,
+            model: run.model || 'default',
+            duration_ms: run.duration_ms,
+            status: run.status,
+          },
+          detail: `${run.stage_name} — ${run.model || 'default'} (${run.duration_ms ? `${(run.duration_ms / 1000).toFixed(1)}s` : 'pending'})`,
           timestamp: run.created_at?.toISOString() || new Date().toISOString(),
           level: run.status === 'completed' ? 'success' : run.status === 'failed' ? 'error' : 'info',
         });
       }
 
       for (const act of recentActivity) {
+        const rawDetails = act.details as Record<string, unknown> || {};
+        const name = agentNameMap[act.agent_id] || rawDetails.name as string || 'Unknown Agent';
+        const detail = buildDetailSummary(act.action, rawDetails, name);
+
         log.push({
           id: act.id,
           agentId: act.agent_id,
-          agentName: 'Agent',
-          department: (act.details as any)?.department || 'execution',
+          agentName: name,
+          department: (rawDetails.department as string) || 'execution',
           action: act.action,
-          details: JSON.stringify(act.details).slice(0, 100),
-          detail: act.action,
+          details: rawDetails,
+          detail,
           timestamp: act.created_at?.toISOString() || new Date().toISOString(),
-          level: 'info',
+          level: act.action.includes('fail') || act.action.includes('error') ? 'error'
+            : act.action.includes('complete') || act.action.includes('created') ? 'success'
+            : act.action.includes('warning') || act.action.includes('paused') ? 'warning'
+            : 'info',
         });
       }
 

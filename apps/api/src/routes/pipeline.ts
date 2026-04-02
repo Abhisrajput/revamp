@@ -1150,4 +1150,16 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       return reply.send({ entries });
     },
   );
+
+  // ═══ RESET STAGE (admin) ══════════════════════════════════════
+  // Resets a stage back to pending so it can be re-executed.
+  fastify.post<{ Params: { pipelineRunId: string; stage: string } }>(
+    "/pipeline/:pipelineRunId/reset/:stage",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const { pipelineRunId, stage } = request.params;
+      await pipelineService.updateStageProgress(pipelineRunId, stage, "pending", 0);
+      return reply.send({ ok: true, stage, status: "pending" });
+    },
+  );
 }

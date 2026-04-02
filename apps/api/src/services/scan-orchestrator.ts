@@ -67,6 +67,7 @@ import { PipelineMessageBus, type SubtaskMessage } from "./agent-message-bus.js"
 import {
   checkPipelineBudget,
   PipelineBudgetExceededError,
+  ProjectBudgetExceededError,
 } from "./pipeline-budget.js";
 import type { FileAnalysisResult } from "./file-analyzer.js";
 
@@ -300,8 +301,8 @@ export async function orchestrateScanStage(
       try {
         await checkPipelineBudget(opts.pipelineRunId);
       } catch (budgetErr) {
-        if (budgetErr instanceof PipelineBudgetExceededError) {
-          emit("failed", { message: budgetErr.message, budgetExceeded: true });
+        if (budgetErr instanceof PipelineBudgetExceededError || budgetErr instanceof ProjectBudgetExceededError) {
+          emit("failed", { message: (budgetErr as Error).message, budgetExceeded: true });
           break;
         }
         throw budgetErr;
@@ -1185,10 +1186,10 @@ async function refineComposition(
 // ─── HELPERS ────────────────────────────────────────────────────
 
 function pickScoutModel(): string {
-  // Prefer fast/cheap models for scout: Haiku > Flash > default
+  // Prefer fast/cheap models for scout: env override > Haiku (Bedrock)
   return process.env.LLM_SCOUT_MODEL
     || process.env.LLM_EVALUATOR_MODEL
-    || "";
+    || "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 }
 
 function formatFileAnalysisForPrompt(fa: FileAnalysisResult): string {

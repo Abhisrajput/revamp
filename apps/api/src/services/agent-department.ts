@@ -76,12 +76,20 @@ export async function listPersonas(filters?: {
 }
 
 export async function getPersona(id: string) {
-  return db.query.agentPersonas.findFirst({
+  const persona = await db.query.agentPersonas.findFirst({
     where: and(eq(agentPersonas.id, id), isNull(agentPersonas.hidden_at)),
     with: {
       subordinates: true,
+      reportsToAgent: {
+        columns: { id: true, name: true, slug: true, role: true, department: true },
+      },
     },
   });
+  if (persona?.subordinates) {
+    // Filter out soft-deleted subordinates (Drizzle relations don't support where)
+    persona.subordinates = persona.subordinates.filter((s: any) => !s.hidden_at);
+  }
+  return persona;
 }
 
 export async function createPersona(data: {
