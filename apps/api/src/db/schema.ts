@@ -185,6 +185,7 @@ export const approvalGates = pgTable(
   (table) => ({
     pipelineRunIdx: index("approval_gates_pipeline_run_id_idx").on(table.pipeline_run_id),
     statusIdx: index("approval_gates_status_idx").on(table.status),
+    pipelineStageUniq: unique("approval_gates_pipeline_stage_uniq").on(table.pipeline_run_id, table.stage_name),
   })
 );
 

@@ -32,14 +32,15 @@ export function ElapsedTimer({ startedAt, completedAt }: ElapsedTimerProps) {
 
     const start = new Date(startedAt).getTime();
 
+    // Stage completed — show final duration and stop ticking
     if (completedAt) {
       const end = new Date(completedAt).getTime();
       setElapsed(formatElapsed(end - start));
       return;
     }
 
+    // Stage is running — tick every second
     setElapsed(formatElapsed(Date.now() - start));
-
     const interval = setInterval(() => {
       setElapsed(formatElapsed(Date.now() - start));
     }, 1000);
@@ -49,7 +50,7 @@ export function ElapsedTimer({ startedAt, completedAt }: ElapsedTimerProps) {
 
   if (!startedAt) return null;
 
-  const isRunning = !completedAt;
+  const isRunning = startedAt && !completedAt;
 
   return (
     <div className="inline-flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 tabular-nums">

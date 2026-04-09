@@ -493,7 +493,7 @@ func (op *OpenAIProvider) streamViaChatCompletions(ctx context.Context, req *Com
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
-		_ = cancel // Prevent leak detection
+		defer cancel()
 	}
 
 	go func() {
@@ -581,7 +581,7 @@ func (op *OpenAIProvider) streamViaResponsesAPI(ctx context.Context, req *Comple
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
-		_ = cancel
+		defer cancel()
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))

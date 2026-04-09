@@ -2,7 +2,7 @@
 
 import { useCallback, type ReactNode, memo } from 'react';
 import { ResizeHandle } from './resize-handle';
-import { useUIPreferencesStore, PANEL_CONSTRAINTS } from '@/lib/stores/ui-preferences-store';
+import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
 import { cn } from '@/lib/utils';
 
 interface MissionControlLayoutProps {

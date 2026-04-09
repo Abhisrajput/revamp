@@ -4,8 +4,6 @@ import { useState, useRef, useEffect, memo } from 'react';
 import { Bell, X, CheckCheck, Trash2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { useNotificationStore, type Notification, type NotificationType } from '@/lib/stores/notification-store';
-import { useWebSocket } from '@/lib/hooks/use-websocket';
-
 // ─── HELPERS ────────────────────────────────────────────────────
 
 function getNotificationIcon(type: NotificationType): string {
@@ -23,7 +21,10 @@ function getNotificationIcon(type: NotificationType): string {
 }
 
 function timeAgo(dateStr: string): string {
-  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (!dateStr) return '';
+  const ts = new Date(dateStr).getTime();
+  if (isNaN(ts)) return '';
+  const seconds = Math.floor((Date.now() - ts) / 1000);
   if (seconds < 60) return 'just now';
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
@@ -63,7 +64,7 @@ const NotificationItem = memo(function NotificationItem({
           {notification.message}
         </p>
         <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
-          {timeAgo(notification.createdAt)}
+          {timeAgo(notification.timestamp)}
         </p>
       </div>
       <button
@@ -90,13 +91,13 @@ export const NotificationBell = memo(function NotificationBell() {
     notifications,
     unreadCount,
     markAsRead,
-    markAllAsRead,
+    markAllRead,
     removeNotification,
     clearAll,
   } = useNotificationStore();
 
-  // Initialize WebSocket connection (auto-connect)
-  const { status: wsStatus } = useWebSocket();
+  // WebSocket not yet wired to a real URL — show disconnected indicator
+  const wsStatus: string = 'disconnected';
 
   // Close panel on outside click
   useEffect(() => {
@@ -164,7 +165,7 @@ export const NotificationBell = memo(function NotificationBell() {
             <div className="flex items-center gap-1">
               {unreadCount > 0 && (
                 <button
-                  onClick={markAllAsRead}
+                  onClick={markAllRead}
                   className="p-1.5 rounded text-slate-400 hover:text-primary-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
                   title="Mark all as read"
                 >

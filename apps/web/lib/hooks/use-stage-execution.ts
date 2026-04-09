@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
-import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import { usePipelineStore, stageRequiresApproval } from '@/lib/stores/pipeline-store';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { useNotificationStore } from '@/lib/stores/notification-store';
 
@@ -36,6 +36,8 @@ const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787';
 
 interface ExecuteOptions {
   skipLlmEval?: boolean;
+  promptOverride?: string;
+  validationFeedback?: Array<{ name: string; passed: boolean; score: number; feedback: string; severity?: string }>;
 }
 
 interface UseStageExecutionReturn {
@@ -80,7 +82,11 @@ export function useStageExecution(): UseStageExecutionReturn {
           'Content-Type': 'application/json',
           ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
         },
-        body: JSON.stringify({ skip_llm_eval: options.skipLlmEval ?? false }),
+        body: JSON.stringify({
+          skip_llm_eval: options.skipLlmEval ?? false,
+          ...(options.promptOverride ? { prompt_override: options.promptOverride } : {}),
+          ...(options.validationFeedback?.length ? { validation_feedback: options.validationFeedback } : {}),
+        }),
         signal: controller.signal,
       })
         .then((res) => {
@@ -181,6 +187,28 @@ export function useStageExecution(): UseStageExecutionReturn {
         const phase = event.data?.phase ?? event.phase ?? null;
         setCurrentPhase(phase);
 
+        // Token usage tracking — emitted by orchestrated stages (SCAN, DECODE, FORGE)
+        if (phase === 'usage' && event.data?.data) {
+          const ud = event.data.data as Record<string, unknown>;
+          s.updateRunUsage({
+            inputTokens: (ud.input_tokens as number) ?? 0,
+            outputTokens: (ud.output_tokens as number) ?? 0,
+            cost: (ud.cost as number) ?? 0,
+          });
+          if (idx >= 0) {
+            const stages = [...s.stages];
+            const prev = stages[idx].tokenUsage;
+            stages[idx] = {
+              ...stages[idx],
+              tokenUsage: {
+                input: (prev?.input ?? 0) + ((ud.input_tokens as number) ?? 0),
+                output: (prev?.output ?? 0) + ((ud.output_tokens as number) ?? 0),
+                cost: (prev?.cost ?? 0) + ((ud.cost as number) ?? 0),
+              },
+            };
+          }
+        }
+
         // FORGE: file_generated phase — track generated files
         if (phase === 'file_generated' && event.data?.data) {
           const fd = event.data.data as Record<string, unknown>;
@@ -194,12 +222,79 @@ export function useStageExecution(): UseStageExecutionReturn {
           }
         }
 
-        // SCAN/DECODE: subtask events
-        if ((phase === 'subtask_executing' || phase === 'scout_assessment' || phase === 'director_planning' || phase === 'composing') && event.data?.data) {
+        // Director planning event — populate the subtasks list with planned bots
+        if (phase === 'director_planning' && event.data?.data && idx >= 0) {
+          const planData = event.data.data as Record<string, unknown>;
+          const plannedSubtasks = planData.subtasks as Array<{ type: string; title?: string; priority?: number }> | undefined;
+          if (Array.isArray(plannedSubtasks) && plannedSubtasks.length > 0) {
+            const stage = s.stages[idx];
+            // Only populate if we don't already have subtasks (avoid overwriting status updates)
+            const existingTypes = new Set(stage.subtasks.map(st => st.type));
+            for (const planned of plannedSubtasks) {
+              if (!existingTypes.has(planned.type)) {
+                s.addScanSubtask(idx, {
+                  id: `${planned.type}-${Date.now()}`,
+                  type: planned.type,
+                  label: planned.title ?? planned.type,
+                  title: planned.title,
+                  status: 'pending',
+                });
+              }
+            }
+          }
+        }
+
+        // Subtask execution events — update individual bot status
+        if ((phase === 'subtask_executing' || phase === 'subtask_completed' || phase === 'subtask_failed') && event.data?.data && idx >= 0) {
+          const subtaskData = event.data.data as Record<string, unknown>;
+          const subtaskType = subtaskData.type as string | undefined;
+          if (subtaskType) {
+            const stage = s.stages[idx];
+            const existing = stage.subtasks.find(st => st.type === subtaskType);
+            if (existing) {
+              s.updateScanSubtask(idx, existing.id, {
+                status: phase === 'subtask_executing' ? 'running'
+                  : phase === 'subtask_completed' ? 'completed'
+                  : 'failed',
+                duration: subtaskData.duration as number | undefined,
+                output: subtaskData.output as string | undefined,
+                error: subtaskData.error as string | undefined,
+                agentName: subtaskData.agentName as string | undefined,
+              });
+            } else {
+              // First sighting — add it
+              s.addScanSubtask(idx, {
+                id: `${subtaskType}-${Date.now()}`,
+                type: subtaskType,
+                label: (subtaskData.title as string) ?? subtaskType,
+                status: phase === 'subtask_executing' ? 'running'
+                  : phase === 'subtask_completed' ? 'completed'
+                  : 'failed',
+                agentName: subtaskData.agentName as string | undefined,
+              });
+            }
+          }
+        }
+
+        // Log ALL phase events to Terminal + Agent Activity
+        const phaseData = event.data?.data as Record<string, unknown> | undefined;
+        const phaseMessage = (phaseData?.message as string) ?? phase;
+        if (phaseMessage && phase !== 'generating') {
           s.addLog({
-            type: 'info',
-            message: (event.data.data as Record<string, unknown>)?.message ?? phase,
+            type: phase.includes('fail') || phase.includes('error') ? 'error' : 'info',
+            message: `[${phase}] ${phaseMessage}`,
             timestamp: new Date().toISOString(),
+          });
+          // Also feed as agent activity item for the Agent tab
+          s.addToolCall({
+            id: `${phase}-${Date.now()}`,
+            toolName: phase,
+            status: phase.includes('fail') || phase.includes('error') ? 'failed'
+              : phase.includes('complet') || phase.includes('done') ? 'completed'
+              : 'running',
+            input: phaseData ? { details: phaseMessage } : undefined,
+            output: phaseData?.subtasks ? JSON.stringify(phaseData.subtasks) : undefined,
+            startedAt: new Date().toISOString(),
           });
         }
         break;
@@ -247,21 +342,27 @@ export function useStageExecution(): UseStageExecutionReturn {
         break;
 
       case 'usage':
-        s.updateRunUsage({
-          inputTokens: event.data?.input_tokens ?? 0,
-          outputTokens: event.data?.output_tokens ?? 0,
-          cost: event.data?.cost ?? 0,
-        });
-        if (idx >= 0) {
-          const stages = [...s.stages];
-          stages[idx] = {
-            ...stages[idx],
-            tokenUsage: {
-              input: event.data?.input_tokens ?? 0,
-              output: event.data?.output_tokens ?? 0,
-              cost: event.data?.cost ?? 0,
-            },
-          };
+        // Direct usage events (event type = 'usage'). The pipeline route currently
+        // sends usage as phase-wrapped events (event type = 'phase', phase = 'usage'),
+        // handled in the 'phase' case above. Skip here if we already counted via
+        // a phase-wrapped usage event to avoid double-counting.
+        if (!s.lastUsageEventAt || (Date.now() - new Date(s.lastUsageEventAt).getTime()) > 500) {
+          s.updateRunUsage({
+            inputTokens: event.data?.input_tokens ?? 0,
+            outputTokens: event.data?.output_tokens ?? 0,
+            cost: event.data?.cost ?? 0,
+          });
+          if (idx >= 0) {
+            const stages = [...s.stages];
+            stages[idx] = {
+              ...stages[idx],
+              tokenUsage: {
+                input: event.data?.input_tokens ?? 0,
+                output: event.data?.output_tokens ?? 0,
+                cost: event.data?.cost ?? 0,
+              },
+            };
+          }
         }
         break;
 
@@ -269,6 +370,32 @@ export function useStageExecution(): UseStageExecutionReturn {
         if (idx >= 0) {
           s.setStageStatus(idx, 'validating');
           setCurrentPhase('validating');
+        }
+        break;
+
+      case 'validation_finding':
+        // Stream individual validation findings in real-time
+        if (idx >= 0 && event.data) {
+          s.addLog({
+            type: event.data.passed ? 'info' : 'error',
+            message: `[${event.data.severity?.toUpperCase()}] ${event.data.name}: ${event.data.feedback}`,
+            timestamp: new Date().toISOString(),
+          });
+          // Incrementally build validation criteria
+          const currentVal = s.stages[idx]?.validation;
+          const newCriterion = {
+            name: event.data.name,
+            passed: event.data.passed,
+            score: event.data.score ?? 0,
+            feedback: event.data.feedback ?? '',
+          };
+          s.setStageValidation(idx, {
+            passed: currentVal?.passed ?? true,
+            score: currentVal?.score ?? 0,
+            criteria: [...(currentVal?.criteria ?? []), newCriterion],
+            summary: currentVal?.summary ?? '',
+            validatedAt: new Date().toISOString(),
+          });
         }
         break;
 
@@ -306,6 +433,19 @@ export function useStageExecution(): UseStageExecutionReturn {
             s.setStageOutput(idx, finalOutput);
             s.setStageStatus(idx, 'completed');
             flashSuccess(stageName, `Output generated (${finalOutput.length} chars)`);
+
+            // Trigger approval gate if stage requires approval
+            if (stageRequiresApproval(stageName)) {
+              s.setPendingApproval(idx);
+              try {
+                useNotificationStore.getState().addNotification({
+                  type: 'approval_required',
+                  title: `${stageName} needs approval`,
+                  message: 'Review the output and approve to advance the pipeline.',
+                  metadata: { stage: stageName },
+                });
+              } catch { /* non-fatal */ }
+            }
           } else {
             const stage = s.stages[idx];
             const hasArtifacts = stage?.artifacts?.length > 0;

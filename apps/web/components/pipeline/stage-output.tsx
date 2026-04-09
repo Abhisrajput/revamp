@@ -301,7 +301,7 @@ export const StageOutput = memo(function StageOutput({ output, isStreaming }: St
           securityLevel: 'loose',
           flowchart: { htmlLabels: true, curve: 'basis' },
           fontSize: 11,
-        });
+        } as any);
 
         for (const block of mermaidBlocks) {
           if (block.getAttribute('data-rendered')) continue;

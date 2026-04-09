@@ -84,13 +84,15 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to process environment config: %w", err)
 	}
 
-	// Validate: at least one LLM provider must be configured
+	// Validate: warn if no global LLM provider is configured.
+	// The orchestrator can still function with BYOK (per-request ephemeral credentials),
+	// so this is no longer a fatal error.
 	hasCloudProvider := cfg.OpenAIAPIKey != "" || cfg.AnthropicAPIKey != "" || cfg.GeminiAPIKey != ""
 	hasBedrock := cfg.AWSAccessKeyID != ""
 	hasOllama := cfg.OllamaEndpoint != ""
 
 	if !hasCloudProvider && !hasBedrock && !hasOllama {
-		return nil, fmt.Errorf("at least one LLM provider must be configured (set API keys or OLLAMA_ENDPOINT)")
+		fmt.Println("[WARN] No global LLM provider configured. Only BYOK (per-request credentials) will work.")
 	}
 
 	return &cfg, nil

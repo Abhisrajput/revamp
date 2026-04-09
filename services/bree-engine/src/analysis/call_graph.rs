@@ -38,6 +38,15 @@ pub struct GraphStats {
     pub orphan_nodes: usize,
 }
 
+/// Languages with reliable parsers — only these produce clean symbol/call data.
+/// Unrecognized languages (e.g. C, README) produce noisy symbols from comments.
+const GRAPH_LANGUAGES: &[&str] = &[
+    "cobol", "rpg", "cl", "dds", "jcl", "pli", "abap", "vb6", "sas",
+    "natural", "powerbuilder", "delphi", "fortran", "ada", "mumps",
+    "plsql", "tsql", "db2sql", "csharp", "php", "progress-4gl",
+    "visual-foxpro", "rexx", "assembler-zos",
+];
+
 /// Build a call graph from parsed outputs and resolved dependencies.
 pub fn build_call_graph(
     outputs: &[&ParseOutput],
@@ -48,8 +57,13 @@ pub fn build_call_graph(
     let mut fan_out: HashMap<String, usize> = HashMap::new();
     let mut fan_in: HashMap<String, usize> = HashMap::new();
 
+    // Filter to languages with reliable parsers — skip C, generic text, etc.
+    let filtered: Vec<&&ParseOutput> = outputs.iter()
+        .filter(|o| GRAPH_LANGUAGES.contains(&o.language_id.as_str()))
+        .collect();
+
     // Add program/module nodes
-    for output in outputs {
+    for output in &filtered {
         let short = output.source_path.rsplit('/').next().unwrap_or(&output.source_path);
         let id = sanitize_id(short);
         nodes.insert(id.clone(), GraphNode {
@@ -94,8 +108,17 @@ pub fn build_call_graph(
         }
     }
 
-    // Add cross-module edges from dependencies
+    // Collect source files that passed the language filter
+    let filtered_files: HashSet<String> = filtered.iter()
+        .map(|o| o.source_path.clone())
+        .collect();
+
+    // Add cross-module edges from dependencies (only for filtered source files)
     for dep in dependencies {
+        // Skip dependencies from non-legacy source files (e.g. C, README)
+        if !filtered_files.contains(&dep.from_module) {
+            continue;
+        }
         let from_short = dep.from_module.rsplit('/').next().unwrap_or(&dep.from_module);
         let from_id = sanitize_id(from_short);
 
@@ -191,8 +214,16 @@ pub fn build_call_graph(
 fn generate_mermaid(nodes: &HashMap<String, GraphNode>, edges: &[GraphEdge]) -> String {
     let mut md = String::from("graph TD\n");
 
-    // Style nodes by type
+    // Only render nodes that participate in at least one edge
+    let edge_nodes: HashSet<&str> = edges.iter()
+        .flat_map(|e| vec![e.from.as_str(), e.to.as_str()])
+        .collect();
+
+    // Style nodes by type — skip orphan nodes to keep the graph clean
     for node in nodes.values() {
+        if !edge_nodes.contains(node.id.as_str()) {
+            continue;
+        }
         let shape = match node.node_type.as_str() {
             "program" => format!("    {}[\"{}\"]\n", node.id, node.label),
             "function" => format!("    {}(\"{}\")\n", node.id, node.label),

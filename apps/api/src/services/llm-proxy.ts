@@ -18,9 +18,11 @@
  *   - All providers: separate evaluator model from generator to avoid self-validation bias
  */
 
-import axios, { AxiosInstance, AxiosResponse } from "axios";
+import axios, { AxiosInstance, AxiosResponse, AxiosError } from "axios";
 import type { LLMCallFn, LLMCallRequest } from "@revamp/core-engine";
 import type { LLMEvalFn, LLMEvalRequest } from "@revamp/core-engine";
+import { ProviderError, isProviderErrorRetryable } from "@/errors/provider-errors.js";
+import { retryToolExecution } from "./agent-retry.js";
 
 // ─── TYPES ──────────────────────────────────────────────────────
 
@@ -28,6 +30,19 @@ export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
   cache_control?: { type: "ephemeral" }; // Anthropic prompt caching
+}
+
+export interface ProjectCredentials {
+  provider: string;
+  aws_access_key_id?: string;
+  aws_secret_access_key?: string;
+  aws_session_token?: string;
+  aws_region?: string;
+  aws_bearer_token?: string; // Bedrock API key (never expires, no IAM/STS)
+  anthropic_api_key?: string;
+  openai_api_key?: string;
+  openai_endpoint?: string;
+  gemini_api_key?: string;
 }
 
 export interface CompletionRequest {
@@ -38,6 +53,7 @@ export interface CompletionRequest {
   stream?: boolean;
   response_format?: "text" | "json";
   metadata?: Record<string, unknown>;
+  credentials?: ProjectCredentials;
 }
 
 export interface CompletionResponse {
@@ -77,7 +93,7 @@ export class LLMProxyService {
       apiKey: config?.apiKey || process.env.LLM_ORCHESTRATOR_API_KEY || "",
       defaultModel: config?.defaultModel || process.env.LLM_DEFAULT_MODEL || "",
       evaluatorModel: config?.evaluatorModel || process.env.LLM_EVALUATOR_MODEL || "",
-      timeout: config?.timeout || 600000, // 10 min (Ollama on slow hardware)
+      timeout: config?.timeout || 300000, // 5 min — Bedrock calls should finish well within this; prevents silent hangs
     };
 
     this.client = axios.create({
@@ -118,7 +134,7 @@ export class LLMProxyService {
           ids.find((id) => id.includes("claude-sonnet-4")) ||
           ids.find((id) => id.includes("claude-3-5-sonnet")) ||
           ids.find((id) => id.includes("gpt-4")) ||
-          ids[0] || "claude-sonnet-4-6";
+          ids[0] || "us.anthropic.claude-sonnet-4-6-20251001-v1:0";
         console.log(`[LLM Proxy] Auto-selected default model: ${this.config.defaultModel}`);
       }
 
@@ -133,32 +149,72 @@ export class LLMProxyService {
       }
     } catch (err: any) {
       console.warn(`[LLM Proxy] Model discovery failed: ${err.message} — using fallback`);
-      if (!this.config.defaultModel) this.config.defaultModel = "claude-sonnet-4-6";
-      if (!this.config.evaluatorModel) this.config.evaluatorModel = this.config.defaultModel;
+      // Use Bedrock cross-region inference IDs as fallback — bare model names like
+      // "claude-sonnet-4-6" don't match any provider's model list and cause routing failures.
+      if (!this.config.defaultModel) this.config.defaultModel = "us.anthropic.claude-sonnet-4-6-20251001-v1:0";
+      if (!this.config.evaluatorModel) this.config.evaluatorModel = "us.anthropic.claude-haiku-4-6-20251001-v1:0";
     }
     this.modelsDiscovered = true;
   }
 
   /**
-   * Non-streaming chat completion.
+   * Classify an Axios error into a typed ProviderError.
+   */
+  private classifyAxiosError(err: unknown): ProviderError {
+    if (err instanceof AxiosError) {
+      if (err.response) {
+        const body = typeof err.response.data === "string"
+          ? err.response.data
+          : JSON.stringify(err.response.data);
+        return ProviderError.fromHttpStatus(err.response.status, body);
+      }
+      return ProviderError.fromNetworkError(err);
+    }
+    if (err instanceof Error) {
+      return ProviderError.fromNetworkError(err);
+    }
+    return ProviderError.fromNetworkError(new Error(String(err)));
+  }
+
+  /**
+   * Non-streaming chat completion with automatic retry on transient failures.
    */
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     await this.ensureModelsDiscovered();
-    const response = await this.client.post<CompletionResponse>(
-      "/api/v1/chat/completions",
+
+    return retryToolExecution(
+      async () => {
+        try {
+          const response = await this.client.post<CompletionResponse>(
+            "/api/v1/chat/completions",
+            {
+              messages: request.messages,
+              model: request.model || this.config.defaultModel,
+              max_tokens: request.max_tokens || 8192,
+              temperature: request.temperature ?? 0.3,
+              response_format: request.response_format === "json"
+                ? { type: "json_object" }
+                : undefined,
+              metadata: request.metadata,
+              ...(request.credentials ? { credentials: request.credentials } : {}),
+            },
+          );
+          return response.data;
+        } catch (err) {
+          throw this.classifyAxiosError(err);
+        }
+      },
       {
-        messages: request.messages,
-        model: request.model || this.config.defaultModel,
-        max_tokens: request.max_tokens || 8192,
-        temperature: request.temperature ?? 0.3,
-        response_format: request.response_format === "json"
-          ? { type: "json_object" }
-          : undefined,
-        metadata: request.metadata,
+        maxRetries: 2,
+        baseDelayMs: 1000,
+        maxDelayMs: 15000,
+        isRetryable: isProviderErrorRetryable,
+        onRetry: (attempt, error) => {
+          const pe = error instanceof ProviderError ? error : null;
+          console.warn(`[LLM Proxy] Retry ${attempt} (${pe?.telemetryType || "unknown"}): ${pe?.message || error}`);
+        },
       },
     );
-
-    return response.data;
   }
 
   /**
@@ -179,6 +235,7 @@ export class LLMProxyService {
         max_tokens: request.max_tokens || 8192,
         temperature: request.temperature ?? 0.3,
         metadata: request.metadata,
+        ...(request.credentials ? { credentials: request.credentials } : {}),
       },
       {
         responseType: "stream",
@@ -309,6 +366,7 @@ export class LLMProxyService {
       });
 
       stream.on("error", (err: Error) => {
+        stream.destroy();
         reject(new Error(`Stream error: ${err.message}`));
       });
     });
@@ -321,7 +379,7 @@ export class LLMProxyService {
    * The returned function has a `.tokenUsage` property that accumulates
    * input/output tokens across all calls made through this function.
    */
-  createCallFn(options?: { model?: string; maxTokens?: number }): LLMCallFn & { tokenUsage: { inputTokens: number; outputTokens: number } } {
+  createCallFn(options?: { model?: string; maxTokens?: number; credentials?: ProjectCredentials }): LLMCallFn & { tokenUsage: { inputTokens: number; outputTokens: number } } {
     const tokenUsage = { inputTokens: 0, outputTokens: 0 };
     const fn = async (req: LLMCallRequest): Promise<string> => {
       const messages: ChatMessage[] = [];
@@ -370,6 +428,7 @@ export class LLMProxyService {
             metadata: {
               useExtendedThinking: req.useExtendedThinking || false,
             },
+            credentials: options?.credentials,
           },
           req.onDelta,
           req.signal,
@@ -387,6 +446,7 @@ export class LLMProxyService {
         metadata: {
           useExtendedThinking: req.useExtendedThinking || false,
         },
+        credentials: options?.credentials,
       });
 
       tokenUsage.inputTokens += response.input_tokens || 0;
@@ -401,7 +461,7 @@ export class LLMProxyService {
    * Create an LLMEvalFn compatible with core-engine validation runner.
    * Uses a different (cheaper/faster) model to avoid self-validation bias.
    */
-  createEvalFn(options?: { model?: string }): LLMEvalFn {
+  createEvalFn(options?: { model?: string; credentials?: ProjectCredentials }): LLMEvalFn {
     return async (req: LLMEvalRequest): Promise<string> => {
       const messages: ChatMessage[] = [
         { role: "system", content: req.systemPrompt },
@@ -414,6 +474,7 @@ export class LLMProxyService {
         max_tokens: 2048,
         temperature: 0.1, // low temp for consistent evaluations
         response_format: req.responseFormat === "json" ? "json" : "text",
+        credentials: options?.credentials,
       });
 
       return response.content;

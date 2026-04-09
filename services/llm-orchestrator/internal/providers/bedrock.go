@@ -1,9 +1,13 @@
 package providers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -21,6 +25,11 @@ type BedrockProvider struct {
 	client        *bedrockruntime.Client
 	bedrockClient *bedrock.Client
 	logger        *zap.Logger
+	// Bearer token auth (Bedrock API keys) — when set, bypasses SigV4 and uses
+	// raw HTTP with Authorization: Bearer <token>. Never expires unlike STS.
+	bearerToken string
+	region      string
+	httpClient  *http.Client
 }
 
 // NewBedrockProvider creates a new Bedrock provider
@@ -52,6 +61,28 @@ func NewBedrockProvider(client *bedrockruntime.Client, bedrockClient *bedrock.Cl
 		bedrockClient: bedrockClient,
 		logger:        logger,
 	}
+}
+
+// NewBedrockProviderWithBearerToken creates a Bedrock provider using a Bedrock API key
+// (bearer token auth). This bypasses SigV4 entirely — no IAM user or STS token needed,
+// and the key never expires. Calls go directly to the Bedrock Runtime HTTP API.
+func NewBedrockProviderWithBearerToken(token, region string, logger *zap.Logger) *BedrockProvider {
+	if region == "" {
+		region = "us-east-1"
+	}
+	// Strip any whitespace/newlines that may have been introduced during copy-paste
+	// or storage — the HTTP Authorization header rejects control characters.
+	cleanToken := strings.TrimSpace(token)
+	p := NewBedrockProvider(nil, nil, logger)
+	p.bearerToken = cleanToken
+	p.region = region
+	p.httpClient = &http.Client{Timeout: 5 * time.Minute}
+	return p
+}
+
+// hasBearerToken returns true if this provider is configured for bearer token auth
+func (bp *BedrockProvider) hasBearerToken() bool {
+	return bp.bearerToken != "" && bp.httpClient != nil
 }
 
 // NewBedrockProviderWithCreds creates an ephemeral Bedrock provider with explicit credentials (BYOK).
@@ -91,8 +122,12 @@ func (bp *BedrockProvider) SupportsModel(model string) bool {
 }
 
 // Complete sends a completion request to Bedrock.
-// Uses the Converse API when tools are provided, InvokeModel otherwise.
+// Uses bearer token HTTP when a Bedrock API key is configured,
+// Converse API when tools are provided, InvokeModel otherwise.
 func (bp *BedrockProvider) Complete(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
+	if bp.hasBearerToken() {
+		return bp.completeWithBearerToken(ctx, req)
+	}
 	// If tools are provided, use the Converse API for native tool calling
 	if len(req.Tools) > 0 {
 		return bp.completeWithConverse(ctx, req)
@@ -100,13 +135,81 @@ func (bp *BedrockProvider) Complete(ctx context.Context, req *CompletionRequest)
 	return bp.completeWithInvokeModel(ctx, req)
 }
 
+// completeWithBearerToken calls the Bedrock Runtime InvokeModel API using
+// bearer token auth (Bedrock API keys) instead of SigV4.
+func (bp *BedrockProvider) completeWithBearerToken(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
+	start := time.Now()
+
+	callTimeout := req.Timeout
+	if callTimeout <= 0 {
+		callTimeout = 5 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+
+	payload := buildBedrockPayload(req)
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		bp.RecordError(err)
+		return &CompletionResponse{Provider: "bedrock", Model: req.Model, Error: err.Error(), Latency: time.Since(start)}, err
+	}
+
+	url := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/invoke", bp.region, req.Model)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payloadBytes))
+	if err != nil {
+		bp.RecordError(err)
+		return &CompletionResponse{Provider: "bedrock", Model: req.Model, Error: err.Error(), Latency: time.Since(start)}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+bp.bearerToken)
+
+	resp, err := bp.httpClient.Do(httpReq)
+	if err != nil {
+		bp.RecordError(err)
+		bp.logger.Error("Bedrock bearer token InvokeModel failed", zap.Error(err), zap.String("model", req.Model))
+		return &CompletionResponse{Provider: "bedrock", Model: req.Model, Error: err.Error(), Latency: time.Since(start)}, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		bp.RecordError(err)
+		return &CompletionResponse{Provider: "bedrock", Model: req.Model, Error: err.Error(), Latency: time.Since(start)}, err
+	}
+
+	if resp.StatusCode != 200 {
+		errMsg := fmt.Sprintf("Bedrock API returned %d: %s", resp.StatusCode, string(body))
+		bp.RecordError(fmt.Errorf(errMsg))
+		return &CompletionResponse{Provider: "bedrock", Model: req.Model, Error: errMsg, Latency: time.Since(start)}, fmt.Errorf(errMsg)
+	}
+
+	bp.RecordSuccess()
+	latency := time.Since(start)
+	content, inputTokens, outputTokens := parseBedrockResponse(body, req.Model)
+	cost := calculateBedrockCost(req.Model, inputTokens, outputTokens)
+
+	return &CompletionResponse{
+		ID: fmt.Sprintf("bedrock-%d", time.Now().UnixNano()), Model: req.Model, Provider: "bedrock",
+		Content: content, FinishReason: "stop",
+		InputTokens: inputTokens, OutputTokens: outputTokens, TotalTokens: inputTokens + outputTokens,
+		Cost: cost, Latency: latency,
+	}, nil
+}
+
 // completeWithInvokeModel uses the legacy InvokeModel API (no tool support)
 func (bp *BedrockProvider) completeWithInvokeModel(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
 	start := time.Now()
 
-	if req.Timeout > 0 {
+	// Always enforce a timeout on Bedrock calls. Without this, a dropped AWS
+	// connection hangs forever (the SDK has no default timeout on streaming).
+	callTimeout := req.Timeout
+	if callTimeout <= 0 {
+		callTimeout = 5 * time.Minute
+	}
+	{
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
+		ctx, cancel = context.WithTimeout(ctx, callTimeout)
 		defer cancel()
 	}
 
@@ -144,9 +247,13 @@ func (bp *BedrockProvider) completeWithInvokeModel(ctx context.Context, req *Com
 func (bp *BedrockProvider) completeWithConverse(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
 	start := time.Now()
 
-	if req.Timeout > 0 {
+	callTimeout := req.Timeout
+	if callTimeout <= 0 {
+		callTimeout = 5 * time.Minute
+	}
+	{
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
+		ctx, cancel = context.WithTimeout(ctx, callTimeout)
 		defer cancel()
 	}
 
@@ -299,16 +406,19 @@ func float32Ptr(v float32) *float32 { return &v }
 
 // Stream sends a streaming completion request to Bedrock
 func (bp *BedrockProvider) Stream(ctx context.Context, req *CompletionRequest) (<-chan *StreamChunk, error) {
+	if bp.hasBearerToken() {
+		return bp.streamWithBearerToken(ctx, req)
+	}
 	out := make(chan *StreamChunk)
 
-	// Set timeout if provided
-	if req.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
-		_ = cancel // Prevent leak detection
+	callTimeout := req.Timeout
+	if callTimeout <= 0 {
+		callTimeout = 5 * time.Minute
 	}
+	streamCtx, streamCancel := context.WithTimeout(ctx, callTimeout)
 
 	go func() {
+		defer streamCancel()
 		defer close(out)
 
 		// Build Bedrock request payload
@@ -323,7 +433,7 @@ func (bp *BedrockProvider) Stream(ctx context.Context, req *CompletionRequest) (
 		}
 
 		// Call Bedrock InvokeModelWithResponseStream API
-		response, err := bp.client.InvokeModelWithResponseStream(ctx, &bedrockruntime.InvokeModelWithResponseStreamInput{
+		response, err := bp.client.InvokeModelWithResponseStream(streamCtx, &bedrockruntime.InvokeModelWithResponseStreamInput{
 			ModelId:     &req.Model,
 			Body:        payloadBytes,
 			ContentType: stringPtr("application/json"),
@@ -506,6 +616,30 @@ func calculateBedrockCost(model string, inputTokens, outputTokens int) float64 {
 	}
 
 	return float64(inputTokens)*inputCost + float64(outputTokens)*outputCost
+}
+
+// streamWithBearerToken streams from the Bedrock InvokeModelWithResponseStream
+// API using bearer token auth. Falls back to a non-streaming Complete call
+// and emits the result as a single chunk — this is simpler and more reliable
+// than parsing Bedrock's event-stream format over raw HTTP.
+func (bp *BedrockProvider) streamWithBearerToken(ctx context.Context, req *CompletionRequest) (<-chan *StreamChunk, error) {
+	out := make(chan *StreamChunk)
+	go func() {
+		defer close(out)
+		// Use the non-streaming bearer-token path and emit as a single chunk.
+		// This avoids the complexity of parsing AWS event-stream encoding over
+		// raw HTTP while still being functionally correct.
+		resp, err := bp.completeWithBearerToken(ctx, req)
+		if err != nil {
+			out <- &StreamChunk{Error: err.Error()}
+			return
+		}
+		out <- &StreamChunk{
+			Delta:        resp.Content,
+			FinishReason: resp.FinishReason,
+		}
+	}()
+	return out, nil
 }
 
 // stringPtr returns a pointer to a string

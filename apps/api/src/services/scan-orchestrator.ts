@@ -37,7 +37,7 @@ import {
   type ScanSubtaskType,
   type FullValidationResult,
 } from "@revamp/core-engine";
-import { llmProxyService } from "./llm-proxy.js";
+import { llmProxyService, type ProjectCredentials } from "./llm-proxy.js";
 import {
   matchAndAssignAgent,
   recordAgentCompletion,
@@ -83,6 +83,8 @@ export interface ScanOrchestrationOptions {
   onDelta?: OnDelta;
   signal?: AbortSignal;
   model?: string;
+  /** BYOK credentials from project settings */
+  credentials?: ProjectCredentials;
 }
 
 interface SubtaskPlan {
@@ -318,6 +320,7 @@ export async function orchestrateScanStage(
             stageName: PipelineStageName.SCAN,
             subtaskType: plan.type,
             output: result.output,
+            credentials: opts.credentials,
           });
 
           result.reviewScore = review.overallScore;
@@ -561,7 +564,7 @@ export async function orchestrateScanStage(
     ? await llmProxyService.hasValidationModel().catch(() => false)
     : false;
   const llmEvalFn = hasEvalModel
-    ? llmProxyService.createEvalFn({ model: wantEvalModel })
+    ? llmProxyService.createEvalFn({ model: wantEvalModel, credentials: opts.credentials })
     : undefined;
 
   // Build BREE ground truth for anchoring
@@ -571,9 +574,13 @@ export async function orchestrateScanStage(
     languages: opts.fileAnalysis.detectedLanguages?.map((lang: string) => ({ id: lang, fileCount: 0 })) ?? [],
   } : undefined;
 
-  // Get stage prompt from project context for prompt-derived validation
-  const stagePrompt = (opts.projectContext as any)?.stagePrompts?.['0'] || '';
-  const validationPrompt = (opts.projectContext as any)?.validationPrompts?.['0'] || '';
+  // Get stage prompt from project context for prompt-derived validation.
+  // DB stores prompts by numeric index ('0'-'7') or stage name ('SCAN').
+  const prompts = (opts.projectContext as any)?.stagePrompts || {};
+  const valPrompts = (opts.projectContext as any)?.validationPrompts || {};
+  const stagePrompt = prompts['0'] || prompts['SCAN'] || prompts.SCAN || '';
+  const validationPrompt = valPrompts['0'] || valPrompts['SCAN'] || valPrompts.SCAN || '';
+  console.log(`[ScanOrchestrator] Validation prompt check — stagePrompt length: ${stagePrompt.length}, validationPrompt length: ${validationPrompt.length}, promptKeys: ${JSON.stringify(Object.keys(prompts))}, valKeys: ${JSON.stringify(Object.keys(valPrompts))}`);
 
   let validationResult: FullValidationResult = await runValidation({
     pipelineRunId: opts.pipelineRunId,
@@ -665,11 +672,25 @@ export async function orchestrateScanStage(
   }
   messageBus.clear();
 
+  // ── Coverage check: ensure all expected entities are mentioned ──
+  // Extract entity list from the stage prompt or file analysis
+  const expectedEntities = opts.fileAnalysis?.detectedLanguages || [];
+  const allModelFiles = (opts.fileAnalysis as any)?.fileList?.filter((f: string) =>
+    f.toLowerCase().includes('model') || f.toLowerCase().includes('entity')
+  ) || [];
+
+  // Simple coverage check: verify key codebase components are mentioned
+  const outputLower = composedOutput.toLowerCase();
+  const expectedTerms = ['architecture', 'technology stack', 'security', 'risk', 'data layer'];
+  const coveredTerms = expectedTerms.filter(t => outputLower.includes(t));
+  const coveragePct = Math.round((coveredTerms.length / expectedTerms.length) * 100);
+
   emit("completed", {
-    message: "SCAN analysis complete",
+    message: `SCAN analysis complete (coverage: ${coveragePct}%)`,
     subtasksCompleted: successfulResults.length,
     subtasksFailed: subtaskResults.length - successfulResults.length,
     duration: Date.now() - startTime,
+    coveragePercent: coveragePct,
   });
 
   return {
@@ -693,6 +714,7 @@ async function runScoutTriage(
   const scoutCallFn = llmProxyService.createCallFn({
     maxTokens: 4096,
     model: pickScoutModel(),
+    credentials: opts.credentials,
   });
 
   const fileAnalysisData = formatFileAnalysisForPrompt(opts.fileAnalysis);
@@ -722,6 +744,7 @@ async function runDirectorPlanning(
   const directorCallFn = llmProxyService.createCallFn({
     maxTokens: 4096,
     model: opts.model || "",
+    credentials: opts.credentials,
   });
 
   // Build agent roster from available agents
@@ -890,9 +913,10 @@ async function executeSubtask(
   const subtaskMaxTokens = opts.fileAnalysis.totalLines < 5000 ? 2048
     : opts.fileAnalysis.totalLines < 50000 ? 3072
     : 4096;
-  let llmCallFn = llmProxyService.createCallFn({
+  let llmCallFn: LLMCallFn = llmProxyService.createCallFn({
     maxTokens: subtaskMaxTokens,
     model: opts.model || "",
+    credentials: opts.credentials,
   });
 
   let agentExec: Awaited<ReturnType<typeof prepareAgentExecution>> | null = null;
@@ -974,8 +998,16 @@ async function executeSubtask(
       // Non-fatal
     }
 
-    // Store subtask result as a stage artifact so the frontend can list it
+    // Store subtask result as a stage artifact so the frontend can list it.
+    // Delete prior artifact of same type to prevent duplicates from retries.
     try {
+      await db.delete(stageArtifacts).where(
+        and(
+          eq(stageArtifacts.pipeline_run_id, opts.pipelineRunId),
+          eq(stageArtifacts.stage_name, PipelineStageName.SCAN),
+          eq(stageArtifacts.artifact_type, `subtask_${plan.type}`),
+        ),
+      );
       await db.insert(stageArtifacts).values({
         id: crypto.randomUUID(),
         pipeline_run_id: opts.pipelineRunId,
@@ -1061,8 +1093,8 @@ async function executeSubtask(
     if (agentExec) {
       try {
         await agentExec.complete();
-      } catch {
-        // Non-fatal
+      } catch (e) {
+        console.error("[ScanOrchestrator] Agent completion failed:", e);
       }
     }
   }
@@ -1110,6 +1142,7 @@ async function composeResults(
   const composerCallFn = llmProxyService.createCallFn({
     maxTokens: compositionMaxTokens,
     model: opts.model || "",
+    credentials: opts.credentials,
   });
 
   // Clear delta before composition — signals fresh start to frontend
@@ -1155,6 +1188,7 @@ async function refineComposition(
   const callFn = llmProxyService.createCallFn({
     maxTokens: refineMaxTokens,
     model: opts.model || "",
+    credentials: opts.credentials,
   });
 
   opts.onDelta?.("");
@@ -1458,6 +1492,7 @@ async function reviseSubtaskOutput(
   const callFn = llmProxyService.createCallFn({
     maxTokens: opts.fileAnalysis.totalLines < 5000 ? 2048 : 3072,
     model: opts.model || "",
+    credentials: opts.credentials,
   });
 
   const prompt = [

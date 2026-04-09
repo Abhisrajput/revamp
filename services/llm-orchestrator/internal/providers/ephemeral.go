@@ -16,12 +16,16 @@ func CreateEphemeralProvider(creds *RequestCredentials, logger *zap.Logger) (LLM
 
 	switch creds.Provider {
 	case "bedrock":
-		if creds.AWSAccessKeyID == "" || creds.AWSSecretKey == "" {
-			return nil, fmt.Errorf("bedrock requires aws_access_key_id and aws_secret_access_key")
-		}
 		region := creds.AWSRegion
 		if region == "" {
 			region = "us-east-1"
+		}
+		// Prefer bearer token auth (Bedrock API key) — never expires, no IAM/STS needed
+		if creds.AWSBearerToken != "" {
+			return NewBedrockProviderWithBearerToken(creds.AWSBearerToken, region, logger), nil
+		}
+		if creds.AWSAccessKeyID == "" || creds.AWSSecretKey == "" {
+			return nil, fmt.Errorf("bedrock requires aws_bearer_token OR (aws_access_key_id + aws_secret_access_key)")
 		}
 		return NewBedrockProviderWithCreds(creds.AWSAccessKeyID, creds.AWSSecretKey, creds.AWSSessionToken, region, logger)
 

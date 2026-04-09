@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, memo, useCallback } from 'react';
+import { useEffect, useState, memo, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import { Maximize2, Minimize2, Copy, Check } from 'lucide-react';
 
@@ -24,7 +24,7 @@ async function ensureMermaid() {
       securityLevel: 'loose',
       flowchart: { htmlLabels: true, curve: 'basis' },
       fontSize: 12,
-    });
+    } as any);
     mermaidReady = true;
   })();
   await mermaidPromise;

@@ -4,9 +4,9 @@ import { useState, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
-  Play, Upload, AlertTriangle, CheckCircle2, XCircle,
-  GitBranch, Skull, Gauge, FileSearch, Brain, ArrowRight,
-  Loader2, FileCode, Activity,
+  Play, CheckCircle2, XCircle,
+  GitBranch, Skull, Gauge, FileSearch, Brain,
+  Loader2, Activity,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 

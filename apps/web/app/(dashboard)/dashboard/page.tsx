@@ -6,9 +6,9 @@ import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
-  Users, AlertCircle, CheckCircle, Database,
-  Cpu, HardDrive, Activity, FileText, Coins,
-  Server, Download, FolderOpen, Zap, Clock,
+  Users, CheckCircle,
+  Cpu, Activity, FileText, Coins,
+  Download, FolderOpen, Zap, Clock,
   ArrowUpRight, ArrowDownRight, TrendingUp,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
@@ -19,21 +19,6 @@ import { MetricCard } from '@/components/dashboard/metric-card';
 import { ServiceHealthGrid } from '@/components/dashboard/service-health-grid';
 import { PipelineActivityChart } from '@/components/dashboard/pipeline-activity-chart';
 import { LivePipelineFeed } from '@/components/dashboard/live-pipeline-feed';
-
-// ─── PIPELINE STAGE MAPS ────────────────────────────────────────
-
-const STAGE_ORDER = ['SCAN', 'DECODE', 'BLUEPRINT', 'SPEC_LOCK', 'ARCHITECT', 'FORGE', 'SHADOW_RUN', 'EVOLVE'];
-
-const STAGE_LABELS: Record<string, string> = {
-  SCAN: 'Setup & Configuration',
-  DECODE: 'Intent Extraction',
-  BLUEPRINT: 'Business Capability Mining',
-  SPEC_LOCK: 'Behavior Lock-in',
-  ARCHITECT: 'Modernization Approach',
-  FORGE: 'Co-Create',
-  SHADOW_RUN: 'Parallel Run & Cutover',
-  EVOLVE: 'Continuous Modernization',
-};
 
 // ─── TYPES ──────────────────────────────────────────────────────
 

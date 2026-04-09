@@ -5,10 +5,10 @@ import {
   FileText, Target, GitBranch, Database, AlertTriangle, HelpCircle,
   Rocket, Building2, BarChart3, Layers, BookOpen, Shield, Timer,
   Link2, ClipboardList, Calendar, FileCode, ArrowLeftRight,
-  FlaskConical, Map as MapIcon, Cpu, Maximize2,
+  FlaskConical, Map as MapIcon, Maximize2,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { parseMarkdownSections, type MarkdownSection } from '@/lib/utils/markdown-sections';
+import { parseMarkdownSections } from '@/lib/utils/markdown-sections';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { MermaidDiagram } from '@/components/pipeline/mermaid-diagram';
 import { RefinableMarkdown } from '@/components/pipeline/refinable-markdown';
@@ -261,10 +261,12 @@ export const DynamicStageTabs = memo(function DynamicStageTabs({
 }: DynamicStageTabsProps) {
   const { specialTabs = [], prioritySections = [], includeFullOutput = true } = config;
 
-  // Parse sections from output — clean titles and maintain document order
+  // Parse sections from output — clean titles, merge tiny fragments, maintain document order
   const parsed = useMemo(() => {
-    const sections = parseMarkdownSections(output);
-    return sections.map((s) => {
+    const rawSections = parseMarkdownSections(output);
+
+    // Step 1: Tag each section with display info
+    const tagged = rawSections.map((s) => {
       const displayTitle = cleanTitle(s.title);
       return {
         ...s,
@@ -272,8 +274,56 @@ export const DynamicStageTabs = memo(function DynamicStageTabs({
         id: slugify(s.title),
         icon: resolveIcon(displayTitle),
         stats: computeStats(s.content),
+        contentLength: s.content.length,
       };
     });
+
+    // Step 2: Merge small sections (< 300 chars or title < 4 words) into previous section
+    // This prevents fragments like "File: .env (lines 1-50)" or "AWS S3" from becoming tabs
+    const MIN_CONTENT_LENGTH = 300;
+    const MIN_TITLE_WORDS = 3;
+    const merged: typeof tagged = [];
+
+    for (const section of tagged) {
+      const titleWords = section.displayTitle.split(/\s+/).length;
+      const isTiny = section.contentLength < MIN_CONTENT_LENGTH && titleWords < MIN_TITLE_WORDS;
+      const isFragment = section.displayTitle.startsWith('File:') ||
+        section.displayTitle.startsWith('or:') ||
+        section.displayTitle.match(/^[A-Z]{2,5}$/) || // "AWS", "GCP", etc.
+        section.displayTitle.match(/^\d/) || // starts with number
+        section.displayTitle.includes('lines ');
+
+      if ((isTiny || isFragment) && merged.length > 0) {
+        // Merge into previous section
+        const prev = merged[merged.length - 1];
+        prev.content += `\n\n${section.heading}\n\n${section.content}`;
+        prev.stats = computeStats(prev.content);
+        prev.contentLength = prev.content.length;
+        prev.endOffset = section.endOffset;
+      } else {
+        merged.push({ ...section });
+      }
+    }
+
+    // Step 3: Cap at 10 tabs — if still too many, group remaining under "Additional Details"
+    if (merged.length > 10) {
+      const keep = merged.slice(0, 9);
+      const rest = merged.slice(9);
+      const groupedContent = rest.map(s => `${s.heading}\n\n${s.content}`).join('\n\n');
+      keep.push({
+        ...rest[0],
+        displayTitle: `Additional Details (${rest.length} sections)`,
+        id: 'additional-details',
+        icon: FileText,
+        content: groupedContent,
+        stats: computeStats(groupedContent),
+        contentLength: groupedContent.length,
+        endOffset: rest[rest.length - 1].endOffset,
+      });
+      return keep;
+    }
+
+    return merged;
   }, [output]);
 
   // Sort by priority config

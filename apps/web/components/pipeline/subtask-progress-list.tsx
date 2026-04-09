@@ -44,8 +44,8 @@ export function SubtaskProgressList() {
 
   if (!subtasks || subtasks.length === 0) return null;
 
-  const completed = subtasks.filter((t) => t.status === 'completed').length;
-  const failed = subtasks.filter((t) => t.status === 'failed').length;
+  const completed = subtasks.filter((t: ScanSubtaskState) => t.status === 'completed').length;
+  const failed = subtasks.filter((t: ScanSubtaskState) => t.status === 'failed').length;
   const total = subtasks.length;
 
   return (
@@ -61,7 +61,7 @@ export function SubtaskProgressList() {
       </div>
 
       <div className="space-y-1">
-        {subtasks.map((subtask, i) => (
+        {subtasks.map((subtask: ScanSubtaskState, i: number) => (
           <div
             key={subtask.id}
             className={`flex items-center gap-2 py-1.5 px-2 rounded text-sm transition-colors ${

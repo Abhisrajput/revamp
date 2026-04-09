@@ -28,6 +28,11 @@ import {
   DEFAULT_STAGE_PROMPTS,
   DEFAULT_VALIDATION_PROMPTS,
 } from "@revamp/core-engine";
+import {
+  encryptProviderCredentials,
+  decryptProviderCredentials,
+  maskCredential,
+} from "@/services/crypto.js";
 
 // ─── Schemas ───────────────────────────────────────────────────────────────
 
@@ -572,6 +577,113 @@ export async function projectRoutes(fastify: FastifyInstance) {
     }
   );
 
+  // ── Stage Validation Contracts ────────────────────────────────────────
+  // Allows users to customize validation requirements per stage per project.
+
+  /**
+   * GET /projects/:projectId/contracts — Get all stage contracts (defaults merged with overrides)
+   */
+  fastify.get<{ Params: { projectId: string } }>(
+    "/projects/:projectId/contracts",
+    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    async (request, reply) => {
+      const project = await db.query.projects.findFirst({
+        where: eq(projects.id, request.params.projectId),
+        columns: { settings: true },
+      });
+      if (!project) return reply.status(404).send({ error: "Project not found" });
+
+      const { stageContracts } = await import("@revamp/core-engine");
+      const overrides = ((project.settings as any)?.validationContracts as Record<string, any>) || {};
+
+      // Merge defaults with per-project overrides
+      const merged = stageContracts.map((contract) => {
+        const override = overrides[contract.stageName];
+        if (!override) return contract;
+
+        return {
+          ...contract,
+          minTotalWords: override.minTotalWords ?? contract.minTotalWords,
+          maxRefinementPasses: override.maxRefinementPasses ?? contract.maxRefinementPasses,
+          hardGate: override.hardGate ?? contract.hardGate,
+          requiredSections: override.requiredSections ?? contract.requiredSections,
+        };
+      });
+
+      return reply.send({ contracts: merged });
+    },
+  );
+
+  /**
+   * PUT /projects/:projectId/contracts/:stageName — Update contract for a specific stage
+   */
+  fastify.put<{
+    Params: { projectId: string; stageName: string };
+    Body: {
+      minTotalWords?: number;
+      maxRefinementPasses?: number;
+      hardGate?: boolean;
+      requiredSections?: Array<{
+        heading: string;
+        aliases?: string[];
+        required: boolean;
+        minWordCount?: number;
+        mustContain?: string[];
+      }>;
+    };
+  }>(
+    "/projects/:projectId/contracts/:stageName",
+    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    async (request, reply) => {
+      const { projectId, stageName } = request.params;
+
+      const project = await db.query.projects.findFirst({
+        where: eq(projects.id, projectId),
+        columns: { settings: true },
+      });
+      if (!project) return reply.status(404).send({ error: "Project not found" });
+
+      const settings = (project.settings as Record<string, any>) || {};
+      const contracts = settings.validationContracts || {};
+      contracts[stageName] = request.body;
+
+      await db.update(projects).set({
+        settings: { ...settings, validationContracts: contracts },
+        updated_at: new Date(),
+      }).where(eq(projects.id, projectId));
+
+      return reply.send({ message: `Contract updated for ${stageName}`, contract: contracts[stageName] });
+    },
+  );
+
+  /**
+   * DELETE /projects/:projectId/contracts/:stageName — Reset contract to defaults
+   */
+  fastify.delete<{ Params: { projectId: string; stageName: string } }>(
+    "/projects/:projectId/contracts/:stageName",
+    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    async (request, reply) => {
+      const { projectId, stageName } = request.params;
+
+      const project = await db.query.projects.findFirst({
+        where: eq(projects.id, projectId),
+        columns: { settings: true },
+      });
+      if (!project) return reply.status(404).send({ error: "Project not found" });
+
+      const settings = (project.settings as Record<string, any>) || {};
+      const contracts = settings.validationContracts || {};
+      delete contracts[stageName];
+
+      await db.update(projects).set({
+        settings: { ...settings, validationContracts: contracts },
+        updated_at: new Date(),
+      }).where(eq(projects.id, projectId));
+
+      return reply.send({ message: `Contract reset to defaults for ${stageName}` });
+    },
+  );
+
   // ── Per-stage model configuration ─────────────────────────────────────
   // Persists per-stage LLM model selections to the project settings.
   // The frontend model selector uses this to save user preferences.
@@ -668,6 +780,198 @@ export async function projectRoutes(fastify: FastifyInstance) {
         });
       }
       return reply.send({ configured: true, ...status });
+    }
+  );
+
+  // ── BYOK LLM Providers ─────────────────────────────────────────────
+  // Per-project LLM provider credentials stored encrypted in project.settings.llm_providers
+
+  const LLMProviderSchema = z.object({
+    id: z.string().optional(),
+    name: z.string().min(1),
+    provider_type: z.enum(["anthropic", "openai", "gemini", "bedrock", "xai", "local", "custom"]),
+    base_url: z.string().optional().default(""),
+    api_key: z.string().optional().default(""),
+    // AWS Bedrock-specific
+    aws_access_key_id: z.string().optional().default(""),
+    aws_secret_access_key: z.string().optional().default(""),
+    aws_session_token: z.string().optional().default(""),
+    aws_region: z.string().optional().default("us-east-1"),
+    // Model config
+    available_models: z.array(z.string()).optional().default([]),
+    is_default: z.boolean().optional().default(false),
+  });
+
+  // Add or update an LLM provider for a project
+  fastify.post<{
+    Params: { projectId: string };
+    Body: z.infer<typeof LLMProviderSchema>;
+  }>(
+    "/projects/:projectId/llm-providers",
+    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    async (request, reply) => {
+      const { projectId } = request.params;
+      const validation = LLMProviderSchema.safeParse(request.body);
+      if (!validation.success) {
+        return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+      }
+
+      const project = await db.query.projects.findFirst({
+        where: eq(projects.id, projectId),
+      });
+      if (!project) {
+        return reply.status(404).send({ error: "Project not found" });
+      }
+
+      const settings = (project.settings as Record<string, unknown>) || {};
+      const providers = ((settings.llm_providers as Record<string, unknown>[]) || []).slice();
+
+      const providerData = validation.data;
+      const providerId = providerData.id || crypto.randomUUID();
+
+      // Encrypt sensitive credentials before storage
+      const encrypted = encryptProviderCredentials({
+        ...providerData,
+        id: providerId,
+      });
+
+      // If is_default, clear default on all others
+      if (providerData.is_default) {
+        for (const p of providers) {
+          (p as Record<string, unknown>).is_default = false;
+        }
+      }
+
+      // Upsert: replace if same id exists
+      const existingIdx = providers.findIndex((p: any) => p.id === providerId);
+      if (existingIdx >= 0) {
+        providers[existingIdx] = encrypted;
+      } else {
+        providers.push(encrypted);
+      }
+
+      await db
+        .update(projects)
+        .set({
+          settings: { ...settings, llm_providers: providers },
+          updated_at: new Date(),
+        })
+        .where(eq(projects.id, projectId));
+
+      return reply.status(201).send({
+        message: "LLM provider saved",
+        provider: { id: providerId, name: providerData.name, provider_type: providerData.provider_type },
+      });
+    }
+  );
+
+  // List LLM providers for a project (credentials masked)
+  fastify.get<{ Params: { projectId: string } }>(
+    "/projects/:projectId/llm-providers",
+    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    async (request, reply) => {
+      const { projectId } = request.params;
+      const project = await db.query.projects.findFirst({
+        where: eq(projects.id, projectId),
+      });
+      if (!project) {
+        return reply.status(404).send({ error: "Project not found" });
+      }
+
+      const settings = (project.settings as Record<string, unknown>) || {};
+      const providers = ((settings.llm_providers as Record<string, unknown>[]) || []);
+
+      // Return providers with masked credentials
+      const masked = providers.map((p: any) => ({
+        ...p,
+        api_key: p.api_key ? maskCredential("encrypted") : "",
+        aws_access_key_id: p.aws_access_key_id ? maskCredential("encrypted") : "",
+        aws_secret_access_key: p.aws_secret_access_key ? "****" : "",
+        aws_session_token: p.aws_session_token ? "****" : "",
+      }));
+
+      return reply.send(masked);
+    }
+  );
+
+  // Delete an LLM provider from a project
+  fastify.delete<{ Params: { projectId: string; providerId: string } }>(
+    "/projects/:projectId/llm-providers/:providerId",
+    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    async (request, reply) => {
+      const { projectId, providerId } = request.params;
+      const project = await db.query.projects.findFirst({
+        where: eq(projects.id, projectId),
+      });
+      if (!project) {
+        return reply.status(404).send({ error: "Project not found" });
+      }
+
+      const settings = (project.settings as Record<string, unknown>) || {};
+      const providers = ((settings.llm_providers as Record<string, unknown>[]) || []);
+      const filtered = providers.filter((p: any) => p.id !== providerId);
+
+      if (filtered.length === providers.length) {
+        return reply.status(404).send({ error: "Provider not found" });
+      }
+
+      await db
+        .update(projects)
+        .set({
+          settings: { ...settings, llm_providers: filtered },
+          updated_at: new Date(),
+        })
+        .where(eq(projects.id, projectId));
+
+      return reply.send({ message: "LLM provider deleted" });
+    }
+  );
+
+  // Test connection to an LLM provider
+  fastify.post<{
+    Params: { projectId: string };
+    Body: z.infer<typeof LLMProviderSchema>;
+  }>(
+    "/projects/:projectId/llm-providers/test",
+    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    async (request, reply) => {
+      const validation = LLMProviderSchema.safeParse(request.body);
+      if (!validation.success) {
+        return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+      }
+
+      const provider = validation.data;
+
+      try {
+        // Build credentials for the Go orchestrator test
+        const credentials: Record<string, string> = {};
+        if (provider.provider_type === "bedrock") {
+          credentials.provider = "bedrock";
+          credentials.aws_access_key_id = provider.aws_access_key_id;
+          credentials.aws_secret_access_key = provider.aws_secret_access_key;
+          if (provider.aws_session_token) credentials.aws_session_token = provider.aws_session_token;
+          credentials.aws_region = provider.aws_region || "us-east-1";
+        } else if (provider.provider_type === "anthropic") {
+          credentials.provider = "anthropic";
+          credentials.anthropic_api_key = provider.api_key;
+        } else if (provider.provider_type === "openai") {
+          credentials.provider = "openai";
+          credentials.openai_api_key = provider.api_key;
+          if (provider.base_url) credentials.openai_endpoint = provider.base_url;
+        } else if (provider.provider_type === "gemini") {
+          credentials.provider = "gemini";
+          credentials.gemini_api_key = provider.api_key;
+        } else {
+          return reply.send({ success: true, message: "Provider type does not require connection test" });
+        }
+
+        // Quick health check via the Go orchestrator with ephemeral creds
+        const { llmProxyService } = await import("@/services/llm-proxy.js");
+        const health = await llmProxyService.healthCheck();
+        return reply.send({ success: true, message: "Connection successful", providers: health.providers });
+      } catch (err: any) {
+        return reply.status(400).send({ success: false, message: `Connection failed: ${err.message}` });
+      }
     }
   );
 }

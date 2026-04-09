@@ -47,7 +47,7 @@ function ConfidenceBar({ confidence }: { confidence: number }) {
 }
 
 function MemoryItem({ memory }: { memory: EvolutionMemory }) {
-  const meta = CATEGORY_META[memory.category] || CATEGORY_META.domain_knowledge;
+  const meta = CATEGORY_META[memory.category ?? ''] || CATEGORY_META.domain_knowledge;
 
   return (
     <div className="px-3 py-3 rounded-lg border border-slate-100 dark:border-slate-700/50 hover:border-slate-200 dark:hover:border-slate-700 transition-colors">
@@ -67,9 +67,9 @@ function MemoryItem({ memory }: { memory: EvolutionMemory }) {
           {memory.sourceStage && (
             <span className="font-mono">{memory.sourceStage}</span>
           )}
-          <span className="tabular-nums">used {memory.usageCount}x</span>
+          <span className="tabular-nums">used {memory.usageCount ?? 0}x</span>
         </div>
-        <span>{new Date(memory.createdAt).toLocaleDateString()}</span>
+        <span>{new Date(memory.createdAt ?? memory.created_at).toLocaleDateString()}</span>
       </div>
     </div>
   );

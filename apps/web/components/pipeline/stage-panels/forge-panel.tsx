@@ -17,6 +17,7 @@ import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { AgentActivity } from '@/components/pipeline/agent-activity';
 import { ConfidenceGauge } from '@/components/pipeline/confidence-gauge';
 import { CodeEditor } from '@/components/editor/code-editor';
+import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { usePipelineStore, canExecuteStage } from '@/lib/stores/pipeline-store';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
 import { useAuthStore } from '@/lib/stores/auth-store';
@@ -208,6 +209,12 @@ export default function ForgePanel({
       {/* During execution: streaming + agent activity */}
       {isRunning && (
         <>
+          <AgentBotGrid
+            subtasks={stage.subtasks}
+            overallProgress={stage.subtaskProgress}
+            message="Generating modernized code..."
+            subtitle="Writing files, tests, and configuration"
+          />
           {streamingText && <StageOutput output={streamingText} isStreaming />}
           {toolCalls.length > 0 && <AgentActivity toolCalls={toolCalls} />}
           {logs.length > 0 && <TerminalLog logs={logs} title="Forge Activity" />}

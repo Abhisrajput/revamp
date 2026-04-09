@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
+import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { usePipelineStore, canExecuteStage } from '@/lib/stores/pipeline-store';
 import { DynamicStageTabs } from './dynamic-stage-tabs';
 import { getStageTabConfig } from './stage-tab-configs';
@@ -73,6 +74,12 @@ export default function ShadowRunPanel({
       {/* ── During execution ─────────────────────────────────────── */}
       {isRunning && (
         <>
+          <AgentBotGrid
+            subtasks={stage.subtasks}
+            overallProgress={stage.subtaskProgress}
+            message="Running parallel validation..."
+            subtitle="Comparing legacy vs modern outputs"
+          />
           {streamingText && <StageOutput output={streamingText} isStreaming />}
           {logs.length > 0 && <TerminalLog logs={logs} title="Shadow Run Activity" />}
         </>

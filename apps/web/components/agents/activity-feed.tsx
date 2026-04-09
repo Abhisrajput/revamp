@@ -21,6 +21,10 @@ import {
   Wallet,
   Ban,
   RefreshCw,
+  Brain,
+  ArrowRight,
+  MessageSquare,
+  AlertTriangle,
 } from 'lucide-react';
 
 // ─── EVENT CONFIG ────────────────────────────────────────────
@@ -79,6 +83,30 @@ const EVENT_META: Record<AgentEventType, EventMeta> = {
     icon: Ban,
     label: 'Budget Exceeded',
     color: 'text-red-600',
+    badgeClass: 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-400',
+  },
+  'agent.memory_updated': {
+    icon: Brain,
+    label: 'Memory Updated',
+    color: 'text-purple-500',
+    badgeClass: 'bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400',
+  },
+  'agent.delegated': {
+    icon: ArrowRight,
+    label: 'Delegated',
+    color: 'text-blue-500',
+    badgeClass: 'bg-blue-100 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400',
+  },
+  'agent.message': {
+    icon: MessageSquare,
+    label: 'Message',
+    color: 'text-slate-500',
+    badgeClass: 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300',
+  },
+  'agent.error': {
+    icon: AlertTriangle,
+    label: 'Error',
+    color: 'text-red-500',
     badgeClass: 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-400',
   },
 };

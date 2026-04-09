@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
-import { SubtaskProgressList } from '@/components/pipeline/subtask-progress-list';
+import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { usePipelineStore, canExecuteStage } from '@/lib/stores/pipeline-store';
 import { cn } from '@/lib/utils';
 import { DynamicStageTabs } from './dynamic-stage-tabs';
@@ -107,10 +107,15 @@ export default function DecodePanel({
         </>
       )}
 
-      {/* During execution */}
+      {/* During execution — show one bot per planned subtask */}
       {isRunning && (
         <>
-          <SubtaskProgressList />
+          <AgentBotGrid
+            subtasks={stage.subtasks}
+            overallProgress={stage.subtaskProgress}
+            message="Extracting business intent..."
+            subtitle="Director and specialists are analyzing the codebase"
+          />
           {streamingText && <StageOutput output={streamingText} isStreaming />}
           {logs.length > 0 && <TerminalLog logs={logs} title="Decode Activity" />}
         </>

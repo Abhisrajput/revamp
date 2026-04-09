@@ -37,7 +37,7 @@ export function CostHistoryChart({ costs, className }: CostHistoryChartProps) {
       const costDate = cost.created_at.split('T')[0];
       const bucket = days.find((d) => d.date === costDate);
       if (bucket) {
-        bucket.totalCents += cost.cost_cents;
+        bucket.totalCents += cost.cost_cents ?? 0;
       }
     }
 

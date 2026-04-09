@@ -203,7 +203,7 @@ async function bootstrap() {
             try {
               const content = await fs.readFile(fullPath, 'utf-8');
               if (content.length < 500_000) { // skip files > 500KB
-                files.push({ path: path.relative(codebasePath, fullPath), content });
+                files.push({ path: path.relative(codebasePath!, fullPath), content });
               }
             } catch { /* skip unreadable */ }
           }

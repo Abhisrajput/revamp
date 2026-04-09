@@ -2,7 +2,7 @@
 
 import { memo } from 'react';
 import { cn } from '@/lib/utils';
-import { Database, Server, Cpu, HardDrive, CheckCircle, XCircle, Wifi } from 'lucide-react';
+import { Database, Server, Cpu, HardDrive, CheckCircle, XCircle } from 'lucide-react';
 
 interface ServiceStatus {
   status: string;

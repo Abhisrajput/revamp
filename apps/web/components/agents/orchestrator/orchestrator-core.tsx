@@ -4,7 +4,7 @@ import { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import {
   Brain, Hammer, Shield, FileText, Crown, Merge,
-  Bot, CheckCheck, Lightbulb, AlertTriangle,
+  Bot, Lightbulb, AlertTriangle,
 } from 'lucide-react';
 import type { AgentOrchestratorState, OrchestratorState } from '@/lib/hooks/use-orchestrator';
 
@@ -33,8 +33,7 @@ interface OrchestratorCoreProps {
   orchestratorState: OrchestratorState;
 }
 
-export function OrchestratorCore({ agents, orchestratorState }: OrchestratorCoreProps) {
-  const isRunning = orchestratorState === 'running';
+export function OrchestratorCore({ agents, orchestratorState: _orchestratorState }: OrchestratorCoreProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<number>(0);
   const neuronsRef = useRef<Neuron[]>([]);
@@ -261,7 +260,6 @@ export function OrchestratorCore({ agents, orchestratorState }: OrchestratorCore
 
       {/* DOM icons overlaid on neurons (redrawn each frame via CSS) */}
       {neurons.map((n, i) => {
-        const Icon = n.icon;
         const isActive = n.status === 'working';
         return (
           <NeuronIcon key={n.id} neuron={n} index={i} total={neurons.length}
@@ -326,7 +324,7 @@ export function OrchestratorCore({ agents, orchestratorState }: OrchestratorCore
 
 // ─── Neuron Icon (follows canvas position via rAF) ──────────────
 
-function NeuronIcon({ neuron, index, total, containerRef, timeRef, isActive }: {
+function NeuronIcon({ neuron, index: _index, total: _total, containerRef, timeRef, isActive }: {
   neuron: Neuron; index: number; total: number;
   containerRef: React.RefObject<HTMLDivElement | null>;
   timeRef: React.MutableRefObject<number>;

@@ -70,6 +70,10 @@ const EVENT_META: Record<AgentEventType, { icon: typeof Activity; color: string;
   'agent.status_changed': { icon: Activity, color: 'text-slate-500', label: 'Status' },
   'agent.budget_warning': { icon: Wallet, color: 'text-amber-500', label: 'Budget' },
   'agent.budget_exceeded': { icon: Ban, color: 'text-red-600', label: 'Exceeded' },
+  'agent.memory_updated': { icon: Brain, color: 'text-purple-500', label: 'Memory' },
+  'agent.delegated': { icon: ArrowUpCircle, color: 'text-blue-500', label: 'Delegated' },
+  'agent.message': { icon: Activity, color: 'text-slate-500', label: 'Message' },
+  'agent.error': { icon: AlertTriangle, color: 'text-red-500', label: 'Error' },
 };
 
 // ─── HELPERS ────────────────────────────────────────────────────
@@ -282,7 +286,7 @@ export function AgentInteractionPanel({ agentId, open, onClose }: AgentInteracti
                             {esc.stage_name || 'Unknown stage'}
                           </span>
                           <span className="text-[11px] font-mono text-slate-400">
-                            {formatRelative(esc.updated_at)}
+                            {formatRelative(esc.updated_at ?? esc.created_at)}
                           </span>
                         </div>
                         <p className="text-xs text-slate-600 dark:text-slate-400 mb-3 leading-relaxed">

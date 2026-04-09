@@ -63,15 +63,15 @@ export function StatsBar({ stats, period, onPeriodChange }: StatsBarProps) {
           color="emerald" subtitle={`${successRate}% success`}
         />
         <MetricTile
-          icon={Clock} label="Queued" value={String(stats.tasksQueued)}
+          icon={Clock} label="Queued" value={String(stats.tasksQueued ?? 0)}
           color="amber"
         />
         <MetricTile
-          icon={Cpu} label="Uptime" value={formatRuntime(stats.runtimeSeconds)}
+          icon={Cpu} label="Uptime" value={formatRuntime(stats.runtimeSeconds ?? 0)}
           color="purple"
         />
         <MetricTile
-          icon={Zap} label="Tokens" value={formatTokens(stats.totalTokens)}
+          icon={Zap} label="Tokens" value={formatTokens(stats.totalTokens ?? 0)}
           color="blue"
         />
         <MetricTile
@@ -79,7 +79,7 @@ export function StatsBar({ stats, period, onPeriodChange }: StatsBarProps) {
           color="green"
         />
         <MetricTile
-          icon={Braces} label="LLM Calls" value={formatCount(stats.totalLLMCalls)}
+          icon={Braces} label="LLM Calls" value={formatCount(stats.totalLLMCalls ?? 0)}
           color="orange"
         />
       </div>

@@ -224,9 +224,9 @@ function SubtaskRow({ subtask }: { subtask: AgentSubtask }) {
         </p>
         <div className="flex items-center gap-2 mt-0.5">
           <span className="text-[11px] font-mono text-slate-400">{subtask.stageName}</span>
-          {subtask.costCents > 0 && (
+          {(subtask.costCents ?? 0) > 0 && (
             <span className="text-[11px] text-slate-400">
-              ${(subtask.costCents / 100).toFixed(2)}
+              ${((subtask.costCents ?? 0) / 100).toFixed(2)}
             </span>
           )}
         </div>
@@ -242,26 +242,27 @@ function SubtaskRow({ subtask }: { subtask: AgentSubtask }) {
 
 interface SessionEntry {
   id: string;
-  sessionIdBefore: string | null;
-  sessionIdAfter: string | null;
-  sessionData: {
+  sessionIdBefore?: string | null;
+  sessionIdAfter?: string | null;
+  sessionData?: {
     stageContext?: Record<string, unknown>;
     findings?: string[];
     decisions?: Array<{ decision: string; rationale: string }>;
     warnings?: string[];
     custom?: Record<string, unknown>;
   } | null;
-  tokenCount: number;
-  compacted: boolean;
-  compactionSummary: string | null;
-  createdAt: string;
+  tokenCount?: number;
+  compacted?: boolean;
+  compactionSummary?: string | null;
+  createdAt?: string;
+  started_at?: string;
 }
 
 function SessionContextCard({
   sessions,
   isLoading,
 }: {
-  sessions: SessionEntry[];
+  sessions: SessionEntry[] | any[];
   isLoading: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -324,7 +325,7 @@ function SessionEntry({ session }: { session: SessionEntry }) {
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-mono text-slate-400">{session.id.slice(0, 8)}...</span>
         <div className="flex items-center gap-2">
-          <span className="text-[11px] text-slate-400">{session.tokenCount.toLocaleString()} tokens</span>
+          <span className="text-[11px] text-slate-400">{(session.tokenCount ?? 0).toLocaleString()} tokens</span>
           {session.compacted && (
             <Badge className="bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400 text-[10px]">
               Compacted
@@ -382,7 +383,7 @@ function SessionEntry({ session }: { session: SessionEntry }) {
         </div>
       )}
 
-      <p className="text-[10px] text-slate-400 mt-2">{formatDate(session.createdAt)}</p>
+      <p className="text-[10px] text-slate-400 mt-2">{formatDate(session.createdAt ?? session.started_at ?? '')}</p>
     </div>
   );
 }

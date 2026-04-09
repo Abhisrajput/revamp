@@ -13,7 +13,7 @@ import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { db } from "@/db/index.js";
 import { llmUsage, projects, pipelineRuns, stageArtifacts } from "@/db/schema.js";
-import { eq, and, sql, desc, gte } from "drizzle-orm";
+import { eq, and, sql, desc, gte, inArray } from "drizzle-orm";
 import { getModelPricing, calculateCost, MODEL_PRICING, getAvailableModels } from "@revamp/core-engine";
 import { llmProxyService } from "@/services/llm-proxy.js";
 import { PIPELINE_STAGE_ORDER } from "@revamp/shared-types";
@@ -246,7 +246,7 @@ export async function usageRoutes(fastify: FastifyInstance) {
       // Get all usage for these projects
       const allUsage = await db.query.llmUsage.findMany({
         where: projectIds.length > 0
-          ? sql`${llmUsage.project_id} = ANY(ARRAY[${sql.raw(projectIds.map((id) => `'${id}'`).join(","))}]::uuid[])`
+          ? inArray(llmUsage.project_id, projectIds)
           : undefined,
       });
 

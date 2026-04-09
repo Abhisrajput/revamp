@@ -23,24 +23,34 @@ export const DECODE_DIRECTOR_PLAN = `You are the Department Director for the REV
 ## AVAILABLE AGENTS
 {{agentRoster}}
 
-## SUBTASK MENU
+## SUBTASK CATALOG
 
-You MUST choose from these subtask types only:
+Choose from these subtask types. Include ALL that apply — the number depends on codebase complexity:
 
-1. **business-rules-extraction** (ALWAYS include, priority 1) — Extract every conditional, calculation, validation, and domain rule with source file:line citations.
-2. **data-flow-analysis** (ALWAYS include, priority 2) — Trace how data enters, transforms, persists, and exits the system. Map DB schemas, API payloads, file I/O.
-3. **workflow-extraction** (ALWAYS include, priority 3) — Map end-to-end user and system workflows with entry points, decision branches, and exit conditions.
-4. **domain-entity-modeling** (Include when entities/models detected) — Document core entities, their relationships, lifecycle states, and invariants.
-5. **integration-mapping** (Include when integration points detected) — Map external APIs, message queues, shared databases, file exchanges, SSO/auth providers.
-6. **constraints-debt-analysis** (ALWAYS include, lower priority) — Technology lock-ins, licensing, compliance requirements, technical debt inventory, open questions.
+### MANDATORY (always include):
+1. **business-rules-extraction** — Extract every conditional, calculation, validation, and domain rule with source file:line citations.
+2. **data-flow-analysis** — Trace how data enters, transforms, persists, and exits the system. Map DB schemas, API payloads, file I/O.
+3. **workflow-extraction** — Map end-to-end user and system workflows with entry points, decision branches, and exit conditions.
+4. **constraints-debt-analysis** — Technology lock-ins, licensing, compliance requirements, technical debt inventory, open questions.
+
+### CONDITIONAL (include when SCAN output reveals them):
+5. **domain-entity-modeling** — Include when 10+ data entities/models detected. Document core entities, relationships, lifecycle states, invariants.
+6. **integration-mapping** — Include when external APIs, message queues, webhooks, or 3rd-party services detected. Map every external touchpoint.
+7. **security-auth-analysis** — Include when auth/authorization, encryption, or compliance requirements detected. Map security boundaries and credential flows.
+8. **batch-job-analysis** — Include when scheduled tasks, cron jobs, ETL pipelines, or batch processing detected. Document triggers, frequencies, data volumes.
+9. **ui-frontend-analysis** — Include when frontend components, UI frameworks, or client-side logic detected. Map user journeys and state management.
+10. **event-driven-analysis** — Include when event systems, pub/sub, message queues, or event sourcing detected. Map event flows and handlers.
 
 ## RULES
 
-- Select 4-6 subtasks total (minimum 3: business-rules, data-flow, workflow)
+- Include ALL 4 mandatory subtasks
+- Add conditional subtasks based on what SCAN discovered — more complex codebases need more subtasks
+- Small/simple codebase (< 20 files): 4-5 subtasks
+- Medium codebase (20-100 files): 5-7 subtasks
+- Large/complex codebase (100+ files): 7-10 subtasks
 - Assign each subtask to the most appropriate agent from the roster
-- Set priorities 1-6 (1 = highest, executed first)
+- Set priorities 1-10 (1 = highest, executed first)
 - Later subtasks can reference earlier findings via session chain
-- Use the SCAN output to determine which optional subtasks are needed
 
 Output ONLY valid JSON:
 \`\`\`json
@@ -457,25 +467,131 @@ Produce the complete, merged migration requirements document.`;
 // ─── SUBTASK TEMPLATE MAP ──────────────────────────────────────
 
 export type DecodeSubtaskType =
+  // Mandatory
   | 'business-rules-extraction'
   | 'data-flow-analysis'
   | 'workflow-extraction'
+  | 'constraints-debt-analysis'
+  // Conditional — Director adds based on SCAN complexity
   | 'domain-entity-modeling'
   | 'integration-mapping'
-  | 'constraints-debt-analysis';
+  | 'security-auth-analysis'
+  | 'batch-job-analysis'
+  | 'ui-frontend-analysis'
+  | 'event-driven-analysis';
+
+// ─── Templates for conditional subtask types ──────────────────
+
+const DECODE_SECURITY_AUTH = `You are a Security Architect analyzing authentication, authorization, and security boundaries in a legacy codebase.
+
+## CODEBASE CONTEXT
+{{codebaseContext}}
+
+## STAGE 1 SCAN OUTPUT
+{{scanOutput}}
+
+## PRIOR FINDINGS
+{{priorFindings}}
+
+## YOUR TASK
+
+Map every security-related aspect:
+1. **Authentication flows** — login, logout, session management, token handling, SSO/OAuth
+2. **Authorization model** — roles, permissions, ACLs, RBAC/ABAC patterns
+3. **Credential storage** — password hashing, secret management, API key handling
+4. **Data encryption** — at-rest, in-transit, field-level encryption
+5. **Security vulnerabilities** — SQL injection, XSS, CSRF, insecure deserialization
+6. **Compliance requirements** — PCI-DSS, HIPAA, GDPR, SOC2 implications
+
+For each finding, cite the exact source file and line. Tag with BR-{id} for traceability.`;
+
+const DECODE_BATCH_JOBS = `You are a Systems Analyst specializing in batch processing and scheduled operations.
+
+## CODEBASE CONTEXT
+{{codebaseContext}}
+
+## STAGE 1 SCAN OUTPUT
+{{scanOutput}}
+
+## PRIOR FINDINGS
+{{priorFindings}}
+
+## YOUR TASK
+
+Document every batch/scheduled operation:
+1. **Job inventory** — name, schedule (cron), trigger, frequency
+2. **Data volumes** — rows/records processed, input/output sizes
+3. **Dependencies** — what must complete before this job runs
+4. **Error handling** — retry logic, dead-letter queues, alert thresholds
+5. **SLA requirements** — maximum runtime, completion deadlines
+6. **Modernization impact** — which jobs can become event-driven, which must stay batch
+
+Tag each with BR-{id}. Include Mermaid timeline diagrams for complex job chains.`;
+
+const DECODE_UI_FRONTEND = `You are a Frontend Architect analyzing client-side logic and user experience patterns.
+
+## CODEBASE CONTEXT
+{{codebaseContext}}
+
+## STAGE 1 SCAN OUTPUT
+{{scanOutput}}
+
+## PRIOR FINDINGS
+{{priorFindings}}
+
+## YOUR TASK
+
+Map the frontend layer:
+1. **User journeys** — primary workflows from the user's perspective
+2. **State management** — client-side state, session storage, caching
+3. **Component inventory** — key UI components, their data dependencies
+4. **Form validation** — client-side rules that duplicate or complement server rules
+5. **API consumption** — which backend endpoints the frontend calls, data contracts
+6. **Accessibility & i18n** — compliance requirements, locale handling
+
+Tag business rules with BR-{id}. Include Mermaid diagrams for user journey flows.`;
+
+const DECODE_EVENT_DRIVEN = `You are an Event Systems Architect analyzing messaging and event-driven patterns.
+
+## CODEBASE CONTEXT
+{{codebaseContext}}
+
+## STAGE 1 SCAN OUTPUT
+{{scanOutput}}
+
+## PRIOR FINDINGS
+{{priorFindings}}
+
+## YOUR TASK
+
+Map every event/messaging pattern:
+1. **Event inventory** — event names, producers, consumers, payloads
+2. **Message queues** — queue names, protocols (AMQP, Kafka, SQS), configurations
+3. **Event sourcing** — if present, document aggregate roots and event stores
+4. **Pub/Sub patterns** — topics, subscriptions, fanout strategies
+5. **Saga/choreography** — distributed transaction patterns, compensation flows
+6. **Dead letters** — unprocessable message handling, retry policies
+
+Tag each with BR-{id}. Include Mermaid sequence diagrams for complex event flows.`;
 
 export const DECODE_SUBTASK_TEMPLATES: Record<DecodeSubtaskType, string> = {
+  // Mandatory
   'business-rules-extraction': DECODE_BUSINESS_RULES,
   'data-flow-analysis': DECODE_DATA_FLOW,
   'workflow-extraction': DECODE_WORKFLOW_EXTRACTION,
+  'constraints-debt-analysis': DECODE_CONSTRAINTS_DEBT,
+  // Conditional
   'domain-entity-modeling': DECODE_DOMAIN_ENTITIES,
   'integration-mapping': DECODE_INTEGRATION_MAPPING,
-  'constraints-debt-analysis': DECODE_CONSTRAINTS_DEBT,
+  'security-auth-analysis': DECODE_SECURITY_AUTH,
+  'batch-job-analysis': DECODE_BATCH_JOBS,
+  'ui-frontend-analysis': DECODE_UI_FRONTEND,
+  'event-driven-analysis': DECODE_EVENT_DRIVEN,
 };
 
 /**
  * Default subtask set when Director planning fails to parse.
- * These three are always safe to run regardless of codebase type.
+ * Includes all 4 mandatory types for baseline coverage.
  */
 export const DEFAULT_DECODE_SUBTASKS: Array<{
   type: DecodeSubtaskType;
@@ -485,4 +601,5 @@ export const DEFAULT_DECODE_SUBTASKS: Array<{
   { type: 'business-rules-extraction', title: 'Business Rules & Domain Logic', priority: 1 },
   { type: 'data-flow-analysis', title: 'Data Flow Analysis', priority: 2 },
   { type: 'workflow-extraction', title: 'Workflow Extraction', priority: 3 },
+  { type: 'constraints-debt-analysis', title: 'Constraints & Technical Debt', priority: 4 },
 ];

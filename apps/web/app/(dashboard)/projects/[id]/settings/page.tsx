@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { apiClient } from '@/lib/api-client';
 import { LLMProviderSettings, type LLMProvider, type StageLLMConfig } from '@/components/settings/llm-provider-settings';
+import { StageContractsEditor } from '@/components/settings/stage-contracts-editor';
 import { STAGE_NAMES, STAGE_LABELS } from '@/lib/stores/pipeline-store';
 import Link from 'next/link';
 
@@ -22,6 +23,7 @@ import Link from 'next/link';
 const TABS = [
   { id: 'llm', label: 'LLM & Models', icon: Cpu, description: 'Providers, models & validation' },
   { id: 'prompts', label: 'Prompts', icon: MessageSquare, description: 'Templates & stage prompts' },
+  { id: 'contracts', label: 'Validation', icon: ShieldCheck, description: 'Stage validation contracts' },
   { id: 'team', label: 'Team & Approval', icon: Users, description: 'Members & gates' },
   { id: 'config', label: 'Configuration', icon: SettingsIcon, description: 'Project settings' },
 ];
@@ -437,20 +439,22 @@ export default function ProjectSettingsPage() {
                 defaultEvaluatorModel={defaultEvaluatorModel}
                 onDefaultEvaluatorModelChange={setDefaultEvaluatorModel}
                 onDirty={() => setProvidersDirty(true)}
+                onSaveNow={() => saveProviders.mutate()}
               />
 
-              {providersDirty && (
-                <div className="flex justify-end">
-                  <Button
-                    onClick={() => saveProviders.mutate()}
-                    disabled={saveProviders.isPending}
-                    className="rounded-xl bg-primary-600 hover:bg-primary-700 text-white shadow-sm"
-                  >
-                    {saveProviders.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Save className="w-4 h-4 mr-2" />}
-                    Save LLM Config
-                  </Button>
-                </div>
-              )}
+              <div className="flex justify-end">
+                <Button
+                  onClick={() => saveProviders.mutate()}
+                  disabled={saveProviders.isPending || !providersDirty}
+                  className={providersDirty
+                    ? "rounded-xl bg-primary-600 hover:bg-primary-700 text-white shadow-sm"
+                    : "rounded-xl bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 shadow-sm cursor-not-allowed"
+                  }
+                >
+                  {saveProviders.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Save className="w-4 h-4 mr-2" />}
+                  {providersDirty ? 'Save LLM Config' : 'LLM Config Saved'}
+                </Button>
+              </div>
 
               {/* 3-Phase Validation */}
               <SectionCard>
@@ -779,6 +783,13 @@ export default function ProjectSettingsPage() {
               </SectionCard>
               </div>
             </>
+          )}
+
+          {/* ════════════════════════════════════════════════ */}
+          {/* VALIDATION CONTRACTS TAB                        */}
+          {/* ════════════════════════════════════════════════ */}
+          {activeTab === 'contracts' && (
+            <StageContractsEditor projectId={projectId} />
           )}
 
           {/* ════════════════════════════════════════════════ */}

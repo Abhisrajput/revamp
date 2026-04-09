@@ -66,33 +66,43 @@ export interface ProjectBudgetStatus {
 
 // ─── COST ESTIMATION ─────────────────────────────────────────────
 
-const MODEL_COST_PER_1K: Record<string, { input: number; output: number }> = {
-  sonnet:          { input: 0.3,   output: 1.5 },
-  haiku:           { input: 0.025, output: 0.125 },
-  flash:           { input: 0.0375, output: 0.15 },
-  "gpt-4o":        { input: 0.25,  output: 1.0 },
-  "gpt-4":         { input: 3.0,   output: 6.0 },
-  default:         { input: 0.3,   output: 1.5 },
+// Cost per 1M tokens in USD (Bedrock cross-region pricing as of 2025)
+const MODEL_COST_PER_1M: Record<string, { input: number; output: number }> = {
+  "sonnet-4-6":    { input: 3.00,  output: 15.00 },
+  "sonnet-4-5":    { input: 3.00,  output: 15.00 },
+  "opus-4":        { input: 15.00, output: 75.00 },
+  "haiku-4-5":     { input: 0.80,  output: 4.00 },
+  "haiku-4-6":     { input: 0.80,  output: 4.00 },
+  "sonnet-3-5":    { input: 3.00,  output: 15.00 },
+  "haiku-3":       { input: 0.25,  output: 1.25 },
+  flash:           { input: 0.075, output: 0.30 },
+  "gpt-4o":        { input: 2.50,  output: 10.00 },
+  "gpt-4":         { input: 30.00, output: 60.00 },
+  default:         { input: 3.00,  output: 15.00 },
 };
 
+/**
+ * Estimate cost in USD for a given token count.
+ * Returns dollars (not cents).
+ */
 export function estimateCostCents(
   inputTokens: number,
   outputTokens: number,
   model: string = "default",
 ): number {
   const modelLower = model.toLowerCase();
-  let pricing = MODEL_COST_PER_1K.default;
+  let pricing = MODEL_COST_PER_1M.default;
 
-  for (const [key, cost] of Object.entries(MODEL_COST_PER_1K)) {
+  for (const [key, cost] of Object.entries(MODEL_COST_PER_1M)) {
     if (key !== "default" && modelLower.includes(key)) {
       pricing = cost;
       break;
     }
   }
 
-  const inputCost = (inputTokens / 1000) * pricing.input;
-  const outputCost = (outputTokens / 1000) * pricing.output;
-  return Math.round((inputCost + outputCost) * 100) / 100;
+  const inputCost = (inputTokens / 1_000_000) * pricing.input;
+  const outputCost = (outputTokens / 1_000_000) * pricing.output;
+  return Math.round((inputCost + outputCost) * 10000) / 10000; // 4 decimal places in USD
 }
 
 // ─── BUDGET OPERATIONS ──────────────────────────────────────────

@@ -33,7 +33,7 @@ import {
   runValidation,
   type FullValidationResult,
 } from "@revamp/core-engine";
-import { llmProxyService } from "./llm-proxy.js";
+import { llmProxyService, type ProjectCredentials } from "./llm-proxy.js";
 
 // ─── TYPES ──────────────────────────────────────────────────────
 
@@ -47,6 +47,8 @@ export interface ForgeOrchestrationOptions {
   signal?: AbortSignal;
   model?: string;
   maxTokens?: number;
+  /** BYOK credentials from project settings */
+  credentials?: ProjectCredentials;
 }
 
 interface GeneratedFile {
@@ -110,7 +112,7 @@ export async function orchestrateForgeStage(
   emit("director_planning", { message: "Planning code generation..." });
   checkAbort();
 
-  const planCallFn = llmProxyService.createCallFn({ maxTokens: opts.maxTokens || 8192, model: opts.model });
+  const planCallFn = llmProxyService.createCallFn({ maxTokens: opts.maxTokens || 8192, model: opts.model, credentials: opts.credentials });
 
   // Extract frontend signals from SCAN output for planning
   const scanLower = scanOutput.toLowerCase();
@@ -119,37 +121,75 @@ export async function orchestrateForgeStage(
     ? `\n\nCRITICAL: The source codebase contains frontend code (detected in SCAN). You MUST include frontend components in the plan — pages, components, routing, state management, API client. Do NOT generate a backend-only plan.`
     : "";
 
-  const planPrompt = `You are a code generation planner. Based on the business rules and target architecture below, create a JSON plan of files to generate.
+  // Extract ALL entity/model names and business rule IDs from DECODE for comprehensive planning
+  const entityPattern = /(?:model|entity|table|class)[:\s]+[`*]*([A-Z][a-zA-Z]+)/g;
+  const rulePattern = /BR-\d+/g;
+  const allEntities = [...new Set([...decodeOutput.matchAll(entityPattern)].map(m => m[1]))];
+  const allRules = [...new Set([...decodeOutput.matchAll(rulePattern)].map(m => m[0]))];
+
+  emit("director_planning", {
+    message: `Identified ${allEntities.length} entities and ${allRules.length} business rules from DECODE`,
+    entities: allEntities.slice(0, 20),
+    ruleCount: allRules.length,
+  });
+
+  // Group entities into domain clusters for multi-pass generation
+  const domainGroups: Array<{ name: string; entities: string[]; rules: string[] }> = [];
+  const chunkSize = 6; // 6 entities per group → manageable per LLM call
+  for (let i = 0; i < allEntities.length; i += chunkSize) {
+    const group = allEntities.slice(i, i + chunkSize);
+    const groupName = group[0] || `Group${Math.floor(i / chunkSize) + 1}`;
+    // Find rules that reference these entities
+    const groupRules = allRules.filter(rule => {
+      const ruleIdx = decodeOutput.indexOf(rule);
+      if (ruleIdx === -1) return false;
+      const context = decodeOutput.slice(Math.max(0, ruleIdx - 500), ruleIdx + 500).toLowerCase();
+      return group.some(e => context.includes(e.toLowerCase()));
+    });
+    domainGroups.push({ name: groupName, entities: group, rules: groupRules.slice(0, 15) });
+  }
+  // Ensure at least one group with all rules if entity extraction failed
+  if (domainGroups.length === 0) {
+    domainGroups.push({ name: 'Core', entities: ['Account', 'Transaction', 'User', 'Budget'], rules: allRules.slice(0, 20) });
+  }
+
+  const planPrompt = `You are a code generation planner for a COMPREHENSIVE modernization. Based on the business rules and target architecture below, create a JSON plan of ALL files needed.
 
 ## Source Languages & Frameworks: ${sourceLanguages}
 ## Target Stack: ${targetStack}
 ## Target Cloud: ${targetCloud}
 
+## ALL Domain Entities to Cover (${allEntities.length} total):
+${allEntities.map(e => `- ${e}`).join('\n')}
+
+## ALL Business Rules (${allRules.length} total):
+${allRules.join(', ')}
+
 ## Codebase Discovery (from SCAN stage):
-${scanOutput.slice(0, 6000)}
+${scanOutput.slice(0, 4000)}
 
 ## Business Rules & Workflows (from DECODE stage):
-${decodeOutput.slice(0, 12000)}
+${decodeOutput.slice(0, 16000)}
 
 ## Target Architecture (from ARCHITECT stage):
 ${architectOutput.slice(0, 8000)}
 
-Generate a JSON array of files to create. Each file should have:
-- path: full file path (e.g., "backend/src/services/account.service.ts")
+Generate a JSON array of ALL files needed for COMPLETE coverage. Each file should have:
+- path: full file path
 - description: what this file does
 - language: programming language
-- rules: array of business rule IDs this file implements (e.g., ["BR-001", "BR-002"])
+- rules: array of business rule IDs this file implements
+- domainGroup: which domain group this belongs to (e.g., "accounts", "transactions", "budgets")
 
-Output ONLY valid JSON wrapped in \`\`\`json code fence. Generate 15-30 files covering ALL layers of the source codebase:
-1. Domain models/entities
-2. Services/business logic
-3. API routes/controllers
-4. Database schema/migrations
-5. Tests (unit + integration)
-6. Configuration (Docker, env, etc.)
-7. Frontend pages and components (REQUIRED if source has frontend code)
-8. Frontend routing and state management (REQUIRED if source has frontend code)
-9. Frontend API client/services (REQUIRED if source has frontend code)${frontendNote}`;
+CRITICAL REQUIREMENTS:
+1. EVERY entity listed above MUST have a model file, a service file, and a controller/route file
+2. EVERY domain MUST have repository, DTO/request/response types, and tests
+3. Include shared infrastructure: auth, middleware, error handling, database config
+4. Include frontend pages for EACH major entity (list, create, edit, detail views)
+5. Include Docker, CI/CD, and deployment config
+6. Target 80-120 files for comprehensive coverage
+
+Output ONLY valid JSON wrapped in \`\`\`json code fence.${frontendNote}`;
 
   let filePlan: FilePlan[] = [];
   try {
@@ -160,7 +200,8 @@ Output ONLY valid JSON wrapped in \`\`\`json code fence. Generate 15-30 files co
 
     const jsonMatch = planRaw.match(/```json\s*([\s\S]*?)```/) || planRaw.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+      const jsonStr = jsonMatch[1] !== undefined ? jsonMatch[1] : jsonMatch[0];
+      const parsed = JSON.parse(jsonStr);
       filePlan = Array.isArray(parsed) ? parsed : parsed.files || parsed.plan || [];
     }
   } catch (err) {
@@ -189,37 +230,62 @@ Output ONLY valid JSON wrapped in \`\`\`json code fence. Generate 15-30 files co
   });
 
   // ── STEP 3: Generate code files ───────────────────────────────
-  // Generate files in batches of 3-4 to stay within token limits
-  const batchSize = 3;
-  const batches = [];
-  for (let i = 0; i < filePlan.length; i += batchSize) {
-    batches.push(filePlan.slice(i, i + batchSize));
+  // Generate files in batches of 2-3, grouped by domain for better context
+  const batchSize = 2;
+  const batches: FilePlan[][] = [];
+
+  // Group files by domain group for coherent generation
+  const filesByDomain = new Map<string, FilePlan[]>();
+  for (const f of filePlan) {
+    const domain = (f as any).domainGroup || 'core';
+    const list = filesByDomain.get(domain) || [];
+    list.push(f);
+    filesByDomain.set(domain, list);
+  }
+  // Create batches within each domain group
+  for (const [, domainFiles] of filesByDomain) {
+    for (let i = 0; i < domainFiles.length; i += batchSize) {
+      batches.push(domainFiles.slice(i, i + batchSize));
+    }
   }
 
-  const codeCallFn = llmProxyService.createCallFn({ maxTokens: opts.maxTokens || 16384, model: opts.model });
+  emit("director_planning", {
+    message: `Code generation: ${filePlan.length} files in ${batches.length} batches across ${filesByDomain.size} domain groups`,
+    fileCount: filePlan.length,
+    batchCount: batches.length,
+    domainGroups: [...filesByDomain.keys()],
+  });
 
   for (let bi = 0; bi < batches.length; bi++) {
     const batch = batches[bi];
     checkAbort();
 
+    const batchDomain = (batch[0] as any).domainGroup || 'core';
+
     emit("subtask_executing", {
-      message: `Generating files ${bi * batchSize + 1}-${bi * batchSize + batch.length} of ${filePlan.length}...`,
+      message: `[${batchDomain}] Generating files ${bi + 1}/${batches.length}: ${batch.map(f => f.path.split('/').pop()).join(', ')}`,
       batch: bi + 1,
       totalBatches: batches.length,
+      domain: batchDomain,
     });
+
+    // Include domain-specific context from DECODE — find sections relevant to this batch's entities
+    const batchEntities = batch.flatMap(f => f.rules || []).join(' ');
+    const relevantDecodeContext = extractRelevantContext(decodeOutput, batch.map(f => f.path), 6000);
 
     const batchPrompt = `Generate the COMPLETE source code for these files. Each file must be production-ready with proper imports, error handling, and documentation.
 
 ## Target Stack: ${targetStack}
+## Domain Group: ${batchDomain}
 
-## Business Rules Context:
-${decodeOutput.slice(0, 6000)}
+## Relevant Business Rules (from DECODE):
+${relevantDecodeContext}
 
 ## Architecture Context:
 ${architectOutput.slice(0, 4000)}
 
 ## Files to Generate:
-${batch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.language})`).join("\n")}
+${batch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.language}) [implements: ${(f.rules || []).join(', ')}]`).join("\n")}
 
 For EACH file, output using this exact format:
 
@@ -228,7 +294,7 @@ For EACH file, output using this exact format:
 <complete file content>
 \`\`\`
 
-Generate ALL ${batch.length} files with complete, working code. No stubs, no TODOs.`;
+Generate ALL ${batch.length} files with complete, working code. No stubs, no TODOs, no placeholders.`;
 
     try {
       let accumulated = "";
@@ -241,6 +307,7 @@ Generate ALL ${batch.length} files with complete, working code. No stubs, no TOD
           model: opts.model || undefined,
           max_tokens: 16384,
           temperature: 0.2,
+          credentials: opts.credentials,
         },
         (delta) => {
           accumulated += delta;
@@ -299,6 +366,168 @@ Generate ALL ${batch.length} files with complete, working code. No stubs, no TOD
     }
   }
 
+  // ── STEP 3b: Coverage gap-fill loop ──────────────────────────
+  // Measure coverage after initial generation. If below target, plan and generate
+  // additional files for uncovered entities/rules. Repeat up to 3 times.
+  const COVERAGE_TARGET = 0.90; // 90% minimum
+  const MAX_GAP_FILL_ROUNDS = 3;
+
+  for (let round = 0; round < MAX_GAP_FILL_ROUNDS; round++) {
+    checkAbort();
+
+    // Measure current coverage
+    const coveredRulesSet = new Set(generatedFiles.flatMap(f => f.rules));
+    const coveredEntityNames = new Set(generatedFiles.map(f => {
+      const name = f.path.split('/').pop()?.replace(/\.\w+$/, '') || '';
+      return name.replace(/(Service|Controller|Repository|Model|Entity|Dto|Test|Spec|Slice|Client|Form|Page|Routes?|Config)$/i, '').toLowerCase();
+    }).filter(Boolean));
+
+    const uncoveredEntities = allEntities.filter(e => !coveredEntityNames.has(e.toLowerCase()));
+    const uncoveredRules = allRules.filter(r => !coveredRulesSet.has(r));
+    const entityCoverage = allEntities.length > 0 ? (allEntities.length - uncoveredEntities.length) / allEntities.length : 1;
+    const ruleCoverage = allRules.length > 0 ? (allRules.length - uncoveredRules.length) / allRules.length : 1;
+    const overallCoverage = (entityCoverage + ruleCoverage) / 2;
+
+    emit("validating" as StagePhase, {
+      message: `Coverage check (round ${round + 1}): entities ${Math.round(entityCoverage * 100)}%, rules ${Math.round(ruleCoverage * 100)}%, overall ${Math.round(overallCoverage * 100)}%`,
+      entityCoverage: Math.round(entityCoverage * 100),
+      ruleCoverage: Math.round(ruleCoverage * 100),
+      uncoveredEntities: uncoveredEntities.length,
+      uncoveredRules: uncoveredRules.length,
+    });
+
+    if (overallCoverage >= COVERAGE_TARGET || (uncoveredEntities.length === 0 && uncoveredRules.length === 0)) {
+      emit("validating" as StagePhase, { message: `Coverage target met: ${Math.round(overallCoverage * 100)}% ≥ ${Math.round(COVERAGE_TARGET * 100)}%` });
+      break;
+    }
+
+    // Plan gap-fill files for uncovered entities
+    emit("director_planning", {
+      message: `Gap-fill round ${round + 1}: generating code for ${uncoveredEntities.length} uncovered entities and ${uncoveredRules.length} uncovered rules`,
+    });
+
+    const gapPlanPrompt = `You are filling COVERAGE GAPS in a modernized codebase. The following entities and business rules were NOT covered in the first generation pass.
+
+## Target Stack: ${targetStack}
+## Target Cloud: ${targetCloud}
+
+## UNCOVERED Entities (MUST generate files for ALL of these):
+${uncoveredEntities.map(e => `- ${e}`).join('\n')}
+
+## UNCOVERED Business Rules:
+${uncoveredRules.slice(0, 30).join(', ')}
+
+## Already Generated Files (do NOT duplicate):
+${generatedFiles.map(f => `- ${f.path}`).join('\n')}
+
+## Architecture Context:
+${architectOutput.slice(0, 4000)}
+
+Generate a JSON array of NEW files to create for the uncovered entities. For EACH uncovered entity, generate:
+1. Domain model/entity file
+2. Service/business logic file
+3. REST controller/route file
+4. Repository/data access file
+
+Output ONLY valid JSON wrapped in \`\`\`json code fence. Each entry: { path, description, language, rules, domainGroup }`;
+
+    try {
+      const gapPlanRaw = await planCallFn({
+        systemPrompt: "You are a code generation planner. Output ONLY valid JSON.",
+        userPrompt: gapPlanPrompt,
+      });
+
+      const gapJsonMatch = gapPlanRaw.match(/```json\s*([\s\S]*?)```/) || gapPlanRaw.match(/\[[\s\S]*\]/);
+      let gapPlan: FilePlan[] = [];
+      if (gapJsonMatch) {
+        const parsed = JSON.parse(gapJsonMatch[1] || gapJsonMatch[0]);
+        gapPlan = Array.isArray(parsed) ? parsed : parsed.files || parsed.plan || [];
+      }
+
+      if (gapPlan.length === 0) {
+        emit("director_planning", { message: "Gap-fill planner returned no files — stopping coverage loop" });
+        break;
+      }
+
+      // Filter out already-generated paths
+      const existingPaths = new Set(generatedFiles.map(f => f.path));
+      gapPlan = gapPlan.filter(f => !existingPaths.has(f.path));
+
+      emit("director_planning", { message: `Gap-fill plan: ${gapPlan.length} new files` });
+
+      // Generate gap-fill files in batches
+      const gapBatches: FilePlan[][] = [];
+      for (let i = 0; i < gapPlan.length; i += batchSize) {
+        gapBatches.push(gapPlan.slice(i, i + batchSize));
+      }
+
+      for (let gbi = 0; gbi < gapBatches.length; gbi++) {
+        const gapBatch = gapBatches[gbi];
+        checkAbort();
+
+        emit("subtask_executing", {
+          message: `Gap-fill ${round + 1}.${gbi + 1}: ${gapBatch.map(f => f.path.split('/').pop()).join(', ')}`,
+        });
+
+        const relevantCtx = extractRelevantContext(decodeOutput, gapBatch.map(f => f.path), 6000);
+        const gapGenPrompt = `Generate COMPLETE source code for these gap-fill files. Production-ready, no stubs.
+
+## Target Stack: ${targetStack}
+## Business Rules Context:
+${relevantCtx}
+
+## Files to Generate:
+${gapBatch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.language}) [${(f.rules || []).join(', ')}]`).join('\n')}
+
+### FILE: <path>
+\`\`\`<language>
+<complete file content>
+\`\`\``;
+
+        try {
+          let gapAccum = "";
+          const gapResp = await llmProxyService.streamCompletion({
+            messages: [
+              { role: "system", content: "You are a Senior Full-Stack Engineer. Generate complete, production-ready code." },
+              { role: "user", content: gapGenPrompt },
+            ],
+            model: opts.model || undefined,
+            max_tokens: 16384,
+            temperature: 0.2,
+            credentials: opts.credentials,
+          }, (delta) => { gapAccum += delta; opts.onDelta?.(delta); }, opts.signal);
+
+          gapAccum = gapResp.content || gapAccum;
+
+          const gapFilePattern = /###\s*FILE:\s*(.+?)\s*\n```(\w+)?\s*\n([\s\S]*?)```/g;
+          let gapMatch;
+          while ((gapMatch = gapFilePattern.exec(gapAccum)) !== null) {
+            const filePath = gapMatch[1].trim();
+            const language = gapMatch[2] || detectLanguage(filePath);
+            const content = gapMatch[3].trim();
+            const planned = gapBatch.find(f => f.path === filePath) || gapBatch[0];
+
+            generatedFiles.push({ path: filePath, content, language, description: planned?.description || filePath, rules: planned?.rules || [] });
+
+            await db.insert(modernizedFiles).values({
+              project_id: (opts.projectContext as any).id || (opts.projectContext as any).projectId,
+              pipeline_run_id: opts.pipelineRunId,
+              file_path: filePath, file_name: filePath.split('/').pop() || filePath,
+              language, content, file_size: content.length, is_new: true,
+            }).catch(() => {});
+
+            emit("file_generated" as any, { path: filePath, language, size: content.length });
+          }
+        } catch (gapErr) {
+          emit("subtask_executing", { message: `Gap batch error: ${gapErr instanceof Error ? gapErr.message : String(gapErr)}` });
+        }
+      }
+    } catch (planErr) {
+      emit("director_planning", { message: `Gap-fill planning error: ${planErr instanceof Error ? planErr.message : String(planErr)}` });
+      break;
+    }
+  }
+
   emit("composing", {
     message: `Generated ${generatedFiles.length} files`,
     totalFiles: generatedFiles.length,
@@ -349,6 +578,29 @@ Generate ALL ${batch.length} files with complete, working code. No stubs, no TOD
     }
   }
 
+  // Coverage analysis
+  const coveredRules = new Set(generatedFiles.flatMap(f => f.rules));
+  const uncoveredRules = allRules.filter(r => !coveredRules.has(r));
+  const coveredEntities = new Set(generatedFiles.flatMap(f => {
+    const name = f.path.split('/').pop()?.replace(/\.\w+$/, '') || '';
+    return name.replace(/(Service|Controller|Repository|Model|Entity|Dto|Test|Spec|Slice|Client|Form|Page)$/i, '');
+  }).filter(Boolean));
+  const uncoveredEntities = allEntities.filter(e => !coveredEntities.has(e) && !coveredEntities.has(e.toLowerCase()));
+
+  outputSections.push("\n## Coverage Analysis\n");
+  outputSections.push(`- **Entities identified**: ${allEntities.length}`);
+  outputSections.push(`- **Entities with generated code**: ${coveredEntities.size} (${Math.round(coveredEntities.size / Math.max(allEntities.length, 1) * 100)}%)`);
+  outputSections.push(`- **Business rules identified**: ${allRules.length}`);
+  outputSections.push(`- **Business rules implemented**: ${coveredRules.size} (${Math.round(coveredRules.size / Math.max(allRules.length, 1) * 100)}%)`);
+  if (uncoveredEntities.length > 0) {
+    outputSections.push(`\n### Uncovered Entities (${uncoveredEntities.length})`);
+    uncoveredEntities.forEach(e => outputSections.push(`- ${e}`));
+  }
+  if (uncoveredRules.length > 0) {
+    outputSections.push(`\n### Uncovered Business Rules (${uncoveredRules.length})`);
+    outputSections.push(uncoveredRules.join(', '));
+  }
+
   // Include file contents in output
   outputSections.push("\n## File Contents\n");
   for (const file of generatedFiles) {
@@ -385,7 +637,7 @@ Generate ALL ${batch.length} files with complete, working code. No stubs, no TOD
   let validationResult: FullValidationResult | null = null;
   try {
     const llmEvalFn = await llmProxyService.hasValidationModel()
-      ? llmProxyService.createEvalFn()
+      ? llmProxyService.createEvalFn({ credentials: opts.credentials })
       : undefined;
 
     validationResult = await runValidation({
@@ -430,4 +682,37 @@ function detectLanguage(path: string): string {
     md: "markdown", sh: "bash", dockerfile: "dockerfile",
   };
   return map[ext] || ext || "text";
+}
+
+/**
+ * Extract sections from DECODE output that are relevant to the given file paths.
+ * Finds paragraphs containing entity names derived from file paths.
+ */
+function extractRelevantContext(decodeOutput: string, filePaths: string[], maxChars: number): string {
+  // Extract entity names from file paths (e.g., "AccountService.java" → "account")
+  const entityNames = filePaths.map(p => {
+    const fileName = p.split('/').pop()?.replace(/\.\w+$/, '') || '';
+    return fileName
+      .replace(/(Service|Controller|Repository|Model|Entity|Dto|Test|Spec|Slice|Client|Form|Page)$/i, '')
+      .toLowerCase();
+  }).filter(Boolean);
+
+  if (entityNames.length === 0) return decodeOutput.slice(0, maxChars);
+
+  // Split DECODE into sections and find relevant ones
+  const sections = decodeOutput.split(/^##\s+/m).filter(Boolean);
+  const relevant: string[] = [];
+  let totalLen = 0;
+
+  for (const section of sections) {
+    const sectionLower = section.toLowerCase();
+    const isRelevant = entityNames.some(e => sectionLower.includes(e));
+    if (isRelevant && totalLen + section.length < maxChars) {
+      relevant.push('## ' + section);
+      totalLen += section.length;
+    }
+  }
+
+  // If no relevant sections found, return truncated full output
+  return relevant.length > 0 ? relevant.join('\n') : decodeOutput.slice(0, maxChars);
 }

@@ -1,9 +1,9 @@
 'use client';
 
-import { memo, useState, useCallback } from 'react';
+import { memo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  AlertTriangle, CheckCircle, Clock, Plus, Loader2,
+  Loader2,
   ArrowUp, ArrowDown, Minus, ExternalLink, MessageSquare,
   Bot, Send, ChevronDown, ChevronRight, RefreshCw,
 } from 'lucide-react';
@@ -199,7 +199,7 @@ function IssueCard({ issue }: { issue: JiraIssue }) {
     mutationFn: async (agentId: string) => {
       return (await apiClient.post(`/jira/issue/${issue.key}/assign-agent`, { agent_id: agentId })).data;
     },
-    onSuccess: (data: any) => {
+    onSuccess: (_data: any) => {
       queryClient.invalidateQueries({ queryKey: ['jira-board'] });
       queryClient.invalidateQueries({ queryKey: ['agent-tasks'] });
       setAssigning(false);

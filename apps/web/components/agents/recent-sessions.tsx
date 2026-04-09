@@ -12,7 +12,11 @@ import {
 // ─── SESSION ITEM ───────────────────────────────────────────────
 
 function SessionItem({ session }: { session: SessionChainEntry }) {
-  const data = session.sessionData;
+  const data = session.sessionData as {
+    findings?: string[];
+    decisions?: Array<{ decision: string; rationale?: string }>;
+    warnings?: string[];
+  } | null | undefined;
   const findingsCount = data?.findings?.length ?? 0;
   const decisionsCount = data?.decisions?.length ?? 0;
   const warningsCount = data?.warnings?.length ?? 0;
@@ -34,10 +38,10 @@ function SessionItem({ session }: { session: SessionChainEntry }) {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-slate-400 dark:text-slate-500 tabular-nums">
-            {session.tokenCount.toLocaleString()} tokens
+            {(session.tokenCount ?? 0).toLocaleString()} tokens
           </span>
           <span className="text-[10px] text-slate-400 dark:text-slate-500">
-            {new Date(session.createdAt).toLocaleString()}
+            {new Date(session.createdAt ?? session.started_at).toLocaleString()}
           </span>
         </div>
       </div>

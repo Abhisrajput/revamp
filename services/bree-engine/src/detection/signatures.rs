@@ -24,7 +24,7 @@ pub static SIGNATURES: &[LanguageSignature] = &[
     // Tier 1
     LanguageSignature {
         language_id: "cobol",
-        extensions: &["cbl", "cob", "cpy", "sqb"],
+        extensions: &["cbl", "cob", "cpy", "sqb", "qcbllesrc"],
         header_patterns: &["IDENTIFICATION DIVISION", "PROCEDURE DIVISION", "DATA DIVISION", "WORKING-STORAGE"],
         content_heuristics: &[r"^\d{6}\s", r"PERFORM\s+\w+\s+THRU", r"EXEC\s+SQL"],
         extension_confidence: 0.9,
@@ -32,7 +32,7 @@ pub static SIGNATURES: &[LanguageSignature] = &[
     },
     LanguageSignature {
         language_id: "rpg",
-        extensions: &["rpg", "rpgle", "sqlrpgle", "rpg38"],
+        extensions: &["rpg", "rpgle", "sqlrpgle", "rpg38", "qrpgsrc", "qrpglesrc"],
         header_patterns: &["dcl-s", "dcl-proc", "begsr", "/free", "FQSYSPRT"],
         content_heuristics: &[r"^\s{5}[HFDICOPhfdicop]", r"dcl-(s|ds|proc|pi|pr)"],
         extension_confidence: 0.95,
@@ -40,7 +40,7 @@ pub static SIGNATURES: &[LanguageSignature] = &[
     },
     LanguageSignature {
         language_id: "dds",
-        extensions: &["dds", "pf", "lf", "dspf", "prtf", "icff"],
+        extensions: &["dds", "pf", "lf", "dspf", "prtf", "icff", "qddssrc"],
         header_patterns: &["PFILE(", "JFILE(", "SFLCTL(", "UNIQUE", "COLHDG(", "TEXT("],
         content_heuristics: &[r"^\s{5}A\s{10}R\s", r"PFILE\(\w+\)", r"SFLCTL\(\w+\)"],
         extension_confidence: 0.92,
@@ -48,7 +48,7 @@ pub static SIGNATURES: &[LanguageSignature] = &[
     },
     LanguageSignature {
         language_id: "cl",
-        extensions: &["clp", "clle", "cl"],
+        extensions: &["clp", "clle", "cl", "qclsrc", "qcsrc"],
         header_patterns: &["PGM", "ENDPGM", "CHGVAR", "SNDPGMMSG", "OVRDBF"],
         content_heuristics: &[r"^\s+DCL\s+VAR\(", r"CALL\s+PGM\("],
         extension_confidence: 0.85,

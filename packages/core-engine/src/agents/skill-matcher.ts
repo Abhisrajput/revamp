@@ -57,7 +57,7 @@ function scoreSkillKeywords(agentSkills: Skill[], taskKeywords: string[]): { sco
     const skillWeight = skill.weight * profMult;
     totalWeight += skillWeight;
 
-    const matched = skill.keywords.some((kw) =>
+    const matched = (skill.keywords ?? []).some((kw) =>
       lowerKeywords.some((q) => kw.includes(q) || q.includes(kw))
     );
 
@@ -146,10 +146,11 @@ function scoreAgentForTask(
   if (agent.hiddenAt) return null;
 
   // Check minimum proficiency if required
+  const skills = agent.skills ?? [];
   if (task.minProficiency) {
     const minScore = MIN_PROFICIENCY_SCORES[task.minProficiency] ?? 0;
     const bestProficiency = Math.max(
-      ...agent.skills.map((s) => PROFICIENCY_SCORES[s.proficiency] ?? 0),
+      ...skills.map((s) => PROFICIENCY_SCORES[s.proficiency] ?? 0),
       0,
     );
     if (bestProficiency < minScore) return null;
@@ -158,7 +159,7 @@ function scoreAgentForTask(
   const reasons: string[] = [];
 
   // Score each dimension
-  const skillResult = scoreSkillKeywords(agent.skills, task.keywords);
+  const skillResult = scoreSkillKeywords(skills, task.keywords);
   const techResult = scoreTechStack(agent.techStack, task.techStack, agent.legacyExpertise);
   const stageScore = scoreStagePermission(agent.stagePermissions, task.stageName);
   const availScore = scoreAvailability(agent);

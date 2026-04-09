@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
+import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { usePipelineStore, canExecuteStage } from '@/lib/stores/pipeline-store';
 import { cn } from '@/lib/utils';
 import { TabFallback } from './tab-fallback';
@@ -129,7 +130,7 @@ export default function SpecLockPanel({
   streamingText,
   onExecute,
   isExecuting,
-  onRefineRequest,
+  onRefineRequest: _onRefineRequest,
 }: StagePanelProps) {
   const logs = usePipelineStore((s) => s.logs);
   const stages = usePipelineStore((s) => s.stages);
@@ -203,6 +204,12 @@ export default function SpecLockPanel({
       {/* During execution */}
       {isRunning && (
         <>
+          <AgentBotGrid
+            subtasks={stage.subtasks}
+            overallProgress={stage.subtaskProgress}
+            message="Locking behavioral contracts..."
+            subtitle="Generating BDD scenarios from business rules"
+          />
           {streamingText && <StageOutput output={streamingText} isStreaming />}
           {logs.length > 0 && <TerminalLog logs={logs} title="Spec Lock Activity" />}
         </>

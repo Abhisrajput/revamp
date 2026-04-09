@@ -11,10 +11,9 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { BreeOutputTab } from '@/components/pipeline/bree-output-tab';
-import { RefinableMarkdown } from '@/components/pipeline/refinable-markdown';
-import { SubtaskProgressList } from '@/components/pipeline/subtask-progress-list';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
+import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { usePipelineStore, canExecuteStage, getStageBlockReason, shouldShowApprovalGate } from '@/lib/stores/pipeline-store';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
@@ -182,6 +181,12 @@ function ScanOutputLoader({ stageIndex }: { stageIndex: number }) {
         const stage = store.stages[stageIndex];
         if (!stage || stage.output) return; // Already loaded
 
+        // Don't fetch artifacts for stages that haven't been executed yet
+        if (stage.status === 'idle' || stage.status === 'pending') {
+          setLoading(false);
+          return;
+        }
+
         const res = await apiClient.get(`/pipeline/${pipelineRunId}/artifacts/${stage.name}`);
         if (cancelled) return;
 
@@ -248,7 +253,7 @@ export default function ScanPanel({
   onExecute,
   isExecuting,
   currentPhase,
-  onRefineRequest,
+  onRefineRequest: _onRefineRequest,
 }: StagePanelProps) {
   const logs = usePipelineStore((s) => s.logs);
   const stages = usePipelineStore((s) => s.stages);
@@ -258,7 +263,7 @@ export default function ScanPanel({
   // Show post-clone view if project has files (clone worked) — even if LLM analysis failed
   const projectHasFiles = !!(project?.folder_structure && (project.folder_structure as any[]).length > 0);
   const wasExecuted = isCompleted || projectHasFiles || (stage.status === 'failed' && hasOutput);
-  const canExecute = (stage.status === 'pending' || stage.status === 'failed' || stage.status === 'completed' || stage.status === 'in_progress') && !isExecuting && canExecuteStage(stages, stageIndex);
+  const canExecute = (stage.status === 'pending' || stage.status === 'failed' || stage.status === 'completed' || stage.status === 'generating') && !isExecuting && canExecuteStage(stages, stageIndex);
   // Show post-clone view if stage was executed (even if output is still loading from API)
   const [showForm, setShowForm] = useState(!wasExecuted);
 
@@ -824,21 +829,17 @@ export default function ScanPanel({
         </>
       )}
 
-      {/* During execution: progress + subtask timeline + streaming + stop */}
+      {/* During execution: agent bot grid + streaming + stop */}
       {isRunning && (
         <>
-          {/* Execution progress — stop button is in the header bar */}
-          <div className="flex items-center gap-2 px-1 text-sm text-slate-600 dark:text-slate-400">
-            <Loader2 className="w-4 h-4 animate-spin text-primary-600" />
-            <span>
-              {currentPhase
-                ? currentPhase.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-                : 'Processing...'}
-            </span>
-          </div>
-
-          {/* Multi-agent subtask progress timeline */}
-          <SubtaskProgressList />
+          <AgentBotGrid
+            subtasks={stage.subtasks}
+            overallProgress={stage.subtaskProgress}
+            message={currentPhase
+              ? currentPhase.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+              : 'Analyzing codebase...'}
+            subtitle="Scout and specialists are inspecting the codebase"
+          />
 
           {streamingText && (
             <StageOutput output={streamingText} isStreaming />

@@ -86,3 +86,12 @@ button:disabled {
 :focus-visible {
   @apply outline-none ring-2 ring-primary-500 ring-offset-2 dark:ring-offset-slate-950;
 }
+
+/* Shimmer animation for progress bars during active work */
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.animate-shimmer {
+  animation: shimmer 1.8s linear infinite;
+}

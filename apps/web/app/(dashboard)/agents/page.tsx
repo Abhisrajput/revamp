@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useAgents, useAgentDashboard } from '@/lib/hooks/use-agents';
-import { useOrchestrator } from '@/lib/hooks/use-orchestrator';
+import { useOrchestrator, type AgentOrchestratorState, type OrchestratorState } from '@/lib/hooks/use-orchestrator';
 import { AgentCard } from '@/components/agents/agent-card';
 import { DepartmentCards } from '@/components/agents/department-cards';
 import { ControlsBar } from '@/components/agents/orchestrator/controls-bar';
@@ -151,7 +151,7 @@ export default function AgentsPage() {
               {/* Department Breakdown */}
               {dashboard && (
                 <div className="grid grid-cols-4 gap-3 mb-6">
-                  {Object.entries(dashboard.byDepartment).map(([dept, count]) => {
+                  {Object.entries(dashboard.byDepartment).map(([dept, deptData]) => {
                     const Icon = DEPT_ICONS[dept] || Brain;
                     return (
                       <button
@@ -166,7 +166,7 @@ export default function AgentsPage() {
                         <Icon className="w-4 h-4" />
                         <span className="capitalize font-medium">{dept}</span>
                         <Badge className="ml-auto bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-xs">
-                          {count}
+                          {deptData.count}
                         </Badge>
                       </button>
                     );

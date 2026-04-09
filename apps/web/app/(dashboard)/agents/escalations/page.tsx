@@ -250,7 +250,7 @@ function EscalationRow({ escalation, onApprove, onReject, approving, rejecting }
             )}
             <span className="flex items-center gap-1">
               <Clock className="w-3 h-3" />
-              {formatDate(escalation.updated_at)}
+              {formatDate(escalation.updated_at ?? escalation.created_at)}
             </span>
           </div>
 
@@ -288,7 +288,7 @@ function EscalationRow({ escalation, onApprove, onReject, approving, rejecting }
 
         {/* Time Ago */}
         <span className="text-[11px] font-mono text-slate-400 dark:text-slate-500 tabular-nums flex-shrink-0">
-          {formatRelative(escalation.updated_at)}
+          {formatRelative(escalation.updated_at ?? escalation.created_at)}
         </span>
       </div>
     </Card>

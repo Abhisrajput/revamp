@@ -28,17 +28,17 @@ export function BudgetStatus({ agent }: BudgetStatusProps) {
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const dayOfMonth = now.getDate();
   const spentCents = budget?.spentCents ?? agent.spent_monthly_cents;
-  const limitCents = budget?.limitCents ?? agent.monthly_budget_cents;
+  const limitCents = budget?.limitCents ?? agent.monthly_budget_cents ?? 0;
   const projectedCents = dayOfMonth > 0
     ? Math.round((spentCents / dayOfMonth) * daysInMonth)
     : 0;
   const projectedPct = limitCents > 0 ? projectedCents / limitCents : 0;
 
   const percentUsed = budget?.percentUsed ?? (limitCents > 0 ? spentCents / limitCents : 0);
-  const warningAt = budget?.warningAt ?? parseFloat(agent.warning_threshold);
+  const warningAt = budget?.warningAt ?? parseFloat(String(agent.warning_threshold ?? '0.8'));
   const isWarning = budget?.isWarning ?? (percentUsed >= warningAt && percentUsed < 1);
   const isExceeded = budget?.isExceeded ?? (percentUsed >= 1);
-  const hardStop = budget?.hardStop ?? agent.hard_stop_enabled;
+  const hardStop = budget?.hardStop ?? agent.hard_stop_enabled ?? false;
   const isPausedForBudget = agent.status === 'paused' && agent.pause_reason === 'budget_exceeded';
 
   const barColor = isExceeded

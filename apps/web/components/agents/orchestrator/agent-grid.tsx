@@ -47,10 +47,10 @@ export function AgentGrid({ agents }: AgentGridProps) {
 
   // Filter out agents with no activity if there are too many
   const hasActivity = sorted.filter(
-    (a) => a.status === 'working' || a.tasksCompleted > 0 || a.tasksFailed > 0 || a.tokensUsed > 0,
+    (a) => a.status === 'working' || a.tasksCompleted > 0 || (a.tasksFailed ?? 0) > 0 || (a.tokensUsed ?? 0) > 0,
   );
   const noActivity = sorted.filter(
-    (a) => a.status !== 'working' && a.tasksCompleted === 0 && a.tasksFailed === 0 && a.tokensUsed === 0,
+    (a) => a.status !== 'working' && a.tasksCompleted === 0 && (a.tasksFailed ?? 0) === 0 && (a.tokensUsed ?? 0) === 0,
   );
 
   return (
@@ -160,28 +160,28 @@ function AgentOrchestratorCard({ agent }: { agent: AgentOrchestratorState }) {
         )}
 
         {/* Progress bar */}
-        {isWorking && agent.progress > 0 && (
+        {isWorking && (agent.progress ?? 0) > 0 && (
           <div className="mb-2">
             <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400 mb-0.5">
               <span>Progress</span>
-              <span>{agent.progress}%</span>
+              <span>{agent.progress ?? 0}%</span>
             </div>
             <div className="h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
               <div
                 className={cn(
                   'h-full rounded-full transition-all duration-1000',
-                  agent.progress < 30 ? 'bg-blue-400' :
-                  agent.progress < 70 ? 'bg-primary-500' :
+                  (agent.progress ?? 0) < 30 ? 'bg-blue-400' :
+                  (agent.progress ?? 0) < 70 ? 'bg-primary-500' :
                   'bg-green-500',
                 )}
-                style={{ width: `${agent.progress}%` }}
+                style={{ width: `${agent.progress ?? 0}%` }}
               />
             </div>
           </div>
         )}
 
         {/* Real metrics for agents that have done work */}
-        {(agent.tasksCompleted > 0 || agent.tasksFailed > 0 || agent.tokensUsed > 0) && (
+        {(agent.tasksCompleted > 0 || (agent.tasksFailed ?? 0) > 0 || (agent.tokensUsed ?? 0) > 0) && (
           <div className="flex items-center gap-3 mt-2 pt-2 border-t border-slate-200/50 dark:border-slate-700/30">
             {agent.tasksCompleted > 0 && (
               <span className="flex items-center gap-0.5 text-[10px] text-green-500">
@@ -189,24 +189,24 @@ function AgentOrchestratorCard({ agent }: { agent: AgentOrchestratorState }) {
                 {agent.tasksCompleted}
               </span>
             )}
-            {agent.tasksFailed > 0 && (
+            {(agent.tasksFailed ?? 0) > 0 && (
               <span className="flex items-center gap-0.5 text-[10px] text-red-400">
                 <XCircle className="w-3 h-3" />
                 {agent.tasksFailed}
               </span>
             )}
-            {agent.tokensUsed > 0 && (
+            {(agent.tokensUsed ?? 0) > 0 && (
               <span className="flex items-center gap-0.5 text-[10px] text-slate-400">
                 <Zap className="w-3 h-3" />
-                {agent.tokensUsed >= 1000
-                  ? `${(agent.tokensUsed / 1000).toFixed(1)}K`
+                {(agent.tokensUsed ?? 0) >= 1000
+                  ? `${((agent.tokensUsed ?? 0) / 1000).toFixed(1)}K`
                   : agent.tokensUsed}
               </span>
             )}
-            {agent.totalCostCents > 0 && (
+            {(agent.totalCostCents ?? 0) > 0 && (
               <span className="flex items-center gap-0.5 text-[10px] text-slate-400">
                 <DollarSign className="w-3 h-3" />
-                ${(agent.totalCostCents / 100).toFixed(2)}
+                ${((agent.totalCostCents ?? 0) / 100).toFixed(2)}
               </span>
             )}
             {agent.lastActiveAt && (

@@ -274,8 +274,10 @@ export interface RetrievalStep {
   sourceStage: string;
   tierLoaded: ContextTier;
   tokensConsumed: number;
-  reason: 'recent_stage' | 'high_relevance' | 'budget_overflow' | 'skipped_irrelevant';
+  reason: 'recent_stage' | 'high_relevance' | 'budget_overflow' | 'skipped_irrelevant' | 'compaction_threshold';
   l0Preview?: string;
+  /** True when this step was downgraded by progressive compaction */
+  compacted?: boolean;
 }
 
 export interface RetrievalTrajectory {

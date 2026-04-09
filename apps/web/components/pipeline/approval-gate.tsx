@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, memo, useCallback } from 'react';
+import { useState, useEffect, memo, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ShieldCheck, CheckCircle, Clock, RotateCcw,
-  MessageSquare, Send, AlertTriangle, TrendingUp,
+  MessageSquare, Send, AlertTriangle, TrendingUp, Timer,
+  ChevronDown, ChevronRight, Terminal,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { Button } from '@/components/ui/button';
@@ -15,7 +16,6 @@ import {
   type StageValidation,
   type ApprovalHistoryEntry,
   DEFAULT_CONFIDENCE_THRESHOLD,
-  isApprovalBlocked,
 } from '@/lib/stores/pipeline-store';
 
 // --- Types ---
@@ -25,12 +25,62 @@ interface ApprovalGateProps {
   status: 'pending' | 'approved' | 'not_required';
   requiredRole: string;
   onApprove: (comment?: string) => void;
-  onRerun: () => void;
+  onRerun: (promptOverride?: string) => void;
   userRole: string;
   gateId?: string;
   validation?: StageValidation | null;
   confidenceThreshold?: number;
   approvalHistory?: ApprovalHistoryEntry[];
+  autoApprovalEnabled?: boolean;
+  autoApprovalTimeoutHours?: number;
+  pendingApprovalSince?: string | null;
+}
+
+// ─── Countdown Hook ─────────────────────────────────────────────
+
+function useCountdown(
+  enabled: boolean,
+  pendingApprovalSince: string | null | undefined,
+  timeoutHours: number,
+  onExpire: () => void,
+) {
+  const [remaining, setRemaining] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!enabled || !pendingApprovalSince || timeoutHours <= 0) {
+      setRemaining(null);
+      return;
+    }
+
+    const deadline = new Date(pendingApprovalSince).getTime() + timeoutHours * 3600_000;
+
+    const tick = () => {
+      const diff = deadline - Date.now();
+      if (diff <= 0) {
+        setRemaining(0);
+        onExpire();
+        return;
+      }
+      setRemaining(diff);
+    };
+
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [enabled, pendingApprovalSince, timeoutHours, onExpire]);
+
+  return remaining;
+}
+
+function formatCountdown(ms: number): string {
+  if (ms <= 0) return '0:00';
+  const totalSec = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSec / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  if (hours > 0) return `${hours}h ${mins}m ${secs}s`;
+  if (mins > 0) return `${mins}m ${secs}s`;
+  return `${secs}s`;
 }
 
 // --- Status Config ---
@@ -54,8 +104,13 @@ export const ApprovalGate = memo(function ApprovalGate({
   validation,
   confidenceThreshold = DEFAULT_CONFIDENCE_THRESHOLD,
   approvalHistory = [],
+  autoApprovalEnabled = false,
+  autoApprovalTimeoutHours = 3,
+  pendingApprovalSince,
 }: ApprovalGateProps) {
   const [comment, setComment] = useState('');
+  const [showPromptEditor, setShowPromptEditor] = useState(false);
+  const [promptDraft, setPromptDraft] = useState('');
 
   const canAct = userRole === requiredRole || userRole === 'admin' || userRole === 'developer';
   const cfg = statusConfig[status] || statusConfig.pending;
@@ -66,6 +121,20 @@ export const ApprovalGate = memo(function ApprovalGate({
 
   const hasComment = comment.trim().length > 0;
 
+  // Auto-approval countdown — fires onApprove when timer expires
+  const handleAutoApprove = useCallback(() => {
+    if (status === 'pending' && !belowThreshold) {
+      onApprove('Auto-approved after timeout');
+    }
+  }, [status, belowThreshold, onApprove]);
+
+  const remaining = useCountdown(
+    autoApprovalEnabled && status === 'pending',
+    pendingApprovalSince,
+    autoApprovalTimeoutHours,
+    handleAutoApprove,
+  );
+
   const handleApprove = useCallback(() => {
     if (belowThreshold || !hasComment) return;
     onApprove(comment.trim());
@@ -74,9 +143,11 @@ export const ApprovalGate = memo(function ApprovalGate({
 
   const handleRerun = useCallback(() => {
     if (!hasComment) return;
-    onRerun();
+    onRerun(promptDraft.trim() || undefined);
     setComment('');
-  }, [onRerun, hasComment]);
+    setPromptDraft('');
+    setShowPromptEditor(false);
+  }, [onRerun, hasComment, promptDraft]);
 
   return (
     <Card className="border-dashed">
@@ -113,6 +184,20 @@ export const ApprovalGate = memo(function ApprovalGate({
               <strong>Confidence Gate:</strong> {score}%
               {' '}(required: {confidenceThreshold}%)
               {belowThreshold && ' — Re-run to improve score before approving'}
+            </span>
+          </div>
+        )}
+
+        {/* Auto-approval countdown timer */}
+        {autoApprovalEnabled && status === 'pending' && remaining !== null && remaining > 0 && (
+          <div className="mt-3 flex items-center gap-2 rounded-lg border border-cyan-200 dark:border-cyan-800/40 bg-cyan-50 dark:bg-cyan-950/20 px-3 py-2 text-xs text-cyan-700 dark:text-cyan-400">
+            <Timer className="w-4 h-4 shrink-0 animate-pulse" />
+            <span>
+              <strong>Auto-approval in:</strong>{' '}
+              <span className="font-mono">{formatCountdown(remaining)}</span>
+              {belowThreshold && (
+                <span className="text-red-500 ml-1">(blocked — confidence below threshold)</span>
+              )}
             </span>
           </div>
         )}
@@ -158,6 +243,31 @@ export const ApprovalGate = memo(function ApprovalGate({
             {!hasComment && (
               <p className="text-[10px] text-amber-500">A comment is required to approve or re-run.</p>
             )}
+
+            {/* Prompt editor toggle for re-run with edited prompt */}
+            <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowPromptEditor(!showPromptEditor)}
+                className="flex items-center gap-2 w-full px-3 py-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+              >
+                {showPromptEditor ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                <Terminal className="w-3 h-3" />
+                Edit prompt before re-running
+              </button>
+              {showPromptEditor && (
+                <div className="px-3 pb-2">
+                  <textarea
+                    value={promptDraft}
+                    onChange={(e) => setPromptDraft(e.target.value)}
+                    placeholder="Enter a custom prompt override for this re-run... Leave empty to use the default prompt."
+                    rows={4}
+                    className="w-full text-xs rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-mono leading-relaxed p-2 resize focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+                  />
+                </div>
+              )}
+            </div>
+
             <div className="flex items-center justify-end gap-2">
               <Button
                 size="sm"
@@ -167,7 +277,7 @@ export const ApprovalGate = memo(function ApprovalGate({
                 className="gap-1"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
-                Re-run Stage
+                {promptDraft.trim() ? 'Re-run with Edited Prompt' : 'Re-run Stage'}
               </Button>
               <Button
                 size="sm"

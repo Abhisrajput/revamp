@@ -33,17 +33,20 @@ export function scoreSectionCompleteness(
   const missing: string[] = [];
 
   for (const heading of requiredHeadings) {
-    // Match heading lines (## Heading) AND bold lines (**Heading**)
-    const headingPattern = new RegExp(`^#{1,3}\\s*(?:\\d+\\.?\\s*)?${escapeRegex(heading)}`, 'im');
-    const boldPattern = new RegExp(`^\\*\\*${escapeRegex(heading)}\\*\\*`, 'im');
+    // Match heading lines that CONTAIN the required text (fuzzy — handles "Section 1: Business Rules Inventory")
+    const escaped = escapeRegex(heading);
+    const headingPattern = new RegExp(`^#{1,3}\\s+.*${escaped}`, 'im');
+    const boldPattern = new RegExp(`^\\*\\*.*${escaped}.*\\*\\*`, 'im');
     const match = headingPattern.exec(output) || boldPattern.exec(output);
     if (!match) {
       missing.push(heading);
       continue;
     }
-    // Extract section until next heading
+    // Extract section until next same-level or higher heading (## stops at ##, not ###)
+    const matchLevel = (match[0].match(/^#+/) || ['##'])[0].length;
     const start = match.index + match[0].length;
-    const next = output.slice(start).search(/^#{1,3}\s/m);
+    const nextPattern = new RegExp(`^#{1,${matchLevel}}\\s`, 'm');
+    const next = output.slice(start).search(nextPattern);
     const body = next === -1 ? output.slice(start) : output.slice(start, start + next);
     const words = body.split(/\s+/).filter(Boolean).length;
     if (words < minWordsPerSection) {
@@ -110,7 +113,7 @@ export function scoreCrossStageReferences(
   output: string,
   args: { priorStageKeywords: string[] },
 ): CheckResult {
-  const { priorStageKeywords } = args;
+  const priorStageKeywords = args?.priorStageKeywords ?? [];
   if (priorStageKeywords.length === 0) {
     return {
       name: 'Cross-Stage References',

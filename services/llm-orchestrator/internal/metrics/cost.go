@@ -48,9 +48,12 @@ func (ct *CostTracker) RecordCost(ctx context.Context, projectID, userID, model,
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
-	// Calculate costs
-	inputCost := cost * (float64(inputTokens) / float64(inputTokens+outputTokens))
-	outputCost := cost - inputCost
+	// Calculate costs (guard against division by zero)
+	var inputCost, outputCost float64
+	if totalTokens := inputTokens + outputTokens; totalTokens > 0 {
+		inputCost = cost * (float64(inputTokens) / float64(totalTokens))
+		outputCost = cost - inputCost
+	}
 
 	// Update project-level cost
 	projectKey := fmt.Sprintf("cost:project:%s", projectID)

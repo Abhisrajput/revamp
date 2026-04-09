@@ -57,6 +57,8 @@ export interface ReviewContext {
   specs?: string;
   /** Model to use for review (defaults to cheap/fast) */
   model?: string;
+  /** BYOK credentials from project settings */
+  credentials?: import("./llm-proxy.js").ProjectCredentials;
 }
 
 // ─── REVIEW PROMPTS ─────────────────────────────────────────────
@@ -186,6 +188,7 @@ async function runReview(
   const callFn = llmProxyService.createCallFn({
     maxTokens: 2048,
     model: reviewModel,
+    credentials: ctx.credentials,
   });
 
   const prompt = stage === "behavioral_equivalence"

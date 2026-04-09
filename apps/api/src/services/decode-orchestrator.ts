@@ -37,7 +37,7 @@ import {
   DEFAULT_DECODE_SUBTASKS,
   type DecodeSubtaskType,
 } from "@revamp/core-engine";
-import { llmProxyService } from "./llm-proxy.js";
+import { llmProxyService, type ProjectCredentials } from "./llm-proxy.js";
 import {
   matchAndAssignAgent,
   recordAgentCompletion,
@@ -79,6 +79,8 @@ export interface DecodeOrchestrationOptions {
   signal?: AbortSignal;
   model?: string;
   maxTokens?: number;
+  /** BYOK credentials from project settings */
+  credentials?: ProjectCredentials;
 }
 
 interface SubtaskPlan {
@@ -243,6 +245,7 @@ export async function orchestrateDecodeStage(
             subtaskType: plan.type,
             output: result.output,
             referenceInput: opts.scanOutput?.slice(0, 6000),
+            credentials: opts.credentials,
           });
 
           (result as any).reviewScore = review.overallScore;
@@ -338,6 +341,7 @@ export async function orchestrateDecodeStage(
       }],
       recommendations: ["Re-run the DECODE stage after checking LLM connectivity"],
       contractResult: { stageName: PipelineStageName.DECODE, passed: false, completenessScore: 0, violations: [], refinementPrompt: null, hardGated: false },
+      metadata: {},
     };
 
     return {
@@ -383,6 +387,7 @@ export async function orchestrateDecodeStage(
       }],
       recommendations: ["Re-run the DECODE stage"],
       contractResult: { stageName: PipelineStageName.DECODE, passed: false, completenessScore: 0, violations: [], refinementPrompt: null, hardGated: false },
+      metadata: {},
     };
 
     return {
@@ -397,18 +402,83 @@ export async function orchestrateDecodeStage(
     };
   }
 
-  // ── STEP 4: VALIDATE COMPOSED OUTPUT ──────────────────────────
-  const contractResult = enforceContract(PipelineStageName.DECODE, composedOutput);
+  // ── STEP 4: COVERAGE GAP-FILL LOOP ─────────────────────────────
+  // Extract components from SCAN output to measure DECODE coverage.
+  // Every module/file/component from SCAN should map to at least one BR in DECODE.
+  const COVERAGE_TARGET = 0.90;
+  const MAX_GAP_FILL_ROUNDS = 3;
+
+  const scanComponents = extractScanComponents(opts.scanOutput);
   let refinementCount = 0;
+
+  if (scanComponents.length > 0) {
+    for (let round = 0; round < MAX_GAP_FILL_ROUNDS; round++) {
+      if (opts.signal?.aborted) break;
+
+      const coverage = measureDecodeCoverage(composedOutput, scanComponents);
+      emit("coverage_check" as StagePhase, {
+        message: `DECODE coverage: ${Math.round(coverage.percentage * 100)}% (${coverage.covered}/${coverage.total} components)`,
+        coverage: Math.round(coverage.percentage * 100),
+        covered: coverage.covered,
+        total: coverage.total,
+        uncovered: coverage.uncovered.slice(0, 10),
+        round: round + 1,
+      });
+
+      if (coverage.percentage >= COVERAGE_TARGET) {
+        emit("coverage_check" as StagePhase, {
+          message: `Coverage target met: ${Math.round(coverage.percentage * 100)}% ≥ ${Math.round(COVERAGE_TARGET * 100)}%`,
+        });
+        break;
+      }
+
+      // Gap-fill: ask LLM to extract business rules for uncovered components
+      emit("gap_fill" as StagePhase, {
+        message: `Gap-fill round ${round + 1}: extracting rules for ${coverage.uncovered.length} uncovered components...`,
+        uncoveredCount: coverage.uncovered.length,
+      });
+
+      try {
+        const gapPrompt = `The DECODE output is missing business rules for these components from SCAN:
+
+${coverage.uncovered.map((c, i) => `${i + 1}. ${c}`).join('\n')}
+
+For EACH missing component, extract:
+- Business Rule ID (BR-{number}, continue from existing highest)
+- Rule description in business terms
+- Source file location
+- Data entities involved
+- Complexity (Low/Medium/High)
+
+Add a "## Workflows" section if missing.
+Add a "## Technical Debt" section if missing.
+Add a "## Open Questions" section if missing.
+
+Output ONLY the new sections to append — do NOT repeat existing content.`;
+
+        const gapOutput = await refineComposition(opts, composedOutput, gapPrompt);
+        if (gapOutput && gapOutput.trim().length > 100) {
+          composedOutput = composedOutput + "\n\n" + gapOutput;
+          refinementCount++;
+        }
+      } catch {
+        // Gap-fill failed — continue with current output
+        break;
+      }
+    }
+  }
+
+  // ── STEP 5: CONTRACT VALIDATION ──────────────────────────────
+  const contractResult = await enforceContract(PipelineStageName.DECODE, composedOutput);
 
   if (!contractResult.passed && contractResult.refinementPrompt) {
     emit("refining" as StagePhase, { message: "Refining composition to meet DECODE contract..." });
     try {
       const refinedOutput = await refineComposition(opts, composedOutput, contractResult.refinementPrompt);
       composedOutput = refinedOutput;
-      refinementCount = 1;
+      refinementCount++;
 
-      const revalidation = enforceContract(PipelineStageName.DECODE, composedOutput);
+      const revalidation = await enforceContract(PipelineStageName.DECODE, composedOutput);
       if (!revalidation.passed) {
         emit("completed", {
           message: "DECODE validation has gaps but output is usable",
@@ -421,8 +491,75 @@ export async function orchestrateDecodeStage(
     }
   }
 
-  // Build FullValidationResult from the final contract check so it's persisted
-  const finalContractResult = enforceContract(PipelineStageName.DECODE, composedOutput);
+  // Build FullValidationResult — use agent-based section validation for accuracy
+  // Pass LLM function for agent-based section validation (all stages)
+  const validationAgentFn = llmProxyService.createCallFn({
+    maxTokens: 2048,
+    model: opts.model || "",
+    credentials: opts.credentials,
+  });
+  let finalContractResult = await enforceContract(PipelineStageName.DECODE, composedOutput, undefined, validationAgentFn as any);
+
+  // Upgrade section checks with LLM agent (replaces regex with semantic understanding)
+  try {
+    emit("validating" as StagePhase, { message: "Agent validating section completeness..." });
+    const agentFn = llmProxyService.createCallFn({
+      maxTokens: 2048,
+      model: opts.model || "",
+      credentials: opts.credentials,
+    });
+    // Dynamic import to avoid circular dependency — validateSectionsWithAgent is async
+    const stageContractsMod = await import("@revamp/core-engine") as any;
+    const agentValidateFn = stageContractsMod.validateSectionsWithAgent;
+    if (!agentValidateFn) throw new Error("validateSectionsWithAgent not available");
+    const agentResult = await agentValidateFn(
+      PipelineStageName.DECODE,
+      composedOutput,
+      agentFn,
+    ) as { sectionResults: Array<{ heading: string; found: boolean; quality: string; matchedHeading?: string; wordCount?: number; reasoning: string }>; score: number };
+
+    if (agentResult.sectionResults.length > 0) {
+      // Override deterministic section violations with agent results
+      const agentMissing = agentResult.sectionResults.filter((r: { found: boolean }) => !r.found);
+      const agentThin = agentResult.sectionResults.filter((r: { found: boolean; quality: string }) => r.found && r.quality === 'thin');
+
+      // Remove all deterministic missing_section violations and replace with agent findings
+      const nonSectionViolations = finalContractResult.violations.filter(v => v.type !== 'missing_section' && v.type !== 'thin_section');
+      const agentViolations = [
+        ...agentMissing.map((r: any) => ({
+          type: 'missing_section' as const,
+          severity: 'critical' as const,
+          description: `Missing required section: "${r.heading}" — ${r.reasoning}`,
+          section: r.heading,
+        })),
+        ...agentThin.map((r: any) => ({
+          type: 'thin_section' as const,
+          severity: 'major' as const,
+          description: `Section "${r.heading}" is thin (${r.wordCount ?? 0} words) — ${r.reasoning}`,
+          section: r.heading,
+          actual: r.wordCount,
+          expected: 100,
+        })),
+      ];
+
+      const allViolations = [...nonSectionViolations, ...agentViolations];
+      const agentScore = agentResult.score;
+      const patternScore = finalContractResult.completenessScore;
+      // Blend: 60% agent section score + 40% deterministic pattern score
+      const blendedScore = Math.round(agentScore * 0.6 + patternScore * 0.4);
+
+      finalContractResult = {
+        ...finalContractResult,
+        violations: allViolations,
+        completenessScore: blendedScore,
+        passed: allViolations.filter(v => v.severity === 'critical').length === 0 && blendedScore >= 70,
+        hardGated: finalContractResult.hardGated || !(allViolations.filter(v => v.severity === 'critical').length === 0 && blendedScore >= 70),
+      };
+    }
+  } catch {
+    // Agent validation failed — keep deterministic results
+  }
+
   const validationResult: import("@revamp/core-engine").FullValidationResult = {
     pipelineRunId: opts.pipelineRunId,
     stageName: PipelineStageName.DECODE,
@@ -450,6 +587,7 @@ export async function orchestrateDecodeStage(
       .filter((v) => v.severity === "critical")
       .map((v) => `Fix: ${v.description}`),
     contractResult: finalContractResult,
+    metadata: {},
   };
 
   emit("completed", {
@@ -479,6 +617,7 @@ async function runDirectorPlanning(
   const directorCallFn = llmProxyService.createCallFn({
     maxTokens: 4096,
     model: opts.model || "",
+    credentials: opts.credentials,
   });
 
   const agentRoster = await buildAgentRoster();
@@ -513,12 +652,18 @@ async function runDirectorPlanning(
   }
 
   const validTypes: Set<string> = new Set([
+    // Mandatory
     "business-rules-extraction",
     "data-flow-analysis",
     "workflow-extraction",
+    "constraints-debt-analysis",
+    // Conditional — Director adds these based on SCAN complexity
     "domain-entity-modeling",
     "integration-mapping",
-    "constraints-debt-analysis",
+    "security-auth-analysis",
+    "batch-job-analysis",
+    "ui-frontend-analysis",
+    "event-driven-analysis",
   ]);
 
   return plan
@@ -588,9 +733,10 @@ async function executeSubtask(
 
   // Create LLM call function — use project-configured maxTokens
   const decodeMaxTokens = opts.maxTokens || 32768;
-  let llmCallFn = llmProxyService.createCallFn({
+  let llmCallFn: LLMCallFn = llmProxyService.createCallFn({
     maxTokens: decodeMaxTokens,
     model: opts.model || "",
+    credentials: opts.credentials,
   });
 
   let agentExec: Awaited<ReturnType<typeof prepareAgentExecution>> | null = null;
@@ -717,7 +863,7 @@ async function executeSubtask(
   } finally {
     // Always release the agent, even if runStage() threw.
     if (agentExec) {
-      try { await agentExec.complete(); } catch { /* Non-fatal */ }
+      try { await agentExec.complete(); } catch (e) { console.error("[DecodeOrchestrator] Agent completion failed:", e); }
     }
   }
 }
@@ -757,6 +903,7 @@ async function composeResults(
   const composerCallFn = llmProxyService.createCallFn({
     maxTokens: opts.maxTokens || 32768,
     model: opts.model || "",
+    credentials: opts.credentials,
   });
 
   // Clear delta before composition — signals fresh start to frontend
@@ -788,6 +935,7 @@ async function refineComposition(
   const callFn = llmProxyService.createCallFn({
     maxTokens: opts.maxTokens || 32768,
     model: opts.model || "",
+    credentials: opts.credentials,
   });
 
   opts.onDelta?.("");
@@ -923,4 +1071,74 @@ export async function loadScanOutput(pipelineRunId: string): Promise<string | nu
   } catch {
     return null;
   }
+}
+
+// ─── DECODE COVERAGE HELPERS ──────────────────────────────────
+
+/**
+ * Extract component/module names from SCAN output for coverage measurement.
+ * Looks for table rows in component inventory, file references, and module names.
+ */
+function extractScanComponents(scanOutput: string): string[] {
+  const components = new Set<string>();
+
+  // Extract from markdown table rows (component inventory)
+  // Pattern: | name | path | type | ... |
+  const tableRows = scanOutput.match(/^\|[^|]+\|[^|]+\|/gm) || [];
+  for (const row of tableRows) {
+    const cells = row.split('|').filter(Boolean).map(c => c.trim());
+    if (cells.length >= 2 && !cells[0].includes('---') && cells[0].toLowerCase() !== 'name' && cells[0].toLowerCase() !== 'component') {
+      components.add(cells[0]);
+    }
+  }
+
+  // Extract file references (backtick-quoted paths)
+  const fileRefs = scanOutput.match(/`([a-zA-Z0-9_/\\.-]+\.[a-zA-Z]+)`/g) || [];
+  for (const ref of fileRefs) {
+    const name = ref.replace(/`/g, '').split('/').pop()?.replace(/\.\w+$/, '') || '';
+    if (name.length > 2) components.add(name);
+  }
+
+  // Extract module/class names from headings
+  const moduleHeadings = scanOutput.match(/#{2,3}\s+(?:Module|Component|Service|Class):\s*(.+)/gi) || [];
+  for (const h of moduleHeadings) {
+    const name = h.replace(/^#{2,3}\s+(?:Module|Component|Service|Class):\s*/i, '').trim();
+    if (name) components.add(name);
+  }
+
+  // Filter out generic noise
+  const noise = new Set(['id', 'name', 'type', 'path', 'status', 'description', 'version', 'table', 'index', 'key']);
+  return Array.from(components).filter(c => !noise.has(c.toLowerCase()) && c.length > 2);
+}
+
+/**
+ * Measure what percentage of SCAN components are referenced in DECODE output.
+ */
+function measureDecodeCoverage(
+  decodeOutput: string,
+  scanComponents: string[],
+): { percentage: number; covered: number; total: number; uncovered: string[] } {
+  const outputLower = decodeOutput.toLowerCase();
+  const covered: string[] = [];
+  const uncovered: string[] = [];
+
+  for (const component of scanComponents) {
+    const lower = component.toLowerCase();
+    // Check for exact match, camelCase-to-words match, and snake_case match
+    const camelWords = lower.replace(/([A-Z])/g, ' $1').trim();
+    const snakeWords = lower.replace(/_/g, ' ');
+
+    if (outputLower.includes(lower) || outputLower.includes(camelWords) || outputLower.includes(snakeWords)) {
+      covered.push(component);
+    } else {
+      uncovered.push(component);
+    }
+  }
+
+  return {
+    percentage: scanComponents.length > 0 ? covered.length / scanComponents.length : 1,
+    covered: covered.length,
+    total: scanComponents.length,
+    uncovered,
+  };
 }

@@ -2,7 +2,7 @@
 
 import { memo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { BookOpen, Plus, Tag, Code2, Layers, Globe, Wrench, Brain, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { BookOpen, Plus, Code2, Layers, Globe, Wrench, Brain, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';

@@ -4,7 +4,7 @@ import { memo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   DollarSign, ShieldAlert, CheckCircle, AlertTriangle,
-  Plus, TrendingUp, Pause, ArrowRight, Pencil, Trash2, X, Save,
+  Plus, Pause, Pencil, Trash2, X, Save,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';

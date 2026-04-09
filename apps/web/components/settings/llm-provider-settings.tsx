@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -86,6 +86,8 @@ interface LLMProviderSettingsProps {
   onDefaultEvaluatorModelChange: (model: string) => void;
   /** Called when any data changes so parent can mark dirty */
   onDirty?: () => void;
+  /** Called to trigger immediate save (for credential updates) */
+  onSaveNow?: () => void;
 }
 
 export function LLMProviderSettings({
@@ -98,6 +100,7 @@ export function LLMProviderSettings({
   defaultEvaluatorModel,
   onDefaultEvaluatorModelChange,
   onDirty,
+  onSaveNow,
 }: LLMProviderSettingsProps) {
   // ─── New provider form ─────────────────────────────────
   const [selectedPreset, setSelectedPreset] = useState('');
@@ -275,6 +278,8 @@ export function LLMProviderSettings({
     const updated = providers.map(p => p.id === id ? { ...p, api_key_encrypted: apiKeyValue } : p);
     onProvidersChange(updated);
     onDirty?.();
+    // Auto-save credential updates immediately — don't require a second "Save" click
+    setTimeout(() => onSaveNow?.(), 200);
 
     setEditingKeyId(null);
     setEditKeyValue('');

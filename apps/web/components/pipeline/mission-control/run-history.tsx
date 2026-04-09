@@ -64,7 +64,7 @@ interface RunHistoryProps {
 export const RunHistory = memo(function RunHistory({
   projectId,
   currentRunId,
-  onSelectRun,
+  onSelectRun: _onSelectRun,
   className,
 }: RunHistoryProps) {
   const { data: runs, isLoading } = useQuery<PipelineRun[]>({

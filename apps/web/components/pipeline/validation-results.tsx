@@ -15,11 +15,22 @@ interface ValidationIssue {
   description: string;
 }
 
+interface DimensionScore {
+  name: string;
+  score: number;
+  weight: number;
+  status: string;
+  message?: string;
+  reasoning?: string;
+}
+
 interface ValidationData {
   passed: boolean;
   confidenceScore: number;
   issues: ValidationIssue[];
   recommendations: string[];
+  deterministicResults?: DimensionScore[];
+  llmResults?: DimensionScore[];
   metadata?: Record<string, unknown>;
 }
 
@@ -113,6 +124,86 @@ export const ValidationResults = memo(function ValidationResults({ validation }:
               />
             </div>
           </div>
+
+          {/* Deterministic Contract Checks */}
+          {(validation.deterministicResults ?? []).length > 0 && (
+            <div className="mb-4">
+              <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
+                Deterministic Contract Checks
+              </h4>
+              <div className="space-y-1.5">
+                {(validation.deterministicResults ?? []).map((dim, i) => {
+                  const pct = Math.round((dim.score ?? 0) * 100);
+                  const passed = dim.status === 'PASS';
+                  return (
+                    <div key={i} className="flex items-center gap-2 text-xs">
+                      {passed ? (
+                        <CheckCircle className="w-3.5 h-3.5 text-green-500 shrink-0" />
+                      ) : (
+                        <XCircle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                      )}
+                      <span className="text-slate-600 dark:text-slate-300 flex-1 truncate">{dim.name}</span>
+                      <div className="w-20 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                        <div
+                          className={cn('h-full rounded-full', passed ? 'bg-green-400' : pct >= 40 ? 'bg-amber-400' : 'bg-red-400')}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      <span className={cn('font-mono w-8 text-right', passed ? 'text-green-600' : 'text-red-600')}>
+                        {pct}%
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* LLM Evaluation Dimensions */}
+          {(validation.llmResults ?? []).length > 0 && (
+            <div className="mb-4">
+              <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
+                LLM Evaluation
+              </h4>
+              <div className="space-y-1.5">
+                {(validation.llmResults ?? []).map((dim, i) => {
+                  const pct = Math.round((dim.score ?? 0) * 100);
+                  return (
+                    <div key={i}>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-slate-600 dark:text-slate-300 w-28 truncate">{dim.name}</span>
+                        <div className="flex-1 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                          <div
+                            className={cn('h-full rounded-full', pct >= 75 ? 'bg-green-400' : pct >= 50 ? 'bg-amber-400' : 'bg-red-400')}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                        <span className={cn('font-mono w-8 text-right', pct >= 70 ? 'text-green-600' : pct >= 50 ? 'text-amber-600' : 'text-red-600')}>
+                          {pct}%
+                        </span>
+                        <span className="text-slate-400 w-8 text-right text-[9px]">{Math.round((dim.weight ?? 0) * 100)}%w</span>
+                      </div>
+                      {dim.reasoning && (
+                        <p className="text-[10px] text-slate-400 ml-28 mt-0.5 leading-tight">{dim.reasoning}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Metadata (approach, ground truth, etc.) */}
+          {validation.metadata && Object.keys(validation.metadata).length > 0 && (
+            <div className="mb-4 p-2 rounded bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700">
+              <h4 className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Validation Metadata</h4>
+              <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[10px] text-slate-500">
+                {Object.entries(validation.metadata).map(([k, v]) => (
+                  <span key={k}><span className="text-slate-400">{k}:</span> {String(v)}</span>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Issue Filters */}
           {issues.length > 0 && (

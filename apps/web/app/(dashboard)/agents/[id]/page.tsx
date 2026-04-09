@@ -286,8 +286,9 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
       : { status: 'paused', pause_reason: 'Manually paused by admin' });
   };
 
-  const handleDelete = () => {
-    deleteAgent.mutate(agent.id, { onSuccess: () => router.push('/agents') });
+  const handleDelete = async () => {
+    await deleteAgent.mutate(agent.id);
+    router.push('/agents');
   };
 
   // helpers to parse JSON arrays from API (may come back as string or array)

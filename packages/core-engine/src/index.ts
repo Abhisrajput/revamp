@@ -15,6 +15,8 @@ export * from './orchestration/context-builders';
 export * from './orchestration/validation-runner';
 export * from './orchestration/stage-runner';
 export * from './orchestration/error-classifier';
+export * from './orchestration/chunked-stage-runner';
+export * from './orchestration/multi-agent-orchestrator';
 
 // Prompts
 export * from './prompts/system-prompts';

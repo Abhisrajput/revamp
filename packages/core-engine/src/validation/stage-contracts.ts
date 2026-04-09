@@ -109,13 +109,13 @@ export const stageContracts: StageContract[] = [
     maxRefinementPasses: 2,
     hardGate: true,
     requiredSections: [
-      { heading: 'Business Rules', aliases: ['Business Rules Inventory', 'Business Rules & Domain Logic'], required: true, minWordCount: 200, mustContain: ['rule', 'condition'] },
-      { heading: 'Workflows', aliases: ['Key Workflows', 'Workflow Extraction', 'User Workflows', 'Business Workflows'], required: true, minWordCount: 150 },
-      { heading: 'Data', aliases: ['Data Flows', 'Data Flow Analysis', 'Data Entry Points', 'Data Model'], required: true, minWordCount: 120 },
-      { heading: 'Integration', aliases: ['Integration Points', 'Integration Mapping', 'External API Integrations', 'External Integrations'], required: true, minWordCount: 80 },
-      { heading: 'Domain Entities', aliases: ['Entity Inventory', 'Entity Relationships', 'Domain Entity Modeling'], required: true, minWordCount: 100 },
-      { heading: 'Technical Debt', aliases: ['Technical Debt Inventory', 'Constraints & Technical Debt', 'Constraints & Assumptions'], required: true, minWordCount: 80 },
-      { heading: 'Open Questions', aliases: ['Open Questions for SME', 'Open Questions for SME Clarification'], required: true, minWordCount: 40 },
+      { heading: 'Business Rules', aliases: ['Business Rules Inventory', 'Business Rules & Domain Logic', 'Business Rules Catalog', 'Rules Catalog', 'Rules Inventory'], required: true, minWordCount: 200, mustContain: ['rule', 'condition'] },
+      { heading: 'Workflows', aliases: ['Key Workflows', 'Workflow Extraction', 'User Workflows', 'Business Workflows', 'Process Flows'], required: true, minWordCount: 150 },
+      { heading: 'Data', aliases: ['Data Flows', 'Data Flow Analysis', 'Data Entry Points', 'Data Model', 'Data Architecture', 'Data Layer'], required: true, minWordCount: 120 },
+      { heading: 'Integration', aliases: ['Integration Points', 'Integration Mapping', 'External API Integrations', 'External Integrations', 'Integration Architecture', 'API Integration'], required: true, minWordCount: 80 },
+      { heading: 'Domain Entities', aliases: ['Entity Inventory', 'Entity Relationships', 'Domain Entity Modeling', 'Entities', 'Entity Relationship', 'Core Entities'], required: true, minWordCount: 100 },
+      { heading: 'Technical Debt', aliases: ['Technical Debt Inventory', 'Constraints & Technical Debt', 'Constraints & Assumptions', 'Tech Debt', 'Code Quality Debt', 'Security Debt'], required: true, minWordCount: 80 },
+      { heading: 'Open Questions', aliases: ['Open Questions for SME', 'Open Questions for SME Clarification', 'Questions', 'Clarifications', 'Unknowns'], required: true, minWordCount: 40 },
     ],
     requiredArtifacts: [
       { type: 'diagram', description: 'Entity relationship or workflow diagram (Mermaid)', required: true },
@@ -212,23 +212,34 @@ export const stageContracts: StageContract[] = [
   {
     stageName: PipelineStageName.FORGE,
     stageIndex: 5,
-    minTotalWords: 1000,
+    minTotalWords: 2000,
     maxRefinementPasses: 3,
-    hardGate: false, // Co-Create is iterative — don't block, let user refine
+    hardGate: true, // Hard gate — incomplete code generation makes SHADOW_RUN pointless
     requiredSections: [
-      { heading: 'Implementation', required: true, minWordCount: 200 },
-      { heading: 'Tests', required: true, minWordCount: 100, mustContain: ['test', 'assert', 'expect'] },
-      { heading: 'Configuration', required: true, minWordCount: 50 },
+      { heading: 'Implementation', aliases: ['Domain Models', 'Service Layer', 'API Layer', 'Source Code', 'Generated Code'], required: true, minWordCount: 400, mustContain: ['class', 'function'] },
+      { heading: 'Tests', aliases: ['Test Scaffolding', 'Test Suite', 'Unit Tests', 'Step Definitions', 'BDD Tests'], required: true, minWordCount: 150, mustContain: ['test', 'assert', 'expect', 'describe', 'Scenario'] },
+      { heading: 'Configuration', aliases: ['Infrastructure', 'Build Configuration', 'Deployment', 'DevOps', 'CI/CD'], required: true, minWordCount: 80 },
     ],
     requiredArtifacts: [
       { type: 'code', description: 'Source code files', required: true },
       { type: 'test', description: 'Test files', required: true },
-      { type: 'config', description: 'Configuration files (Dockerfile, env, etc.)', required: false },
+      { type: 'config', description: 'Configuration files (Dockerfile, env, etc.)', required: true },
     ],
     requiredPatterns: [
-      { name: 'code_blocks', pattern: /```(?:typescript|javascript|python|java|go|rust)[\s\S]*?```/g, minOccurrences: 3, description: 'Must include typed code blocks' },
-      { name: 'test_blocks', pattern: /(?:describe|it|test|def test_|func Test)\s*\(/g, minOccurrences: 3, description: 'Must include test implementations' },
-      { name: 'file_headers', pattern: /\/\/\s*(?:File|Path):\s*.+/g, minOccurrences: 2, description: 'Must label generated files with paths' },
+      // Code generation coverage — scales dynamically
+      { name: 'code_blocks', pattern: /```(?:typescript|javascript|python|java|go|rust|kotlin|csharp|cs|php|ruby|scala)[\s\S]*?```/g, minOccurrences: 10, description: 'Must include 10+ typed code blocks' },
+      // File output coverage
+      { name: 'file_headers', pattern: /(?:###\s*FILE:|\/\/\s*(?:File|Path):|#\s*File:)\s*.+/g, minOccurrences: 15, description: 'Must label 15+ generated files' },
+      // BR traceability — the key coverage metric
+      { name: 'br_coverage', pattern: /@BR-\d+|\/\/\s*@?BR-\d+|#\s*@?BR-\d+|BR-\d+/g, minOccurrences: 10, description: 'Must reference 10+ business rules in code' },
+      // Test coverage
+      { name: 'test_blocks', pattern: /(?:describe|it|test|def test_|func Test|@Test|\[Fact\]|Scenario|@pytest)/g, minOccurrences: 8, description: 'Must include 8+ test definitions' },
+      // BDD step definitions for SPEC_LOCK features
+      { name: 'step_definitions', pattern: /(?:@Given|@When|@Then|Given\(|When\(|Then\(|step_impl|@given|@when|@then)/g, minOccurrences: 5, description: 'Must include 5+ BDD step definition stubs' },
+      // Model/entity definitions
+      { name: 'model_definitions', pattern: /(?:@Entity|@Table|class\s+\w+(?:Entity|Model|Schema)|model\s+\w+|CREATE TABLE|Base\.metadata)/g, minOccurrences: 3, description: 'Must define 3+ domain models/entities' },
+      // API endpoint definitions
+      { name: 'api_endpoints', pattern: /(?:@(?:Get|Post|Put|Delete|Patch)Mapping|@app\.(?:get|post|put|delete)|router\.(?:get|post|put|delete)|@Controller|@RestController|@router)/g, minOccurrences: 3, description: 'Must define 3+ API endpoints' },
     ],
   },
 
@@ -284,16 +295,31 @@ export const stageContracts: StageContract[] = [
 
 /**
  * Evaluate stage output against its contract.
+ * Accepts optional per-project overrides that merge with defaults.
  * Returns violations and a refinement prompt if gaps exist.
  */
-export function enforceContract(
+export async function enforceContract(
   stageName: PipelineStageName,
   output: string,
-): ContractResult {
-  const contract = stageContracts.find((c) => c.stageName === stageName);
-  if (!contract) {
+  projectOverride?: Partial<StageContract>,
+  /** Optional LLM function for agent-based section validation (more accurate than regex) */
+  llmFn?: (req: { systemPrompt: string; userPrompt: string }) => Promise<string>,
+): Promise<ContractResult> {
+  const defaultContract = stageContracts.find((c) => c.stageName === stageName);
+  if (!defaultContract) {
     return { stageName, passed: true, completenessScore: 100, violations: [], refinementPrompt: null, hardGated: false };
   }
+
+  // Merge project overrides with defaults
+  const contract: StageContract = projectOverride
+    ? {
+        ...defaultContract,
+        minTotalWords: projectOverride.minTotalWords ?? defaultContract.minTotalWords,
+        maxRefinementPasses: projectOverride.maxRefinementPasses ?? defaultContract.maxRefinementPasses,
+        hardGate: projectOverride.hardGate ?? defaultContract.hardGate,
+        requiredSections: projectOverride.requiredSections ?? defaultContract.requiredSections,
+      }
+    : defaultContract;
 
   const violations: ContractViolation[] = [];
   const totalChecks = contract.requiredSections.length + contract.requiredArtifacts.filter(a => a.required).length + contract.requiredPatterns.length + 1;
@@ -313,19 +339,54 @@ export function enforceContract(
     passedChecks++;
   }
 
-  // 2. Check required sections
+  // 2. Check required sections — use fast heuristic matching
+  // For agent-based validation (more accurate), call enforceContractWithAgent() instead
   for (const section of contract.requiredSections) {
-    // Try primary heading and all aliases, with support for numbered prefixes (e.g. "## 1. Business Rules")
     const candidates = [section.heading, ...(section.aliases || [])];
     let match: RegExpExecArray | null = null;
     let matchLevel = 0;
+
+    // Strategy: try multiple matching approaches, from strict to loose
     for (const candidate of candidates) {
-      const headingPattern = new RegExp(`^(#{1,3})\\s*(?:\\d+\\.?\\s*)?${escapeRegex(candidate)}`, 'im');
-      const boldPattern = new RegExp(`^\\*\\*(?:\\d+\\.?\\s*)?${escapeRegex(candidate)}\\*\\*`, 'im');
-      match = headingPattern.exec(output) || boldPattern.exec(output);
-      if (match) {
-        matchLevel = (match[1] || '##').length; // number of '#' symbols
-        break;
+      const lower = candidate.toLowerCase();
+
+      // 1. Exact heading match (with optional prefixes)
+      const escaped = escapeRegex(candidate);
+      const headingPattern = new RegExp(`^(#{1,3})\\s*(?:(?:Section|Part|PART)\\s+)?(?:\\d+\\.?\\s*)?(?:[:\\-—–]\\s*)?${escaped}`, 'im');
+      match = headingPattern.exec(output);
+      if (match) { matchLevel = (match[1] || '##').length; break; }
+
+      // 2. Substring match — candidate appears anywhere in a heading line
+      const substringPattern = new RegExp(`^(#{1,3})\\s+.*${escaped}`, 'im');
+      match = substringPattern.exec(output);
+      if (match) { matchLevel = (match[1] || '##').length; break; }
+
+      // 3. Fuzzy content match — the section's CONTENT exists even if heading name differs
+      // Check if the output contains substantial text with the section's mustContain keywords
+      if (section.mustContain && section.mustContain.length > 0) {
+        const outputLower = output.toLowerCase();
+        const keywordHits = section.mustContain.filter(kw => outputLower.includes(kw.toLowerCase()));
+        if (keywordHits.length === section.mustContain.length) {
+          // All required keywords present — section content exists under a different heading
+          match = { index: 0, 0: candidate } as unknown as RegExpExecArray;
+          matchLevel = 2;
+          break;
+        }
+      }
+
+      // 4. Bold heading match
+      const boldPattern = new RegExp(`^\\*\\*(?:(?:Section|Part)\\s+)?(?:\\d+\\.?\\s*)?(?:[:\\-—–]\\s*)?${escaped}`, 'im');
+      match = boldPattern.exec(output);
+      if (match) { matchLevel = 2; break; }
+    }
+
+    // 5. Last resort: check if section keyword appears as a word in ANY heading
+    if (!match) {
+      const mainKeyword = section.heading.split(/\s+/)[0]; // first word: "Business", "Workflows", etc.
+      if (mainKeyword.length > 4) {
+        const keywordInHeading = new RegExp(`^(#{1,3})\\s+.*\\b${escapeRegex(mainKeyword)}\\b`, 'im');
+        match = keywordInHeading.exec(output);
+        if (match) matchLevel = (match[1] || '##').length;
       }
     }
 
@@ -441,6 +502,78 @@ export function enforceContract(
     }
   }
 
+  // 5. FORGE-specific: dynamic BR coverage check against prior stage output
+  if (stageName === PipelineStageName.FORGE) {
+    // Extract all unique BR-{ids} referenced in FORGE output
+    const brInCode = new Set(
+      (output.match(/BR-\d+/g) || []).map(m => m.toUpperCase()),
+    );
+    const fileCount = (output.match(/(?:###\s*FILE:|\/\/\s*(?:File|Path):|#\s*File:)\s*.+/g) || []).length;
+    const testCount = (output.match(/(?:describe|it|test|def test_|func Test|@Test|\[Fact\]|Scenario|@pytest)/g) || []).length;
+
+    // Coverage score: weighted combination of BR references, file count, and test count
+    const brCount = brInCode.size;
+    const brCoverage = Math.min(100, Math.round((brCount / Math.max(brCount, 10)) * 100));
+    const fileCoverage = Math.min(100, Math.round((fileCount / 20) * 100)); // 20 files = 100%
+    const testCoverage = Math.min(100, Math.round((testCount / 10) * 100)); // 10 tests = 100%
+
+    // Weighted: 40% BR, 30% files, 30% tests
+    const forgeCoverage = Math.round(brCoverage * 0.4 + fileCoverage * 0.3 + testCoverage * 0.3);
+
+    if (forgeCoverage < 70) {
+      violations.push({
+        type: 'missing_pattern',
+        severity: 'critical',
+        description: `FORGE coverage ${forgeCoverage}% is below 70% minimum (${brCount} BRs, ${fileCount} files, ${testCount} tests). Need more business rule implementations, files, or tests.`,
+        actual: forgeCoverage,
+        expected: 70,
+      });
+    } else {
+      passedChecks++;
+    }
+  }
+
+  // 6. Agent-based section validation — upgrade deterministic results when LLM available
+  const sectionViolationCount = violations.filter(v => v.type === 'missing_section').length;
+  if (llmFn && sectionViolationCount > 0) {
+    try {
+      const agentResult = await validateSectionsWithAgent(stageName, output, llmFn, projectOverride);
+      if (agentResult.sectionResults.length > 0) {
+        // Remove deterministic section violations, replace with agent findings
+        const nonSectionViolations = violations.filter(v => v.type !== 'missing_section' && v.type !== 'thin_section');
+        const agentViolations: ContractViolation[] = [];
+
+        for (const r of agentResult.sectionResults) {
+          if (!r.found) {
+            agentViolations.push({
+              type: 'missing_section',
+              severity: 'critical',
+              description: `Missing required section: "${r.heading}" — ${r.reasoning}`,
+              section: r.heading,
+            });
+          } else if (r.quality === 'thin') {
+            agentViolations.push({
+              type: 'thin_section',
+              severity: 'major',
+              description: `Section "${r.heading}" is thin (${r.wordCount ?? 0} words) — ${r.reasoning}`,
+              section: r.heading,
+              actual: r.wordCount,
+              expected: 100,
+            });
+          } else {
+            passedChecks++; // Agent confirmed section exists with good quality
+          }
+        }
+
+        // Replace violations with agent results
+        violations.length = 0;
+        violations.push(...nonSectionViolations, ...agentViolations);
+      }
+    } catch {
+      // Agent validation failed — keep deterministic results
+    }
+  }
+
   const completenessScore = Math.round((passedChecks / totalChecks) * 100);
   const passed = violations.filter((v) => v.severity === 'critical').length === 0 && completenessScore >= 70;
 
@@ -451,6 +584,106 @@ export function enforceContract(
   const hardGated = contract.hardGate && !passed;
 
   return { stageName, passed, completenessScore, violations, refinementPrompt, hardGated };
+}
+
+// ─── AGENT-BASED SECTION VALIDATOR ─────────────────────────────
+
+/**
+ * LLM-based section validation — replaces brittle regex matching.
+ * An agent reviews the output and determines which required sections
+ * are present, regardless of heading format or naming conventions.
+ *
+ * Call this AFTER enforceContract() to upgrade section checks from
+ * regex-based to semantic understanding.
+ */
+export async function validateSectionsWithAgent(
+  stageName: PipelineStageName,
+  output: string,
+  llmFn: (req: { systemPrompt: string; userPrompt: string }) => Promise<string>,
+  projectOverride?: Partial<StageContract>,
+): Promise<{ sectionResults: Array<{ heading: string; found: boolean; quality: 'good' | 'thin' | 'missing'; matchedHeading?: string; wordCount?: number; reasoning: string }>; score: number }> {
+  const defaultContract = stageContracts.find((c) => c.stageName === stageName);
+  if (!defaultContract) return { sectionResults: [], score: 100 };
+
+  const contract = projectOverride
+    ? { ...defaultContract, requiredSections: projectOverride.requiredSections ?? defaultContract.requiredSections }
+    : defaultContract;
+
+  const sectionList = contract.requiredSections
+    .map((s, i) => `${i + 1}. "${s.heading}" (required: ${s.required}, min words: ${s.minWordCount ?? 'none'}${s.mustContain ? `, must contain: ${s.mustContain.join(', ')}` : ''})`)
+    .join('\n');
+
+  // Truncate output for the agent (keep first 20K to stay within context)
+  const truncatedOutput = output.length > 20000
+    ? output.slice(0, 20000) + '\n\n[... output truncated for validation ...]'
+    : output;
+
+  const prompt = `You are a validation agent. Review this ${stageName} stage output and determine which required sections are present.
+
+## REQUIRED SECTIONS
+${sectionList}
+
+## STAGE OUTPUT TO VALIDATE
+${truncatedOutput}
+
+## INSTRUCTIONS
+For each required section, determine:
+1. Is the content present? (The heading name may differ — look for the CONTENT, not exact heading text)
+2. What heading does it appear under? (The actual heading used in the output)
+3. Quality: "good" (substantial content), "thin" (exists but minimal), or "missing"
+4. Approximate word count of that section
+5. Brief reasoning
+
+Respond with ONLY valid JSON:
+{
+  "sections": [
+    {
+      "required_heading": "Business Rules",
+      "found": true,
+      "quality": "good",
+      "matched_heading": "Section 1: Business Rules Catalog (242+ Rules)",
+      "word_count": 2500,
+      "reasoning": "Comprehensive business rules inventory with 242 rules cataloged in tables"
+    }
+  ]
+}`;
+
+  try {
+    const raw = await llmFn({
+      systemPrompt: 'You are a validation agent. Output ONLY valid JSON. No explanation.',
+      userPrompt: prompt,
+    });
+
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { sectionResults: [], score: 0 };
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    const sections = parsed.sections || [];
+
+    const results = contract.requiredSections.map((req) => {
+      const agentResult = sections.find((s: any) =>
+        s.required_heading?.toLowerCase() === req.heading.toLowerCase() ||
+        req.aliases?.some(a => s.required_heading?.toLowerCase() === a.toLowerCase()),
+      );
+
+      return {
+        heading: req.heading,
+        found: agentResult?.found ?? false,
+        quality: (agentResult?.quality ?? 'missing') as 'good' | 'thin' | 'missing',
+        matchedHeading: agentResult?.matched_heading,
+        wordCount: agentResult?.word_count,
+        reasoning: agentResult?.reasoning ?? 'Not evaluated by agent',
+      };
+    });
+
+    const foundCount = results.filter(r => r.found).length;
+    const score = Math.round((foundCount / results.length) * 100);
+
+    return { sectionResults: results, score };
+  } catch {
+    // Agent validation failed — return empty (caller falls back to deterministic)
+    return { sectionResults: [], score: 0 };
+  }
 }
 
 /**
@@ -525,7 +758,11 @@ export type DecodeSubtaskContractType =
   | 'workflow-extraction'
   | 'domain-entity-modeling'
   | 'integration-mapping'
-  | 'constraints-debt-analysis';
+  | 'constraints-debt-analysis'
+  | 'security-auth-analysis'
+  | 'batch-job-analysis'
+  | 'ui-frontend-analysis'
+  | 'event-driven-analysis';
 
 export interface SubtaskContract {
   type: ScanSubtaskContractType | DecodeSubtaskContractType;

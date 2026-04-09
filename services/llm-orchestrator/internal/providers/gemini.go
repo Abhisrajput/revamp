@@ -184,7 +184,7 @@ func (gp *GeminiProvider) Stream(ctx context.Context, req *CompletionRequest) (<
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
-		_ = cancel // Prevent leak detection
+		defer cancel()
 	}
 
 	go func() {

@@ -17,6 +17,7 @@ const REASON_LABELS: Record<string, string> = {
   high_relevance: 'Relevant',
   budget_overflow: 'Budget cap',
   skipped_irrelevant: 'Skipped',
+  compaction_threshold: 'Compacted',
 };
 
 function TokenBudgetBar({ used, total }: { used: number; total: number }) {

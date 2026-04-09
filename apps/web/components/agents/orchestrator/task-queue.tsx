@@ -95,7 +95,7 @@ export function TaskQueue({ tasks }: TaskQueueProps) {
             </div>
 
             {/* Progress bar for active tasks */}
-            {isActive && task.progress > 0 && (
+            {isActive && (task.progress ?? 0) > 0 && (
               <div className="mt-2 h-1 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-primary-500 rounded-full transition-all duration-500"
@@ -108,7 +108,7 @@ export function TaskQueue({ tasks }: TaskQueueProps) {
             <div className="flex items-center gap-2 mt-1.5 flex-wrap">
               {task.assignedAgent && (
                 <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate">
-                  Agent: {task.assignedAgent}
+                  Agent: {task.assignedAgent.name}
                 </p>
               )}
               {(task.tokensUsed != null && task.tokensUsed > 0) && (

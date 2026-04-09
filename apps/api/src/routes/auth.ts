@@ -13,6 +13,17 @@ const OTP_EXPIRY_MS = 10 * 60 * 1000;
 /** Password reset token validity window in milliseconds (1 hour) */
 const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000;
 
+// In-memory store for password reset tokens (avoids overwriting OTP secret in DB)
+const resetTokenStore = new Map<string, { token: string; expiry: number; userId: string }>();
+
+/** Periodic cleanup of expired reset tokens (runs every 15 minutes) */
+setInterval(() => {
+  const now = Date.now();
+  for (const [email, data] of resetTokenStore) {
+    if (now > data.expiry) resetTokenStore.delete(email);
+  }
+}, 15 * 60 * 1000).unref();
+
 const SignInSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
@@ -106,6 +117,15 @@ function verifyOTP(secret: string, otp: string): boolean {
  */
 function generateResetToken(): string {
   return crypto.randomBytes(32).toString("hex");
+}
+
+/**
+ * Timing-safe string comparison to prevent timing attacks on token validation.
+ * Falls back to false when lengths differ (leaks length, but tokens are fixed-size).
+ */
+function safeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
 /**
@@ -384,7 +404,7 @@ export async function authRoutes(fastify: FastifyInstance) {
   });
 
   // ── Password Reset: Request ───────────────────────────────────
-  // Generates a reset token, stores it in otp_secret (base64-encoded JSON), sends email.
+  // Generates a reset token, stores it in the in-memory resetTokenStore, sends email.
   fastify.post<{ Body: z.infer<typeof ResetPasswordRequestSchema> }>(
     "/auth/reset-password/request",
     resetRateLimit,
@@ -405,12 +425,8 @@ export async function authRoutes(fastify: FastifyInstance) {
       const token = generateResetToken();
       const expiry = Date.now() + RESET_TOKEN_EXPIRY_MS;
 
-      // Store reset token + expiry in otp_secret field as JSON
-      const resetData = JSON.stringify({ reset_token: token, reset_expiry: expiry });
-      await db
-        .update(users)
-        .set({ otp_secret: resetData, updated_at: new Date() })
-        .where(eq(users.id, user.id));
+      // Store reset token in memory — avoids overwriting the user's OTP secret
+      resetTokenStore.set(email, { token, expiry, userId: user.id });
 
       await trySendEmail("password_reset", email, { token });
 
@@ -429,22 +445,13 @@ export async function authRoutes(fastify: FastifyInstance) {
       }
 
       const { email, token } = validation.data;
-      const user = await db.query.users.findFirst({ where: eq(users.email, email) });
 
-      if (!user || !user.otp_secret) {
-        return reply.status(400).send({ error: "Invalid or expired reset token" });
-      }
-
-      try {
-        const resetData = JSON.parse(user.otp_secret);
-        if (
-          resetData.reset_token !== token ||
-          !resetData.reset_expiry ||
-          Date.now() > resetData.reset_expiry
-        ) {
-          return reply.status(400).send({ error: "Invalid or expired reset token" });
-        }
-      } catch {
+      const resetData = resetTokenStore.get(email);
+      if (
+        !resetData ||
+        !safeCompare(resetData.token, token) ||
+        Date.now() > resetData.expiry
+      ) {
         return reply.status(400).send({ error: "Invalid or expired reset token" });
       }
 
@@ -464,35 +471,28 @@ export async function authRoutes(fastify: FastifyInstance) {
       }
 
       const { email, token, new_password } = validation.data;
-      const user = await db.query.users.findFirst({ where: eq(users.email, email) });
 
-      if (!user || !user.otp_secret) {
+      const resetData = resetTokenStore.get(email);
+      if (
+        !resetData ||
+        !safeCompare(resetData.token, token) ||
+        Date.now() > resetData.expiry
+      ) {
         return reply.status(400).send({ error: "Invalid or expired reset token" });
       }
 
-      try {
-        const resetData = JSON.parse(user.otp_secret);
-        if (
-          resetData.reset_token !== token ||
-          !resetData.reset_expiry ||
-          Date.now() > resetData.reset_expiry
-        ) {
-          return reply.status(400).send({ error: "Invalid or expired reset token" });
-        }
-      } catch {
-        return reply.status(400).send({ error: "Invalid or expired reset token" });
-      }
-
-      // Update password and clear reset token
+      // Update password — otp_secret is no longer touched by the reset flow
       const hashedNewPassword = await bcrypt.hash(new_password, BCRYPT_ROUNDS);
       await db
         .update(users)
         .set({
           password_hash: hashedNewPassword,
-          otp_secret: null, // Clear the reset token
           updated_at: new Date(),
         })
-        .where(eq(users.id, user.id));
+        .where(eq(users.id, resetData.userId));
+
+      // Remove consumed token
+      resetTokenStore.delete(email);
 
       return reply.send({ message: "Password reset successfully" });
     },
@@ -508,32 +508,24 @@ export async function authRoutes(fastify: FastifyInstance) {
       }
 
       const { email, token, new_password } = validation.data;
-      const user = await db.query.users.findFirst({ where: eq(users.email, email) });
 
-      if (!user) {
-        return reply.status(404).send({ error: "User not found" });
-      }
-
-      // Verify token if otp_secret contains reset data
-      if (user.otp_secret) {
-        try {
-          const resetData = JSON.parse(user.otp_secret);
-          if (
-            resetData.reset_token &&
-            (resetData.reset_token !== token || Date.now() > resetData.reset_expiry)
-          ) {
-            return reply.status(400).send({ error: "Invalid or expired reset token" });
-          }
-        } catch {
-          // otp_secret is not JSON — might be legacy format, proceed
-        }
+      const resetData = resetTokenStore.get(email);
+      if (
+        !resetData ||
+        !safeCompare(resetData.token, token) ||
+        Date.now() > resetData.expiry
+      ) {
+        return reply.status(400).send({ error: "Invalid or expired reset token" });
       }
 
       const hashedNewPassword = await bcrypt.hash(new_password, BCRYPT_ROUNDS);
       await db
         .update(users)
-        .set({ password_hash: hashedNewPassword, otp_secret: null })
-        .where(eq(users.id, user.id));
+        .set({ password_hash: hashedNewPassword })
+        .where(eq(users.id, resetData.userId));
+
+      // Remove consumed token
+      resetTokenStore.delete(email);
 
       return reply.send({ message: "Password reset successfully" });
     },

@@ -9,7 +9,6 @@ import { STAGE_PANEL_MAP } from '@/components/pipeline/stage-panels';
 import { useRefineSection } from '@/lib/hooks/use-refine-section';
 import type { StagePanelProps } from '@/components/pipeline/stage-panels/types';
 import type { StageState } from '@/lib/stores/pipeline-store';
-import { stageRequiresApproval } from '@/lib/stores/pipeline-store';
 
 // ─── Status Badge ───────────────────────────────────────────────
 
@@ -150,6 +149,15 @@ export const CenterPanel = memo(function CenterPanel({
             )}
           </div>
           <div className="flex items-center gap-1.5 flex-shrink-0">
+            {/* Detect "running in background" — stage is generating but local SSE is not active
+                (happens after page refresh when execution continues server-side) */}
+            {!isExecuting && (stage.status === 'generating' || stage.status === 'validating') && (
+              <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 animate-pulse">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                Running on server
+              </span>
+            )}
+
             {/* Inline action buttons */}
             {isExecuting ? (
               <button
@@ -161,25 +169,27 @@ export const CenterPanel = memo(function CenterPanel({
               </button>
             ) : (
               <>
-                {stage.status === 'pending' &&
-                  !(stageRequiresApproval(stage.name) && stage.approvalStatus === 'pending') && (
+                {/* Execute — only when stage is truly idle/pending/failed (not running on server) */}
+                {(stage.status === 'pending' || stage.status === 'idle' || stage.status === 'failed') && (
                   <button
                     onClick={() => { try { onExecute(); } catch { /* error handled by stage panel */ } }}
                     className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-primary-600 hover:bg-primary-700 text-white transition-colors"
                   >
                     <Play className="w-3 h-3" />
-                    Execute
+                    {stage.status === 'failed' ? 'Retry' : 'Execute'}
                   </button>
                 )}
-                {stage.status === 'failed' && onRerun && (
+                {/* Re-run — available after stage completed/approved (regenerate with different prompt) */}
+                {(stage.status === 'completed' || stage.status === 'approved') && onRerun && (
                   <button
                     onClick={() => { try { onRerun(); } catch { /* silent */ } }}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-amber-600 hover:bg-amber-700 text-white transition-colors"
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
                   >
                     <RotateCcw className="w-3 h-3" />
                     Re-run
                   </button>
                 )}
+                {/* Next — advance to next stage after approval */}
                 {(stage.status === 'completed' || stage.status === 'approved') && stageIndex < totalStages - 1 && onAdvance && (
                   <button
                     onClick={onAdvance}
@@ -189,7 +199,6 @@ export const CenterPanel = memo(function CenterPanel({
                     Next
                   </button>
                 )}
-                {/* Re-run moved to approval gate (requires comment) */}
               </>
             )}
 

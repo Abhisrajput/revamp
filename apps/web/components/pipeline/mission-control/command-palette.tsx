@@ -28,6 +28,7 @@ import {
   Hammer,
   PlayCircle,
   Rocket,
+  RefreshCcw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
@@ -284,6 +285,7 @@ interface ActionBuildParams {
   onStop: () => void;
   onAdvance: () => void;
   onRerun: () => void;
+  onHardRefresh: () => void;
   onStageClick: (index: number) => void;
   onToggleLeftRail: () => void;
   onToggleRightPanel: () => void;
@@ -329,6 +331,14 @@ export function buildPaletteActions(params: ActionBuildParams): PaletteAction[] 
       icon: RotateCcw,
       category: 'pipeline',
       handler: params.onRerun,
+    },
+    {
+      id: 'hard-refresh',
+      label: 'Hard Refresh — Purge Cache & Re-sync',
+      shortcut: 'Ctrl+Shift+R',
+      icon: RefreshCcw,
+      category: 'pipeline',
+      handler: params.onHardRefresh,
     },
 
     // Navigation — one per stage

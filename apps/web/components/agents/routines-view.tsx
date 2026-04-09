@@ -3,8 +3,8 @@
 import { memo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  Clock, Play, Pause, Trash2, Plus, CalendarClock,
-  Zap, CheckCircle, XCircle, RotateCcw, AlertTriangle,
+  Clock, Play, Trash2, Plus, CalendarClock,
+  Zap, CheckCircle, XCircle, RotateCcw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';

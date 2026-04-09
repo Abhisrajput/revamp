@@ -173,7 +173,7 @@ func (op *OllamaProvider) Stream(ctx context.Context, req *CompletionRequest) (<
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
-		_ = cancel
+		defer cancel()
 	}
 
 	go func() {

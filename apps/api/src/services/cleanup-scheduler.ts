@@ -16,8 +16,8 @@ import { join } from "node:path";
 
 const execAsync = promisify(exec);
 import { db } from "@/db/index.js";
-import { agentActivityLog, agentSessions } from "@/db/schema.js";
-import { lt, sql } from "drizzle-orm";
+import { agentActivityLog, agentSessions, stageRuns, pipelineRuns } from "@/db/schema.js";
+import { lt, sql, and, eq, isNull } from "drizzle-orm";
 
 // ─── CONFIG ──────────────────────────────────────────────
 
@@ -31,6 +31,20 @@ const ACTIVITY_LOG_RETENTION_DAYS = parseInt(
 );
 const SESSION_RETENTION_DAYS = parseInt(
   process.env.SESSION_RETENTION_DAYS || "90",
+  10,
+);
+// A stage_runs row is treated as orphaned only if BOTH:
+//   1. It has been "running" longer than STAGE_RUN_ORPHAN_AGE_MINUTES, AND
+//   2. There has been no log activity in STAGE_RUN_HEARTBEAT_MINUTES.
+// The age guard prevents brand-new rows from being reaped; the heartbeat guard
+// prevents long-but-active runs (e.g. DECODE with multi-round coverage gap-fill,
+// which can run 40+ minutes) from being killed mid-flight.
+const STAGE_RUN_ORPHAN_AGE_MINUTES = parseInt(
+  process.env.STAGE_RUN_ORPHAN_AGE_MINUTES || "60",
+  10,
+);
+const STAGE_RUN_HEARTBEAT_MINUTES = parseInt(
+  process.env.STAGE_RUN_HEARTBEAT_MINUTES || "10",
   10,
 );
 const MAX_NEXT_CACHE_MB = parseInt(
@@ -68,8 +82,17 @@ export function startCleanupScheduler(logger?: {
     `Cleanup scheduler started (interval: ${CLEANUP_INTERVAL_MS / 1000}s)`,
   );
 
-  // Run once on startup after a longer delay to avoid interfering with
-  // the critical startup path (Redis connect, route registration, etc.)
+  // Immediately reap orphaned stage_runs left over from a previous server
+  // crash/restart. This is fast (a single UPDATE) and runs before any client
+  // can ask for pipeline status, so the timer/UI never sees stale data.
+  reapOrphanedStageRuns(log).catch((err) => {
+    log.error(
+      `Startup orphaned stage_runs reap failed: ${err instanceof Error ? err.message : err}`,
+    );
+  });
+
+  // Run the broader cleanup pass after a longer delay to avoid interfering
+  // with the critical startup path (Redis connect, route registration, etc.)
   setTimeout(() => runCleanup(log), 30_000);
 
   intervalHandle = setInterval(() => runCleanup(log), CLEANUP_INTERVAL_MS);
@@ -105,6 +128,12 @@ async function runCleanup(log: {
     const dbCleaned = await cleanStaleDbRecords(log);
     if (dbCleaned > 0) {
       results.push(`cleaned ${dbCleaned} stale DB records`);
+    }
+
+    // 2b. Reap orphaned 'running' stage_runs from crashed/disconnected runs
+    const reaped = await reapOrphanedStageRuns(log);
+    if (reaped > 0) {
+      results.push(`reaped ${reaped} orphaned stage_runs`);
     }
 
     // 3. Check .next cache size
@@ -275,6 +304,109 @@ async function cleanStaleDbRecords(log: {
   }
 
   return total;
+}
+
+// ─── ORPHANED STAGE_RUNS REAPER ──────────────────────────
+//
+// A stage_runs row stays in status='running' until the SSE handler in
+// pipeline.ts marks it completed/failed. If the server crashes mid-stage,
+// or the client disconnects in a way the handler can't catch, the row
+// gets stranded. Those stale rows poison:
+//   - the elapsed timer (via the /status backfill from stage_runs.started_at)
+//   - the "is this stage running?" UI signal
+// This reaper marks any row stuck >STAGE_RUN_ORPHAN_AGE_MINUTES as aborted
+// AND clears the corresponding stage_progress JSONB entry back to 'pending'
+// so the user gets a clean slate to re-run.
+
+async function reapOrphanedStageRuns(log: {
+  info: (msg: string) => void;
+  error: (msg: string) => void;
+}): Promise<number> {
+  try {
+    // CRITICAL: stage_runs.started_at is `timestamp without time zone` populated
+    // by Postgres `NOW()`. Comparing against a JS-computed Date causes a multi-
+    // hour timezone offset that false-reaps brand-new rows. Always use SQL
+    // `NOW() - INTERVAL` so the comparison stays in DB time.
+    //
+    // A row is reaped only if it's BOTH:
+    //   - older than STAGE_RUN_ORPHAN_AGE_MINUTES (age guard)
+    //   - has NO log entries in the last STAGE_RUN_HEARTBEAT_MINUTES (heartbeat)
+    // Long-running multi-agent stages like DECODE keep streaming logs as agents
+    // execute, so they're protected from premature reaping.
+
+    // Use a single SQL query that joins stage_runs to its most recent log entry.
+    // Drizzle's chainable API gets ugly here, so just use raw SQL.
+    const result = await db.execute(sql`
+      SELECT sr.id,
+             sr.pipeline_run_id,
+             sr.stage_name
+        FROM stage_runs sr
+        LEFT JOIN LATERAL (
+          SELECT MAX(created_at) AS last_log_at
+            FROM stage_execution_logs sel
+           WHERE sel.stage_run_id = sr.id
+        ) lg ON true
+       WHERE sr.status = 'running'
+         AND sr.completed_at IS NULL
+         AND sr.started_at < NOW() - INTERVAL '${sql.raw(String(STAGE_RUN_ORPHAN_AGE_MINUTES))} minutes'
+         AND (
+           lg.last_log_at IS NULL
+           OR lg.last_log_at < NOW() - INTERVAL '${sql.raw(String(STAGE_RUN_HEARTBEAT_MINUTES))} minutes'
+         )
+    `);
+
+    // Drizzle's execute() returns { rows } for pg driver
+    const orphans = (result as unknown as { rows: Array<{ id: string; pipeline_run_id: string; stage_name: string }> }).rows
+      ?? (result as unknown as Array<{ id: string; pipeline_run_id: string; stage_name: string }>);
+    if (!orphans || orphans.length === 0) return 0;
+
+    // Mark them aborted by ID list
+    const orphanIds = orphans.map((o) => o.id);
+    await db.execute(sql`
+      UPDATE stage_runs
+         SET status = 'aborted',
+             completed_at = NOW(),
+             error_message = COALESCE(error_message, 'Auto-reaped: orphaned running row (no heartbeat for ${sql.raw(String(STAGE_RUN_HEARTBEAT_MINUTES))}+ minutes)')
+       WHERE id = ANY(${sql.raw(`ARRAY[${orphanIds.map((id) => `'${id}'`).join(",")}]::uuid[]`)})
+    `);
+
+    // Reset the matching stage_progress[stage] entries to 'pending' so the UI
+    // doesn't keep showing the stage as live. Use jsonb_set per (run, stage)
+    // pair — there's typically only a handful so the loop is fine.
+    const seen = new Set<string>();
+    for (const o of orphans) {
+      const key = `${o.pipeline_run_id}::${o.stage_name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      try {
+        await db.execute(sql`
+          UPDATE pipeline_runs
+             SET stage_progress = jsonb_set(
+                   stage_progress,
+                   ARRAY[${o.stage_name}]::text[],
+                   '{"status":"pending","progress":0}'::jsonb
+                 ),
+                 updated_at = NOW()
+           WHERE id = ${o.pipeline_run_id}
+             AND stage_progress->${o.stage_name}->>'status' = 'in_progress'
+        `);
+      } catch (err) {
+        log.error(
+          `Failed to reset stage_progress for ${o.pipeline_run_id}/${o.stage_name}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+
+    log.info(
+      `Reaped ${orphans.length} orphaned stage_runs (older than ${STAGE_RUN_ORPHAN_AGE_MINUTES}m)`,
+    );
+    return orphans.length;
+  } catch (err) {
+    log.error(
+      `reapOrphanedStageRuns failed: ${err instanceof Error ? err.message : err}`,
+    );
+    return 0;
+  }
 }
 
 // ─── CACHE SIZE CHECK ────────────────────────────────────

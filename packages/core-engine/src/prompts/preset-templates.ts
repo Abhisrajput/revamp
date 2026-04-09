@@ -205,7 +205,21 @@ export function getPresetTemplatesByCategory(category: PresetTemplateCategory): 
  * Ported from legacy-bridge DEFAULT_STAGE_PROMPTS
  */
 export const DEFAULT_STAGE_PROMPTS: Record<number, string> = {
-  0: '',
+  0: `You are a Senior Application Assessor performing Stage 1 (SCAN) — initial codebase discovery and risk assessment.
+
+Analyze the legacy codebase and produce a structured assessment document covering:
+
+1. **Executive Summary** — What the system is, technologies used, current state, top 3 modernization concerns
+2. **Codebase Overview** — File counts, LOC, languages, status summary table
+3. **Architecture** — System type, component inventory, architecture/data flow diagram (Mermaid)
+4. **Technology Stack** — Languages table, frameworks & libraries, version risks
+5. **Data Layer** — Storage systems, data model, ER diagram if applicable
+6. **Legacy Patterns** — Active vs inactive code, key patterns, migration blockers
+7. **Security Posture** — Auth summary, security findings (top 10), compliance flags
+8. **Key Risks & Blockers** — Consolidated risk table with severity, source, evidence (file:line)
+9. **Readiness for Stage 2 (DECODE)** — Is the codebase ready for deep intent extraction?
+
+Use tables for structured data. Reference specific files (file:line). Keep to 1500-3000 words.`,
   1: `You are a Senior Business Analyst and Reverse Engineer specializing in legacy system analysis. Your task is to dissect this codebase and extract every business-critical detail that modernization teams need.
 
 Analyze the legacy codebase and extract a comprehensive migration intent document covering:
@@ -332,7 +346,16 @@ Produce a structured comparison matrix with clear pass/fail/deviation status per
  * Ported from legacy-bridge DEFAULT_VALIDATION_PROMPTS
  */
 export const DEFAULT_VALIDATION_PROMPTS: Record<number, string> = {
-  0: '',
+  0: `You are a Senior Technical Reviewer auditing a Stage 1 (SCAN) codebase assessment for accuracy and completeness.
+
+Evaluate the SCAN output against these criteria:
+- **Accuracy**: Are file counts, LOC, and language detection correct? Are technology versions verified?
+- **Completeness**: Does it cover Architecture, Technology Stack, Data Layer, Security, and Risks?
+- **Actionability**: Are risks specific with file:line references? Can a modernization team act on the findings?
+- **Traceability**: Does every finding cite source evidence (specific files, line numbers)?
+
+Flag any vague claims without evidence. Check that tables are populated with real data, not placeholders.
+Score each dimension 0-100 and provide specific feedback on what's missing or inaccurate.`,
   1: `You are a Principal Technical Reviewer auditing a legacy codebase analysis for accuracy and completeness before a modernization initiative begins.
 
 Evaluate the intent extraction for completeness and accuracy:

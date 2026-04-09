@@ -57,16 +57,17 @@ func NewCircuitBreaker(registry *providers.Registry, logger *zap.Logger) *Circui
 // CanExecute checks if a request can be executed against a provider
 func (cb *CircuitBreaker) CanExecute(providerName string) bool {
 	breaker := cb.getOrCreateBreaker(providerName)
-	breaker.mu.RLock()
-	defer breaker.mu.RUnlock()
+	breaker.mu.Lock()
+	defer breaker.mu.Unlock()
 
 	switch breaker.state {
 	case StateClosed:
 		return true
 	case StateOpen:
-		// Check if timeout has elapsed
+		// Check if timeout has elapsed — transition to half-open
 		if time.Since(breaker.lastFailureTime) > breaker.config.Timeout {
-			return true // Allow half-open state
+			breaker.state = StateHalfOpen
+			return true
 		}
 		return false
 	case StateHalfOpen:

@@ -87,16 +87,16 @@ export function AgentCard({ agent }: AgentCardProps) {
         {/* Budget */}
         <BudgetBar
           spentCents={agent.spent_monthly_cents}
-          limitCents={agent.monthly_budget_cents}
-          warningThreshold={parseFloat(agent.warning_threshold)}
-          hardStop={agent.hard_stop_enabled}
+          limitCents={agent.monthly_budget_cents ?? 0}
+          warningThreshold={parseFloat(String(agent.warning_threshold ?? '0.8'))}
+          hardStop={agent.hard_stop_enabled ?? false}
           compact
         />
 
         {/* Skills count */}
         <div className="flex items-center justify-between mt-3 text-xs text-slate-500 dark:text-slate-400">
-          <span>{agent.skills.length} skills</span>
-          <span>{agent.stage_permissions.length} stages</span>
+          <span>{(agent.skills ?? []).length} skills</span>
+          <span>{(agent.stage_permissions ?? []).length} stages</span>
         </div>
       </Card>
     </Link>

@@ -18,6 +18,9 @@ import { getStageOrder, type StageOutput } from "@revamp/core-engine";
 import type { RetrievalStep, ContextTier } from "@revamp/shared-types/agent";
 import { llmProxyService } from "./llm-proxy.js";
 
+/** Trigger compaction warning at 80% of token budget (Goose pattern) */
+const COMPACTION_THRESHOLD = 0.80;
+
 // ─── TOKEN ESTIMATION ────────────────────────────────────────────
 
 /** Rough token estimate: ~4 chars per token (standard heuristic). */
@@ -75,6 +78,10 @@ interface TieredContextResult {
   outputs: StageOutput[];
   trajectory: RetrievalStep[];
   tokensUsed: number;
+  /** True when progressive compaction downgraded older stages */
+  compactionApplied?: boolean;
+  /** Number of stages downgraded during compaction */
+  stagesCompacted?: number;
 }
 
 /**
@@ -208,11 +215,66 @@ export async function loadTieredPriorContext(
     });
   }
 
+  // ── Progressive compaction (Goose pattern) ──────────────────────
+  // When token usage exceeds the compaction threshold, downgrade older
+  // L1 stages to L0 to reclaim budget for the most recent context.
+  let compactionApplied = false;
+  let stagesCompacted = 0;
+
+  if (tokensUsed / tokenBudget > COMPACTION_THRESHOLD) {
+    const pct = Math.round((tokensUsed / tokenBudget) * 100);
+    console.warn(
+      `[ContextTiering] Token budget at ${pct}% — compacting older stages`,
+    );
+
+    // Identify L1 stages that are NOT in the most recent 2
+    const recentStages = new Set<string>(orderedPrior.slice(-recentCount));
+
+    for (let i = 0; i < trajectory.length; i++) {
+      const step = trajectory[i];
+      if (step.tierLoaded !== "L1") continue;
+      if (recentStages.has(step.sourceStage)) continue;
+      if (step.reason === "skipped_irrelevant") continue;
+
+      // Check if L0 summary is available for downgrade
+      const artifact = artifactMap.get(step.sourceStage);
+      if (!artifact?.l0_summary) continue;
+
+      const l0Tokens = estimateTokens(artifact.l0_summary);
+      const savedTokens = step.tokensConsumed - l0Tokens;
+      if (savedTokens <= 0) continue;
+
+      // Downgrade the output content to L0
+      const outputIdx = outputs.findIndex(
+        (o) => o.stageName === step.sourceStage,
+      );
+      if (outputIdx >= 0) {
+        outputs[outputIdx].output = artifact.l0_summary;
+      }
+
+      // Update trajectory entry
+      trajectory[i] = {
+        ...step,
+        tierLoaded: "L0",
+        tokensConsumed: l0Tokens,
+        reason: "compaction_threshold",
+        compacted: true,
+      };
+
+      tokensUsed -= savedTokens;
+      stagesCompacted++;
+      compactionApplied = true;
+
+      // Stop compacting once we're back under the threshold
+      if (tokensUsed / tokenBudget <= COMPACTION_THRESHOLD) break;
+    }
+  }
+
   // Budget leftover: upgrade first L0 to L1 if possible
   if (tokensUsed < tokenBudget * 0.8) {
     for (let i = 0; i < trajectory.length; i++) {
       const step = trajectory[i];
-      if (step.tierLoaded !== "L0" || step.reason === "skipped_irrelevant") continue;
+      if (step.tierLoaded !== "L0" || step.reason === "skipped_irrelevant" || step.compacted) continue;
 
       const artifact = artifactMap.get(step.sourceStage);
       if (!artifact?.l1_summary) continue;
@@ -256,5 +318,5 @@ export async function loadTieredPriorContext(
     // Non-fatal: observability should never block execution
   }
 
-  return { outputs, trajectory, tokensUsed };
+  return { outputs, trajectory, tokensUsed, compactionApplied, stagesCompacted };
 }

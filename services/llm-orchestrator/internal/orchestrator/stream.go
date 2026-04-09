@@ -122,11 +122,8 @@ func (sb *SSEBridge) process() {
 
 		// Format as SSE event
 		event := sb.formatSSE(chunk)
-		select {
-		case sb.eventCh <- event:
-		default:
-			// Drop event if channel is full
-		}
+		// Block until event is consumed — never drop streaming data
+		sb.eventCh <- event
 	}
 }
 

@@ -18,8 +18,8 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { db } from "@/db/index.js";
-import { stageArtifacts, approvalGates, auditLogs, stageRuns, stageExecutionLogs, projectMembers, pipelineRuns, users, projects, modernizedFiles, traceabilityEntries } from "@/db/schema.js";
-import { eq, and, desc, inArray } from "drizzle-orm";
+import { stageArtifacts, approvalGates, auditLogs, stageRuns, stageExecutionLogs, projectMembers, pipelineRuns, users, projects, modernizedFiles, traceabilityEntries, agentSubtasks } from "@/db/schema.js";
+import { eq, and, desc, inArray, sql } from "drizzle-orm";
 import { PipelineStageName } from "@revamp/shared-types/pipeline";
 import { getStageOrder, classifyError } from "@revamp/core-engine";
 import { pipelineService } from "@/services/pipeline.js";
@@ -75,6 +75,16 @@ const ExecuteStageSchema = z.object({
   model: z.string().optional(),
   /** Override evaluator/validation model for this stage */
   evaluator_model: z.string().optional(),
+  /** Override stage prompt for this execution (re-run with edited prompt) */
+  prompt_override: z.string().optional(),
+  /** Validation feedback from previous run — injected into prompt on re-run */
+  validation_feedback: z.array(z.object({
+    name: z.string(),
+    passed: z.boolean(),
+    score: z.number(),
+    feedback: z.string(),
+    severity: z.string().optional(),
+  })).optional(),
 });
 
 const ApproveGateSchema = z.object({
@@ -111,7 +121,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { pipelineRunId: string } }>(
     "/pipeline/:pipelineRunId/history",
-    { onRequest: [fastify.authenticate] },
+    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
     async (request, reply) => {
       const { pipelineRunId } = request.params;
 
@@ -273,11 +283,195 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ error: "Pipeline run not found" });
       }
 
+      // Backfill startedAt into stage_progress so the frontend elapsed timer can
+      // resume after a page refresh. Only backfill for stages that are currently
+      // in_progress, and only use stage_runs rows that are still 'running' — this
+      // avoids picking up orphaned/aborted attempts from prior sessions which would
+      // cause the timer to show absurd values like 5+ hours.
+      const enrichedStageProgress = { ...((run.stage_progress as Record<string, any>) || {}) };
+      const inProgressStageNames = Object.entries(enrichedStageProgress)
+        .filter(([, sp]) => sp && typeof sp === "object" && (sp as any).status === "in_progress" && !(sp as any).startedAt)
+        .map(([name]) => name);
+      if (inProgressStageNames.length > 0) {
+        const runningStageRunRows = await db
+          .select({
+            stage_name: stageRuns.stage_name,
+            started_at: stageRuns.started_at,
+          })
+          .from(stageRuns)
+          .where(
+            and(
+              eq(stageRuns.pipeline_run_id, run.id),
+              eq(stageRuns.status, "running"),
+              inArray(stageRuns.stage_name, inProgressStageNames),
+            ),
+          )
+          .orderBy(desc(stageRuns.started_at));
+        const latestStartedAt: Record<string, string> = {};
+        for (const row of runningStageRunRows) {
+          if (!latestStartedAt[row.stage_name] && row.started_at) {
+            latestStartedAt[row.stage_name] = row.started_at.toISOString();
+          }
+        }
+        for (const stageName of inProgressStageNames) {
+          if (latestStartedAt[stageName]) {
+            enrichedStageProgress[stageName] = { ...enrichedStageProgress[stageName], startedAt: latestStartedAt[stageName] };
+          }
+        }
+      }
+
+      // Load subtasks for the current stage so the frontend can re-populate the
+      // bot grid + progress bar after a page refresh (the SSE director_planning
+      // events that originally created them don't replay across reloads).
+      //
+      // The Director runs in multiple "rounds": an initial planning round, then
+      // one or more coverage gap-fill rounds. Each round inserts a fresh batch
+      // of subtasks with NEW titles ("Financial Business Rules..." vs
+      // "Financial Domain Rules..."), so title-based dedup is unreliable.
+      // Instead we identify the most recent batch by clustering on created_at
+      // (rows in the same batch are inserted in a single transaction within
+      // milliseconds of each other) and return only that batch. This gives the
+      // user a stable view of the LATEST plan, not a pile of stale rounds.
+      let currentStageSubtasks: Array<{
+        id: string;
+        title: string;
+        priority: number;
+        status: string;
+        cost_cents: number;
+        type: string;
+      }> = [];
+      let currentStageProgress = {
+        total: 0,
+        completed: 0,
+        running: 0,
+        failed: 0,
+        pending: 0,
+        rounds: 0,
+      };
+      const currentStageStatus = enrichedStageProgress[run.current_stage ?? ""]?.status;
+      const isStageRunning = currentStageStatus === "in_progress";
+      if (run.current_stage && isStageRunning) { try {
+        // Only fetch subtasks when the stage is actively in_progress — not when
+        // it's pending/completed/failed, to avoid leaking stale subtask data
+        // from prior aborted runs into the UI.
+        // Use a single SQL query that joins stage_runs to scope subtasks to the
+        // CURRENT attempt only. All comparisons stay in DB time (no JS Date
+        // round-trip) to avoid the timestamp-without-timezone offset bug.
+        type SubtaskRow = {
+          id: string;
+          title: string;
+          priority: number;
+          status: string;
+          cost_cents: number;
+          created_at: Date | null;
+        };
+        const rawResult = await db.execute(sql`
+          SELECT ast.id, ast.title, ast.priority, ast.status, ast.cost_cents, ast.created_at
+            FROM agent_subtasks ast
+           WHERE ast.pipeline_run_id = ${run.id}
+             AND ast.stage_name = ${run.current_stage}
+             AND ast.created_at >= (
+               SELECT sr.started_at
+                 FROM stage_runs sr
+                WHERE sr.pipeline_run_id = ${run.id}
+                  AND sr.stage_name = ${run.current_stage}
+                ORDER BY sr.started_at DESC
+                LIMIT 1
+             )
+           ORDER BY ast.created_at DESC
+           LIMIT 200
+        `);
+        // db.execute() returns { rows: [...] } with node-postgres driver
+        const subtaskRows: SubtaskRow[] = (
+          Array.isArray(rawResult) ? rawResult : (rawResult as any).rows ?? []
+        ) as SubtaskRow[];
+
+        // Identify the most recent batch by clustering on created_at. The first
+        // row (desc order) is from the latest batch; we include every row whose
+        // created_at is within BATCH_CLUSTER_MS of it. The Director inserts a
+        // whole round in a single transaction so all rows of one batch share
+        // a created_at within ~50ms — a 2-second window is generous and safe.
+        const BATCH_CLUSTER_MS = 2000;
+        const latestBatch: typeof subtaskRows = [];
+        if (subtaskRows.length > 0) {
+          const newest = subtaskRows[0].created_at?.getTime() ?? 0;
+          for (const row of subtaskRows) {
+            const t = row.created_at?.getTime() ?? 0;
+            if (newest - t <= BATCH_CLUSTER_MS) {
+              latestBatch.push(row);
+            } else {
+              break; // rows are sorted desc, no more matches possible
+            }
+          }
+        }
+
+        // Compute OVERALL progress across all batches/rounds, deduped by title
+        // with best-status-wins. This is what the progress bar should reflect —
+        // not just the current batch — so a fresh gap-fill round doesn't reset
+        // the bar to 0% when prior rounds already completed real work.
+        const statusRank = (s: string): number => {
+          switch (s) {
+            case "completed": return 4;
+            case "in_progress": return 3;
+            case "failed": return 2;
+            case "backlog": return 1;
+            default: return 0;
+          }
+        };
+        const bestByTitle = new Map<string, typeof subtaskRows[number]>();
+        for (const row of subtaskRows) {
+          const existing = bestByTitle.get(row.title);
+          if (!existing || statusRank(row.status) > statusRank(existing.status)) {
+            bestByTitle.set(row.title, row);
+          }
+        }
+        currentStageProgress.total = bestByTitle.size;
+        for (const r of bestByTitle.values()) {
+          if (r.status === "completed") currentStageProgress.completed++;
+          else if (r.status === "in_progress") currentStageProgress.running++;
+          else if (r.status === "failed") currentStageProgress.failed++;
+          else currentStageProgress.pending++;
+        }
+        // Count distinct rounds (clusters of created_at within BATCH_CLUSTER_MS)
+        const sortedTimes = subtaskRows
+          .map((r) => r.created_at?.getTime() ?? 0)
+          .sort((a, b) => b - a);
+        if (sortedTimes.length > 0) {
+          currentStageProgress.rounds = 1;
+          for (let i = 1; i < sortedTimes.length; i++) {
+            if (sortedTimes[i - 1] - sortedTimes[i] > BATCH_CLUSTER_MS) {
+              currentStageProgress.rounds++;
+            }
+          }
+        }
+
+        currentStageSubtasks = latestBatch.map((r) => ({
+          id: r.id,
+          title: r.title,
+          priority: r.priority,
+          // Map agent_subtasks status to the frontend ScanSubtaskState union
+          //   backlog → pending; in_progress → running; completed → completed; failed → failed
+          status: r.status === "backlog"
+            ? "pending"
+            : r.status === "in_progress"
+              ? "running"
+              : r.status,
+          cost_cents: r.cost_cents,
+          type: r.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40),
+        }));
+      } catch (subtaskErr) {
+        // Non-fatal: subtask/progress features are nice-to-have.
+        // Don't let them crash the entire /status endpoint.
+        console.error("[Status] Subtask query failed:", subtaskErr);
+      } }
+
       return reply.send({
         id: run.id,
         status: run.status,
         current_stage: run.current_stage,
-        stage_progress: run.stage_progress,
+        current_stage_subtasks: currentStageSubtasks,
+        current_stage_progress: currentStageProgress,
+        stage_progress: enrichedStageProgress,
         error_message: run.error_message,
         started_at: run.started_at,
         completed_at: run.completed_at,
@@ -328,6 +522,8 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       const skipLlmEval = body.success ? body.data.skip_llm_eval : false;
       const modelOverride = body.success ? body.data.model : undefined;
       const evaluatorModelOverride = body.success ? body.data.evaluator_model : undefined;
+      const promptOverride = body.success ? body.data.prompt_override : undefined;
+      const validationFeedback = body.success ? body.data.validation_feedback : undefined;
 
       const run = await pipelineService.getPipelineRun(pipelineRunId);
       if (!run) {
@@ -355,10 +551,11 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           const priorStage = stageOrder[i];
           const priorStatus = stageProgress[priorStage]?.status;
 
-          // Only "approved" or "skipped" count as truly done.
-          // "completed" and "awaiting_approval" mean the stage finished but
-          // the human hasn't reviewed/approved yet — block the next stage.
-          if (priorStatus !== "approved" && priorStatus !== "skipped") {
+          // Allow next stage when prior stage has finished execution.
+          // "approved", "skipped", "completed", "awaiting_approval" all mean the stage has output.
+          // Approval is a review gate, not an execution gate (matches legacy-bridge pattern).
+          const doneStatuses = new Set(["approved", "skipped", "completed", "awaiting_approval"]);
+          if (!doneStatuses.has(priorStatus || "")) {
             const priorConfig = pipelineService.getStageConfig(priorStage);
 
             // Provide a clear message depending on whether the stage needs approval or hasn't run
@@ -407,6 +604,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       });
 
       let closed = false;
+      let accumulatedOutput = "";
       const sendSSE = (event: string, data: unknown) => {
         if (closed) return;
         try {
@@ -465,7 +663,9 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           message,
           detail,
           metadata: metadata ?? undefined,
-        }).catch(() => { /* non-fatal */ });
+        }).catch((err) => {
+          console.warn(`[Pipeline] Failed to persist log: ${err instanceof Error ? err.message : "unknown"}`);
+        });
       };
 
       persistLog("info", `Stage execution started (attempt ${attempt})`, "initializing");
@@ -484,13 +684,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       }
 
       try {
-        const result = await pipelineService.executeStage(
+        let result = await pipelineService.executeStage(
           pipelineRunId,
           stageName,
           templateVars,
           {
             model: modelOverride,
             evaluatorModel: evaluatorModelOverride,
+            promptOverride,
+            validationFeedback,
             onEvent: (event: { phase: string; stageName: string; stageIndex: number; data?: unknown; timestamp?: string }) => {
               sendSSE("phase", {
                 phase: event.phase,
@@ -540,11 +742,20 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
             },
             onDelta: (text: string) => {
               sendSSE("delta", { text });
+              accumulatedOutput += text;
             },
             signal: controller.signal,
             skipLlmEval,
           },
         );
+
+        // Safety net: if result.output is empty but we streamed text via onDelta,
+        // use the accumulated SSE text. This handles cases where streamCompletion
+        // loses the accumulated content (long streams, connection edge cases).
+        if (!result.output && accumulatedOutput.length > 20) {
+          console.warn(`[Pipeline] result.output empty but ${accumulatedOutput.length} chars streamed — using accumulated SSE text`);
+          result = { ...result, output: accumulatedOutput };
+        }
 
         // Build validation criteria from deterministic + LLM results for the frontend.
         // The frontend expects { passed, score, criteria[], summary } where each criterion
@@ -600,6 +811,32 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           };
         })() : null;
 
+        // Stream individual validation findings before the final result
+        if (validationPayload && validationPayload.criteria.length > 0) {
+          sendSSE("validation", {
+            phase: "validating",
+            stageName: result.stageName,
+            stageIndex: result.stageIndex,
+          });
+          for (const criterion of validationPayload.criteria) {
+            sendSSE("validation_finding", {
+              stageName: result.stageName,
+              name: criterion.name,
+              passed: criterion.passed,
+              score: criterion.score,
+              feedback: criterion.feedback,
+              severity: criterion.passed ? 'info' : criterion.score < 50 ? 'critical' : 'warning',
+            });
+          }
+        }
+
+        sendSSE("validation_result", validationPayload || {
+          passed: true,
+          confidenceScore: 100,
+          criteria: [],
+          summary: "No validation configured",
+        });
+
         sendSSE("complete", {
           stageName: result.stageName,
           stageIndex: result.stageIndex,
@@ -618,7 +855,11 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           validation_passed: result.validation?.passed ?? null,
           validation_score: result.validation?.confidenceScore ?? null,
           completed_at: new Date(),
-        }).where(eq(stageRuns.id, stageRunId)).catch(() => {});
+        }).where(eq(stageRuns.id, stageRunId)).catch((err) => {
+          const msg = err instanceof Error ? err.message : "DB operation failed";
+          persistLog("error", `Failed to update stage run record on completion: ${msg}`, "db_error");
+          console.warn(`[Pipeline] DB update failed (stage completion): ${msg}`);
+        });
 
         persistLog("info", `Stage ${result.aborted ? "aborted" : "completed"} (${result.duration}ms)`, "complete");
 
@@ -656,7 +897,11 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           error_message: rawMessage,
           error_category: classified.category,
           completed_at: new Date(),
-        }).where(eq(stageRuns.id, stageRunId)).catch(() => {});
+        }).where(eq(stageRuns.id, stageRunId)).catch((err) => {
+          const dbMsg = err instanceof Error ? err.message : "DB operation failed";
+          persistLog("error", `Failed to update stage run record on failure: ${dbMsg}`, "db_error");
+          console.warn(`[Pipeline] DB update failed (stage failure): ${dbMsg}`);
+        });
 
         persistLog("error", rawMessage, "failed", classified.category);
 
@@ -751,25 +996,62 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
   );
 
   /**
+   * GET /pipeline/:pipelineRunId/artifacts/:stage/:artifactId — Get single artifact with metadata
+   */
+  fastify.get<{ Params: { pipelineRunId: string; stage: string; artifactId: string } }>(
+    "/pipeline/:pipelineRunId/artifacts/:stage/:artifactId",
+    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    async (request, reply) => {
+      const artifact = await db.query.stageArtifacts.findFirst({
+        where: and(
+          eq(stageArtifacts.id, request.params.artifactId),
+          eq(stageArtifacts.pipeline_run_id, request.params.pipelineRunId),
+        ),
+      });
+      if (!artifact) return reply.status(404).send({ error: "Artifact not found" });
+      return reply.send(artifact);
+    },
+  );
+
+  /**
+   * DELETE /pipeline/:pipelineRunId/artifacts/:stage/:artifactId — Delete an artifact
+   */
+  fastify.delete<{ Params: { pipelineRunId: string; stage: string; artifactId: string } }>(
+    "/pipeline/:pipelineRunId/artifacts/:stage/:artifactId",
+    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    async (request, reply) => {
+      const result = await db.delete(stageArtifacts).where(
+        and(
+          eq(stageArtifacts.id, request.params.artifactId),
+          eq(stageArtifacts.pipeline_run_id, request.params.pipelineRunId),
+        ),
+      );
+      return reply.send({ message: "Artifact deleted" });
+    },
+  );
+
+  /**
    * GET /pipeline/:pipelineRunId/validation/:stage — Get validation results
    */
   fastify.get<{ Params: { pipelineRunId: string; stage: string } }>(
     "/pipeline/:pipelineRunId/validation/:stage",
     { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
     async (request, reply) => {
-      const artifact = await db.query.stageArtifacts.findFirst({
+      const artifacts = await db.query.stageArtifacts.findMany({
         where: and(
           eq(stageArtifacts.pipeline_run_id, request.params.pipelineRunId),
           eq(stageArtifacts.stage_name, request.params.stage),
           eq(stageArtifacts.artifact_type, "validation_result"),
         ),
+        orderBy: (t, { desc }) => [desc(t.created_at)],
+        limit: 1,
       });
 
-      if (!artifact) {
+      if (artifacts.length === 0) {
         return reply.status(404).send({ error: "No validation results for this stage" });
       }
 
-      return reply.send(artifact.metadata);
+      return reply.send(artifacts[0].metadata);
     },
   );
 
@@ -802,6 +1084,13 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
 
       if (!["admin", "architect", "sme"].includes(request.user.role)) {
         return reply.status(403).send({ error: "Insufficient permissions" });
+      }
+
+      // Enforce per-stage required role (admin can always approve)
+      if (request.user.role !== "admin" && gate.required_role !== request.user.role) {
+        return reply.status(403).send({
+          error: `This stage requires "${gate.required_role}" role to approve. You have "${request.user.role}".`,
+        });
       }
 
       try {
@@ -878,6 +1167,94 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       } catch (error) {
         return reply.status(400).send({
           error: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    },
+  );
+
+  /**
+   * SDK-experimental: POST /pipeline/:pipelineRunId/diagnose
+   *
+   * Runs the Claude SDK diagnostic agent against a pipeline run.
+   * The agent investigates failed/problematic runs using read-only tools
+   * and returns a structured root-cause + suggested-fixes report.
+   *
+   * NET-NEW feature — does NOT replace any existing orchestrator.
+   */
+  fastify.post<{ Params: { pipelineRunId: string } }>(
+    "/pipeline/:pipelineRunId/diagnose",
+    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    async (request, reply) => {
+      const { pipelineRunId } = request.params;
+
+      try {
+        const { runDiagnosticAgent } = await import("../services/diagnostic-agent.js");
+        const report = await runDiagnosticAgent(pipelineRunId);
+
+        writeAuditLog({
+          userId: request.user.sub,
+          action: "DIAGNOSTIC_RUN",
+          resourceType: "pipeline_run",
+          resourceId: pipelineRunId,
+          changes: {
+            status: report.status,
+            findingsCount: report.findings.length,
+            toolCalls: report.toolCallsCount,
+          },
+          ipAddress: request.ip,
+        });
+
+        return reply.send(report);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const stack = error instanceof Error ? error.stack : undefined;
+        console.error("[DiagnosticAgent] Failed:", message);
+        if (stack) console.error(stack);
+        return reply.status(500).send({
+          error: message,
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /pipeline/:pipelineRunId/generate-prompts — Regenerate tailored prompts for stages 2-8
+   *
+   * Uses SCAN output + BREE analysis + project config to generate
+   * stage-specific prompts and validation prompts.
+   */
+  fastify.post<{ Params: { pipelineRunId: string } }>(
+    "/pipeline/:pipelineRunId/generate-prompts",
+    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    async (request, reply) => {
+      const { pipelineRunId } = request.params;
+
+      try {
+        const run = await db.query.pipelineRuns.findFirst({
+          where: eq(pipelineRuns.id, pipelineRunId),
+          columns: { project_id: true },
+        });
+        if (!run) return reply.status(404).send({ error: "Pipeline run not found" });
+
+        const { generateAndSaveProjectPrompts } = await import("../services/prompt-generator.js");
+        const result = await generateAndSaveProjectPrompts(run.project_id, pipelineRunId);
+
+        writeAuditLog({
+          userId: request.user.sub,
+          action: "PROMPTS_GENERATED",
+          resourceType: "pipeline_stage",
+          resourceId: pipelineRunId,
+          changes: { stagesPopulated: result.stagesPopulated },
+          ipAddress: request.ip,
+        });
+
+        return reply.send({
+          message: `Generated tailored prompts for ${result.stagesPopulated} stages`,
+          stagesPopulated: result.stagesPopulated,
+        });
+      } catch (error) {
+        return reply.status(400).send({
+          error: error instanceof Error ? error.message : "Prompt generation failed",
         });
       }
     },
@@ -1158,7 +1535,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
     { onRequest: [fastify.authenticate] },
     async (request, reply) => {
       const { pipelineRunId, stage } = request.params;
-      await pipelineService.updateStageProgress(pipelineRunId, stage, "pending", 0);
+      await pipelineService.updateStageProgress(pipelineRunId, stage as PipelineStageName, "pending", 0);
       return reply.send({ ok: true, stage, status: "pending" });
     },
   );

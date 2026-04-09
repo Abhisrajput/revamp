@@ -4,7 +4,7 @@ import { memo, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
   Cpu, FileCode2, AlertTriangle, CheckCircle, BarChart3,
-  Network, Play, Loader2, ChevronDown, ChevronRight,
+  Network, Loader2, ChevronDown, ChevronRight,
   GitBranch, Database, Code2, Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -68,7 +68,11 @@ export const BreeOutputTab = memo(function BreeOutputTab({ stageName, className 
       });
       return res.data;
     },
-    onSuccess: (data) => setDeepData(data),
+    onSuccess: (data) => {
+      // Only store if at least one analysis returned real data
+      const hasContent = data?.analysisReport || data?.graphAnalysis || data?.languageProfile || data?.requirements;
+      if (hasContent) setDeepData(data);
+    },
   });
 
   const breeOnline = !!breeHealth;
@@ -108,7 +112,7 @@ export const BreeOutputTab = memo(function BreeOutputTab({ stageName, className 
           )}>
             {breeOnline ? 'online' : 'offline'}
           </Badge>
-          {!deepData && breeOnline && (
+          {(!deepData || deepAnalysis.isError) && breeOnline && (
             <Button
               size="sm"
               variant="outline"
@@ -574,17 +578,3 @@ function CollapsibleList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-function CollapsibleCode({ title, code }: { title: string; code: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div>
-      <button onClick={() => setOpen(!open)} className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
-        {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-        {title}
-      </button>
-      {open && (
-        <pre className="mt-1 p-2 bg-slate-900 text-slate-300 text-[10px] rounded overflow-auto max-h-48 font-mono">{code}</pre>
-      )}
-    </div>
-  );
-}

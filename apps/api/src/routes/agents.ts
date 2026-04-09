@@ -20,7 +20,7 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { resolve, join } from "path";
+import { resolve, join, sep } from "path";
 import { execSync } from "child_process";
 import { llmProxyService, type ChatMessage } from "@/services/llm-proxy.js";
 import { executeTool, getToolsForStage as getSandboxToolsForStage } from "@/services/sandbox.js";
@@ -35,6 +35,13 @@ import {
   updatePersona,
   softDeletePersona,
 } from "@/services/agent-department.js";
+import {
+  inspectShellCommand,
+  inspectFilePath,
+  inspectBranchName,
+  inspectInputLength,
+  runInspectorChain,
+} from "@/security/inspector.js";
 
 // ─── CONSTANTS ──────────────────────────────────────────────────
 
@@ -564,8 +571,19 @@ export async function agentRoutes(fastify: FastifyInstance) {
             ? repo_url.replace("https://", `https://x-access-token:${token}@`)
             : repo_url;
 
+          if (branch) {
+            const branchCheck = inspectBranchName(branch);
+            if (!branchCheck.allowed) {
+              return reply.status(400).send({ error: branchCheck.reason });
+            }
+          }
           const branchArg = branch ? `--branch ${branch}` : "";
           const cmd = `git clone --depth 1 ${branchArg} ${JSON.stringify(cloneUrl)} ${JSON.stringify(workspace)}`;
+
+          const cmdCheck = inspectShellCommand(cmd);
+          if (!cmdCheck.allowed) {
+            return reply.status(400).send({ error: cmdCheck.reason });
+          }
 
           execSync(cmd, {
             timeout: CLONE_TIMEOUT_MS,
@@ -587,11 +605,11 @@ export async function agentRoutes(fastify: FastifyInstance) {
         } else if (source_type === "upload" && files) {
           // Write uploaded files
           for (const file of files) {
-            const filePath = resolve(workspace, file.path);
-            // Prevent path traversal
-            if (!filePath.startsWith(workspace + "/") && filePath !== workspace) {
-              continue;
+            const pathCheck = inspectFilePath(file.path, workspace);
+            if (!pathCheck.allowed) {
+              continue; // skip unsafe paths
             }
+            const filePath = resolve(workspace, file.path);
             const dir = join(filePath, "..");
             if (!existsSync(dir)) {
               mkdirSync(dir, { recursive: true });

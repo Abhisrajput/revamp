@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -116,6 +117,7 @@ type RequestCredentials struct {
 	AWSSecretKey     string `json:"aws_secret_access_key,omitempty"`
 	AWSSessionToken  string `json:"aws_session_token,omitempty"`
 	AWSRegion        string `json:"aws_region,omitempty"`
+	AWSBearerToken   string `json:"aws_bearer_token,omitempty"` // Bedrock API key (never expires)
 	AnthropicAPIKey  string `json:"anthropic_api_key,omitempty"`
 	OpenAIAPIKey     string `json:"openai_api_key,omitempty"`
 	OpenAIEndpoint   string `json:"openai_endpoint,omitempty"` // for Azure OpenAI
@@ -197,6 +199,7 @@ type ProviderHealth struct {
 
 // BaseProvider provides common functionality for all providers
 type BaseProvider struct {
+	mu           sync.RWMutex
 	name         string
 	health       ProviderHealth
 	models       []string
@@ -231,6 +234,8 @@ func (bp *BaseProvider) GetModels() []string {
 
 // GetHealth returns the provider health status
 func (bp *BaseProvider) GetHealth() ProviderHealth {
+	bp.mu.RLock()
+	defer bp.mu.RUnlock()
 	bp.health.LastCheckTime = time.Now()
 	bp.health.Healthy = bp.errorCount < 5 && bp.lastError == ""
 	return bp.health
@@ -238,6 +243,8 @@ func (bp *BaseProvider) GetHealth() ProviderHealth {
 
 // RecordSuccess records a successful request
 func (bp *BaseProvider) RecordSuccess() {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
 	bp.successCount++
 	bp.errorCount = 0
 	bp.lastError = ""
@@ -245,6 +252,8 @@ func (bp *BaseProvider) RecordSuccess() {
 
 // RecordError records a failed request
 func (bp *BaseProvider) RecordError(err error) {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
 	bp.errorCount++
 	if err != nil {
 		bp.lastError = err.Error()

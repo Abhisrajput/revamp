@@ -38,3 +38,5 @@ export async function closeDatabaseConnection(): Promise<void> {
 }
 
 export type Database = typeof db;
+// Connection type compatible with both db and db.transaction() contexts
+export type DbConnection = Omit<Database, '$client'>;

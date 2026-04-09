@@ -153,10 +153,10 @@ export const Sidebar = memo(function Sidebar() {
   const router = useRouter();
   const { logout } = useAuth();
   const user = useAuthStore((s) => s.user);
-  const { theme, setTheme, resolvedTheme } = useTheme();
+  const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   const { sidebarCollapsed: collapsed, toggleSidebar } = useUIPreferencesStore();
-  const setCollapsed = (v: boolean) => { if (v !== collapsed) toggleSidebar(); };
+  void ((v: boolean) => { if (v !== collapsed) toggleSidebar(); }); // kept for future use
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
 

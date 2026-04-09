@@ -12,6 +12,7 @@ import { StageOutput } from '@/components/pipeline/stage-output';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
 import { CodeEditor } from '@/components/editor/code-editor';
+import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { usePipelineStore, canExecuteStage } from '@/lib/stores/pipeline-store';
 import { useEvolveChat } from '@/lib/hooks/use-evolve-chat';
 import { cn } from '@/lib/utils';
@@ -357,6 +358,12 @@ export default function EvolvePanel({
       {/* During execution */}
       {isRunning && (
         <>
+          <AgentBotGrid
+            subtasks={stage.subtasks}
+            overallProgress={stage.subtaskProgress}
+            message="Building evolution framework..."
+            subtitle="Designing the continuous modernization plan"
+          />
           {streamingText && <StageOutput output={streamingText} isStreaming />}
           {logs.length > 0 && <TerminalLog logs={logs} title="Evolve Activity" />}
         </>

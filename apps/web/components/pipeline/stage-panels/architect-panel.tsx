@@ -6,6 +6,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
+import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { usePipelineStore, canExecuteStage } from '@/lib/stores/pipeline-store';
 import { DynamicStageTabs } from './dynamic-stage-tabs';
 import { getStageTabConfig } from './stage-tab-configs';
@@ -68,6 +69,12 @@ export default function ArchitectPanel({
       {/* During execution */}
       {isRunning && (
         <>
+          <AgentBotGrid
+            subtasks={stage.subtasks}
+            overallProgress={stage.subtaskProgress}
+            message="Designing target architecture..."
+            subtitle="Choosing patterns and infrastructure"
+          />
           {streamingText && <StageOutput output={streamingText} isStreaming />}
           {logs.length > 0 && <TerminalLog logs={logs} title="Architect Activity" />}
         </>

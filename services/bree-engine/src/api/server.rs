@@ -3,6 +3,7 @@
 use crate::api::{handlers, streaming, openapi};
 use crate::parser::registry::ParserRegistry;
 use axum::{
+    extract::DefaultBodyLimit,
     http::HeaderValue,
     routing::{get, patch, post},
     Router,
@@ -72,7 +73,7 @@ pub fn build_router(state: SharedState) -> Router {
         // State
         .with_state(state)
         .layer(cors)
-        .layer(RequestBodyLimitLayer::new(50 * 1024 * 1024)) // 50 MB
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // Override axum's default 2MB limit
         .layer(TimeoutLayer::new(Duration::from_secs(300))) // 5-minute request timeout
         .layer(TraceLayer::new_for_http())
 }

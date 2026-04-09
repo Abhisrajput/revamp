@@ -180,7 +180,9 @@ export async function runValidation(
   const { pipelineRunId, stageName, stageOutput } = options;
 
   // If no stage prompt provided, return a pass with minimal checks
+  console.log(`[ValidationRunner] stageName=${stageName}, stagePrompt length=${options.stagePrompt?.length ?? 0}, validationPrompt length=${options.validationPrompt?.length ?? 0}`);
   if (!options.stagePrompt) {
+    console.log(`[ValidationRunner] No stagePrompt — returning minimal result`);
     return buildMinimalResult(pipelineRunId, stageName, stageOutput);
   }
 
@@ -221,6 +223,59 @@ export async function runValidation(
       description: `Term "${r.term}" from ${r.stageName} not referenced in this output`,
     }));
 
+  // Map prompt-derived requirement checks to deterministic results
+  let deterministicResults = pdResult.requirementChecks.map(rc => ({
+    type: 'requirement_check' as const,
+    name: rc.requirement.label,
+    status: rc.score >= 0.7 ? 'PASS' as const : rc.score >= 0.4 ? 'WARN' as const : 'FAIL' as const,
+    score: rc.score,
+    message: rc.found
+      ? `${rc.requirement.label}: ${Math.round(rc.score * 100)}% coverage (${rc.contentLength} words, ${rc.keywordHits}/${rc.keywordTotal} keywords)`
+      : `${rc.requirement.label}: NOT FOUND in output`,
+    weight: 1 / Math.max(pdResult.requirementChecks.length, 1),
+  }));
+
+  // Fallback: if prompt-derived extraction found no requirements, run rubric-based checks
+  if (deterministicResults.length === 0) {
+    const { runAllDeterministicChecks } = await import('../validation/deterministic-checks.js');
+    const { stageValidationRules } = await import('../validation/rubrics.js');
+    const rule = stageValidationRules.find((r: any) => r.stageName === stageName);
+    if (rule) {
+      const { results: rubricResults } = runAllDeterministicChecks(stageOutput, rule.deterministicChecks);
+      deterministicResults = rubricResults.map((r: any) => ({
+        type: r.type,
+        name: r.name,
+        status: r.status,
+        score: r.score,
+        message: r.message,
+        weight: r.weight,
+      }));
+    }
+  }
+
+  // Map LLM judge criteria → llm results
+  const llmResults = pdResult.llmJudgeCriteria.map(c => ({
+    dimension: c.name,
+    score: c.score,
+    weight: 1 / Math.max(pdResult.llmJudgeCriteria.length, 1),
+    reasoning: c.feedback,
+    suggestions: [],
+  }));
+
+  // When LLM eval is skipped and we have rubric-based deterministic results,
+  // use the deterministic aggregate as the confidence score (don't penalize
+  // for missing LLM dimensions that couldn't run).
+  if (llmResults.length === 0 && deterministicResults.length > 0) {
+    const detTotalWeight = deterministicResults.reduce((s, r) => s + (r.weight || 1), 0);
+    const detAggregate = detTotalWeight > 0
+      ? deterministicResults.reduce((s, r) => s + (r.score || 0) * (r.weight || 1), 0) / detTotalWeight
+      : 0;
+    const detScore = Math.round(detAggregate * 100);
+    if (detScore > adjustedScore) {
+      adjustedScore = detScore;
+    }
+  }
+
   // Map prompt-derived result → FullValidationResult format
   return {
     pipelineRunId,
@@ -229,26 +284,8 @@ export async function runValidation(
     passed: pdResult.passed && adjustedScore >= 55,
     confidenceScore: adjustedScore,
 
-    // Map requirement checks → deterministic results
-    deterministicResults: pdResult.requirementChecks.map(rc => ({
-      type: 'requirement_check',
-      name: rc.requirement.label,
-      status: rc.score >= 0.7 ? 'PASS' as const : rc.score >= 0.4 ? 'WARN' as const : 'FAIL' as const,
-      score: rc.score,
-      message: rc.found
-        ? `${rc.requirement.label}: ${Math.round(rc.score * 100)}% coverage (${rc.contentLength} words, ${rc.keywordHits}/${rc.keywordTotal} keywords)`
-        : `${rc.requirement.label}: NOT FOUND in output`,
-      weight: 1 / Math.max(pdResult.requirementChecks.length, 1),
-    })),
-
-    // Map LLM judge criteria → llm results
-    llmResults: pdResult.llmJudgeCriteria.map(c => ({
-      dimension: c.name,
-      score: c.score,
-      weight: 1 / Math.max(pdResult.llmJudgeCriteria.length, 1),
-      reasoning: c.feedback,
-      suggestions: [],
-    })),
+    deterministicResults,
+    llmResults,
 
     // Combine all issues
     issues: [

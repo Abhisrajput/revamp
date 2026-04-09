@@ -1,7 +1,7 @@
 'use client';
 
-import { memo, useMemo, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { memo, useMemo, useCallback, useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import {
   ShieldCheck,
@@ -44,21 +44,29 @@ interface InspectorPanelProps {
   /** Approval handlers */
   onApprove: (comment?: string) => void;
   onReject: (reason: string) => void;
-  onRerun?: () => void;
+  onRerun?: (promptOverride?: string) => void;
   /** Current user role for approval gates */
   userRole: string;
   /** Pipeline run ID for context retrieval trajectory */
   pipelineRunId?: string;
+  /** Project confidence threshold (overrides default 75%) */
+  confidenceThreshold?: number;
+  /** Auto-approval settings from project */
+  autoApprovalEnabled?: boolean;
+  autoApprovalTimeoutHours?: number;
   className?: string;
 }
 
 export const InspectorPanel = memo(function InspectorPanel({
   stage,
   onApprove,
-  onReject,
+  onReject: _onReject,
   onRerun,
   userRole,
   pipelineRunId,
+  confidenceThreshold,
+  autoApprovalEnabled,
+  autoApprovalTimeoutHours,
   className,
 }: InspectorPanelProps) {
   // Use individual selectors to avoid full-store re-renders
@@ -84,13 +92,31 @@ export const InspectorPanel = memo(function InspectorPanel({
     return 'developer';
   }, [stage.name]);
 
-  // Memoize the validation prop object to avoid re-renders of ValidationResults
+  // Fetch full validation artifact from API for detailed breakdown
+  const { data: validationArtifact } = useQuery<any>({
+    queryKey: ['validation-detail', pipelineRunId, stage.name],
+    queryFn: async () => {
+      try {
+        const res = await apiClient.get(`/pipeline/${pipelineRunId}/validation/${stage.name}`);
+        return res.data;
+      } catch {
+        // 404 is expected for stages without validation artifacts — return null silently
+        return null;
+      }
+    },
+    enabled: !!pipelineRunId && (stage.status === 'completed' || stage.status === 'approved'),
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  // Memoize the validation prop object — merge store data with API artifact for full breakdown
   const validationProp = useMemo(() => {
-    if (!stage.validation) return null;
-    const criteria = stage.validation.criteria ?? [];
+    if (!stage.validation && !validationArtifact) return null;
+    const criteria = stage.validation?.criteria ?? [];
+    const va = validationArtifact;
     return {
-      passed: stage.validation.passed,
-      confidenceScore: stage.validation.score ?? 0,
+      passed: va?.passed ?? stage.validation?.passed ?? false,
+      confidenceScore: va?.confidenceScore ?? stage.validation?.score ?? 0,
       issues: criteria
         .filter((c) => !c.passed)
         .map((c, i) => ({
@@ -99,15 +125,18 @@ export const InspectorPanel = memo(function InspectorPanel({
           title: c.name,
           description: c.feedback,
         })),
-      recommendations: stage.validation.summary
-        ? [stage.validation.summary]
-        : [],
+      recommendations: va?.recommendations ??
+        (stage.validation?.summary ? [stage.validation.summary] : []),
+      deterministicResults: va?.deterministicResults ?? [],
+      llmResults: va?.llmResults ?? [],
+      metadata: va?.metadata ?? undefined,
     };
-  }, [stage.validation]);
+  }, [stage.validation, validationArtifact]);
 
-  // Right panel is only shown when stage has completed (successfully or approved).
-  // Failed/pending/generating stages don't need review — user should re-run first.
-  const stageCompleted = stage.status === 'completed' || stage.status === 'approved';
+  // Right panel shown when stage has completed, approved, has output, validation,
+  // or the API returned validation data (covers all rehydration timing)
+  const stageCompleted = stage.status === 'completed' || stage.status === 'approved'
+    || !!stage.output || !!stage.validation || !!validationArtifact;
 
   if (!stageCompleted) {
     return (
@@ -178,11 +207,11 @@ export const InspectorPanel = memo(function InspectorPanel({
         {/* Validation Tab */}
         {inspectorTab === 'validation' && (
           <div className="space-y-4">
-            {stage.validation && validationProp ? (
+            {validationProp ? (
               <>
                 <div className="flex justify-center">
                   <ConfidenceGauge
-                    score={stage.validation.score}
+                    score={validationProp.confidenceScore}
                     size={100}
                     label="Confidence"
                   />
@@ -210,8 +239,19 @@ export const InspectorPanel = memo(function InspectorPanel({
                 onApprove={onApprove}
                 onRerun={onRerun || (() => {})}
                 userRole={userRole}
-                validation={stage.validation}
-                approvalHistory={(stage as any).approvalHistory}
+                validation={validationArtifact ? {
+                  ...stage.validation,
+                  score: validationArtifact.confidenceScore ?? stage.validation?.score ?? 0,
+                  passed: validationArtifact.passed ?? stage.validation?.passed ?? false,
+                  criteria: validationArtifact?.criteria ?? stage.validation?.criteria ?? [],
+                  summary: validationArtifact?.summary ?? stage.validation?.summary ?? '',
+                  validatedAt: validationArtifact?.validatedAt ?? stage.validation?.validatedAt ?? new Date().toISOString(),
+                } : stage.validation}
+                confidenceThreshold={confidenceThreshold}
+                approvalHistory={stage.approvalHistory}
+                autoApprovalEnabled={autoApprovalEnabled}
+                autoApprovalTimeoutHours={autoApprovalTimeoutHours}
+                pendingApprovalSince={stage.pendingApprovalSince}
               />
             ) : stage.status === 'failed' ? (
               <div className="flex flex-col items-center justify-center py-6 text-slate-400 dark:text-slate-500">
@@ -220,7 +260,7 @@ export const InspectorPanel = memo(function InspectorPanel({
                 <p className="text-xs mt-1">Re-run the stage to generate output for review.</p>
                 {onRerun && (
                   <button
-                    onClick={onRerun}
+                    onClick={() => onRerun?.()}
                     className="mt-3 px-3 py-1.5 text-xs font-medium rounded-md bg-primary-600 text-white hover:bg-primary-700 transition-colors"
                   >
                     Re-run Stage
@@ -243,43 +283,9 @@ export const InspectorPanel = memo(function InspectorPanel({
           </div>
         )}
 
-        {/* Artifacts Tab */}
+        {/* Artifacts Tab — fetches from API for persistence across navigation */}
         {inspectorTab === 'artifacts' && (
-          <div className="space-y-2">
-            {stage.artifacts.length > 0 ? (
-              stage.artifacts.map((artifact) => {
-                // Format artifact_type for display: "stage_output" → "Stage Output"
-                const displayName = artifact.name
-                  .replace(/_/g, ' ')
-                  .replace(/\b\w/g, (c) => c.toUpperCase());
-                const sizeKB = artifact.size > 0 ? `${(artifact.size / 1024).toFixed(1)} KB` : '';
-
-                return (
-                  <div
-                    key={artifact.id}
-                    className={cn(
-                      'flex items-center gap-2 p-2 rounded-lg',
-                      'border border-slate-200 dark:border-slate-700',
-                      'text-sm text-slate-700 dark:text-slate-300',
-                    )}
-                  >
-                    <FileBox className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium truncate">{displayName}</p>
-                      <p className="text-[10px] text-slate-400 dark:text-slate-500">
-                        {artifact.type}{sizeKB ? ` \u00B7 ${sizeKB}` : ''}
-                      </p>
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="flex flex-col items-center justify-center py-8 text-slate-400 dark:text-slate-500">
-                <FileBox className="w-8 h-8 mb-2 opacity-50" />
-                <p className="text-xs">No artifacts yet</p>
-              </div>
-            )}
-          </div>
+          <ArtifactsTab pipelineRunId={pipelineRunId} stageName={stage.name} />
         )}
 
         {/* Context Retrieval Tab (OpenViking) */}
@@ -373,12 +379,22 @@ function ContextRetrievalTab({
       <div className="space-y-1">
         {(trajectory.trajectory ?? []).map((step: RetrievalStep, i: number) => {
           const isSkipped = step.reason === 'skipped_irrelevant';
+          const isCompacted = step.compacted || step.reason === 'compaction_threshold';
+          const reasonLabel = {
+            recent_stage: 'Recent',
+            high_relevance: 'Relevant',
+            budget_overflow: 'Budget cap',
+            skipped_irrelevant: 'Skipped',
+            compaction_threshold: 'Compacted',
+          }[step.reason] || step.reason;
+
           return (
             <div
               key={`${step.sourceStage}-${i}`}
               className={cn(
                 'flex items-center gap-2 px-2 py-1.5 rounded text-xs',
                 isSkipped ? 'opacity-40' : '',
+                isCompacted ? 'opacity-60 border-l-2 border-amber-400' : '',
               )}
             >
               <span className={cn('px-1 py-0.5 rounded text-[9px] font-mono font-semibold', TIER_COLORS[step.tierLoaded] || TIER_COLORS.L2)}>
@@ -386,6 +402,9 @@ function ContextRetrievalTab({
               </span>
               <span className="font-mono text-slate-700 dark:text-slate-300 flex-1 truncate">
                 {step.sourceStage}
+              </span>
+              <span className="text-[10px] text-slate-400">
+                {reasonLabel}
               </span>
               <span className="text-slate-400 tabular-nums font-mono">
                 {step.tokensConsumed.toLocaleString()}
@@ -427,13 +446,6 @@ interface HistoryEntry {
   comment?: string | null;
   timestamp: string;
 }
-
-const STAGE_LABELS: Record<string, string> = {
-  SCAN: 'Setup & Configuration', DECODE: 'Intent Extraction',
-  BLUEPRINT: 'Business Capability Mining', SPEC_LOCK: 'Behavior Lock-in',
-  ARCHITECT: 'Modernization Approach', FORGE: 'Co-Create',
-  SHADOW_RUN: 'Parallel Run & Cutover', EVOLVE: 'Continuous Modernization',
-};
 
 function ExecutionTimeline({ stageName }: { stageName: string }) {
   const pipelineRunId = usePipelineStore((s) => s.currentPipelineRunId);
@@ -518,6 +530,138 @@ function ExecutionTimeline({ stageName }: { stageName: string }) {
           })}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Artifacts Tab (API-backed) ─────────────────────────────────
+
+interface ApiArtifact {
+  id: string;
+  stage_name: string;
+  artifact_type: string;
+  storage_path: string;
+  file_size: number;
+  created_at: string;
+  metadata?: Record<string, unknown>;
+}
+
+function ArtifactsTab({ pipelineRunId, stageName }: { pipelineRunId?: string; stageName: string }) {
+  const queryClient = useQueryClient();
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const { data: artifacts = [], isLoading } = useQuery<ApiArtifact[]>({
+    queryKey: ['artifacts', pipelineRunId, stageName],
+    queryFn: async () => {
+      const res = await apiClient.get(`/pipeline/${pipelineRunId}/artifacts/${stageName}`);
+      return (Array.isArray(res.data) ? res.data : res.data?.artifacts || []);
+    },
+    enabled: !!pipelineRunId,
+    staleTime: 15_000,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (artifactId: string) => {
+      await apiClient.delete(`/pipeline/${pipelineRunId}/artifacts/${stageName}/${artifactId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['artifacts', pipelineRunId, stageName] });
+    },
+  });
+
+  const { data: expandedArtifact } = useQuery<ApiArtifact>({
+    queryKey: ['artifact-detail', expandedId],
+    queryFn: async () => {
+      const res = await apiClient.get(`/pipeline/${pipelineRunId}/artifacts/${stageName}/${expandedId}`);
+      return res.data;
+    },
+    enabled: !!expandedId && !!pipelineRunId,
+    staleTime: 60_000,
+  });
+
+  if (!pipelineRunId) {
+    return (
+      <div className="flex flex-col items-center justify-center py-8 text-slate-400 dark:text-slate-500">
+        <FileBox className="w-8 h-8 mb-2 opacity-50" />
+        <p className="text-xs">No pipeline run active</p>
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2">
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="h-10 bg-slate-100 dark:bg-slate-700 rounded animate-pulse" />
+        ))}
+      </div>
+    );
+  }
+
+  if (artifacts.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-8 text-slate-400 dark:text-slate-500">
+        <FileBox className="w-8 h-8 mb-2 opacity-50" />
+        <p className="text-xs">No artifacts yet</p>
+        <p className="text-[10px] mt-1">Artifacts are generated during stage execution.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[10px] text-slate-400 font-medium uppercase tracking-wider mb-2">
+        {artifacts.length} artifact{artifacts.length !== 1 ? 's' : ''}
+      </p>
+      {artifacts.map((art) => {
+        const displayName = art.artifact_type
+          .replace(/_/g, ' ')
+          .replace(/\b\w/g, (c: string) => c.toUpperCase());
+        const sizeKB = art.file_size > 0 ? `${(art.file_size / 1024).toFixed(1)} KB` : '';
+        const isExpanded = expandedId === art.id;
+
+        return (
+          <div key={art.id} className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+            <button
+              onClick={() => setExpandedId(isExpanded ? null : art.id)}
+              className="flex items-center gap-2 w-full p-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+            >
+              <FileBox className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{displayName}</p>
+                <p className="text-[9px] text-slate-400">
+                  {new Date(art.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                  {sizeKB ? ` · ${sizeKB}` : ''}
+                </p>
+              </div>
+              <svg className={cn('w-3 h-3 text-slate-400 transition-transform', isExpanded && 'rotate-180')} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {isExpanded && (
+              <div className="border-t border-slate-200 dark:border-slate-700 p-2 bg-slate-50 dark:bg-slate-800/30">
+                {expandedArtifact?.metadata ? (
+                  <pre className="text-[10px] text-slate-600 dark:text-slate-400 font-mono whitespace-pre-wrap max-h-60 overflow-auto leading-relaxed">
+                    {JSON.stringify(expandedArtifact.metadata, null, 2)}
+                  </pre>
+                ) : (
+                  <p className="text-[10px] text-slate-400">Loading...</p>
+                )}
+                <div className="flex justify-end mt-2">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); deleteMutation.mutate(art.id); }}
+                    disabled={deleteMutation.isPending}
+                    className="text-[10px] text-red-500 hover:text-red-700 transition-colors"
+                  >
+                    {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

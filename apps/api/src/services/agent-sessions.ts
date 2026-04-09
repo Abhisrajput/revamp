@@ -102,38 +102,40 @@ export async function createSession(params: {
   sessionData: SessionData;
   tokenCount: number;
 }): Promise<string> {
-  // Find the latest session for this agent+task to chain from
-  const previous = await db.query.agentSessions.findFirst({
-    where: and(
-      eq(agentSessions.agent_id, params.agentId),
-      eq(agentSessions.task_id, params.taskId),
-    ),
-    orderBy: [desc(agentSessions.created_at)],
+  return await db.transaction(async (tx) => {
+    // Find the latest session for this agent+task to chain from
+    const previous = await tx.query.agentSessions.findFirst({
+      where: and(
+        eq(agentSessions.agent_id, params.agentId),
+        eq(agentSessions.task_id, params.taskId),
+      ),
+      orderBy: [desc(agentSessions.created_at)],
+    });
+
+    const sessionIdBefore = previous?.id ?? null;
+
+    const [session] = await tx
+      .insert(agentSessions)
+      .values({
+        agent_id: params.agentId,
+        task_id: params.taskId,
+        pipeline_run_id: params.pipelineRunId,
+        session_id_before: sessionIdBefore,
+        session_data: params.sessionData,
+        token_count: params.tokenCount,
+      })
+      .returning();
+
+    // Update the previous session's forward pointer
+    if (sessionIdBefore) {
+      await tx
+        .update(agentSessions)
+        .set({ session_id_after: session.id })
+        .where(eq(agentSessions.id, sessionIdBefore));
+    }
+
+    return session.id;
   });
-
-  const sessionIdBefore = previous?.id ?? null;
-
-  const [session] = await db
-    .insert(agentSessions)
-    .values({
-      agent_id: params.agentId,
-      task_id: params.taskId,
-      pipeline_run_id: params.pipelineRunId,
-      session_id_before: sessionIdBefore,
-      session_data: params.sessionData,
-      token_count: params.tokenCount,
-    })
-    .returning();
-
-  // Update the previous session's forward pointer
-  if (sessionIdBefore) {
-    await db
-      .update(agentSessions)
-      .set({ session_id_after: session.id })
-      .where(eq(agentSessions.id, sessionIdBefore));
-  }
-
-  return session.id;
 }
 
 // ─── GET SESSION CHAIN ──────────────────────────────────────────

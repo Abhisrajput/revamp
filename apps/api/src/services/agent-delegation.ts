@@ -87,16 +87,19 @@ export async function getSubordinates(agentId: string): Promise<DelegationTarget
  * Get the reporting chain for an agent (up to the director).
  */
 export async function getReportingChain(agentId: string): Promise<DelegationTarget[]> {
+  // Load all non-hidden agents once to avoid N+1 queries per hierarchy level
+  const allAgents = await db.query.agentPersonas.findMany({
+    where: isNull(agentPersonas.hidden_at),
+  });
+  const agentMap = new Map(allAgents.map((a) => [a.id, a]));
+
   const chain: DelegationTarget[] = [];
   let currentId: string | null = agentId;
   const visited = new Set<string>();
 
   while (currentId && !visited.has(currentId)) {
     visited.add(currentId);
-    const agent: typeof agentPersonas.$inferSelect | undefined = await db.query.agentPersonas.findFirst({
-      where: eq(agentPersonas.id, currentId),
-    });
-
+    const agent = agentMap.get(currentId);
     if (!agent) break;
 
     if (agent.id !== agentId) {

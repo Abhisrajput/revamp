@@ -313,9 +313,18 @@ export async function prepareAgentExecution(
     tools,
     systemPromptPrefix,
 
-    // Lifecycle: success
+    // Lifecycle: success — with retry to prevent stuck "working" state
     complete: async () => {
-      await setAgentIdle(agentCtx.agentId);
+      try {
+        await setAgentIdle(agentCtx.agentId);
+      } catch (err) {
+        console.error(`[AgentExec] Failed to set agent ${agentCtx.agentId} idle, retrying:`, err);
+        try {
+          await setAgentIdle(agentCtx.agentId);
+        } catch (retryErr) {
+          console.error(`[AgentExec] CRITICAL: Agent ${agentCtx.agentId} stuck in working state:`, retryErr);
+        }
+      }
 
       try {
         await db.insert(agentActivityLog).values({

@@ -14,7 +14,7 @@
  *     → Validation → Auto-refinement (if needed) → Store artifacts → Emit events
  */
 
-import { db } from "@/db/index.js";
+import { db, type DbConnection } from "@/db/index.js";
 import { pipelineRuns, approvalGates, stageArtifacts, llmUsage, projects } from "@/db/schema.js";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { PipelineStageName } from "@revamp/shared-types/pipeline";
@@ -24,6 +24,7 @@ import {
   type OnStageEvent,
   type OnDelta,
   type ProjectContext,
+  type LLMCallFn,
   type StageOutput,
   type UserFeedback,
   getStageOrder,
@@ -223,6 +224,10 @@ export class PipelineService {
       model?: string;
       /** Override evaluator model */
       evaluatorModel?: string;
+      /** Override stage prompt for this execution (re-run with edited prompt) */
+      promptOverride?: string;
+      /** Validation feedback from previous run — appended to prompt context */
+      validationFeedback?: Array<{ name: string; passed: boolean; score: number; feedback: string; severity?: string }>;
     },
   ): Promise<StageRunResult> {
     const run = await this.getPipelineRun(pipelineRunId);
@@ -276,6 +281,12 @@ export class PipelineService {
       targetStack: ((run.project as any).target_stack as string) || "Java/Spring Boot",
       targetCloud: ((run.project as any).target_cloud as string) || undefined,
     };
+    // Attach stage prompts for validation (prompt-derived validation needs these)
+    const rawStagePrompts = (run.project as any).stage_prompts || {};
+    const rawValidationPrompts = (run.project as any).validation_prompts || {};
+    console.log(`[Pipeline] stage_prompts keys: ${JSON.stringify(Object.keys(rawStagePrompts))}, prompt[0] length: ${(rawStagePrompts['0'] || '').length}`);
+    (projectContext as any).stagePrompts = rawStagePrompts;
+    (projectContext as any).validationPrompts = rawValidationPrompts;
 
     // For SCAN stage — run real file analysis on the codebase
     if (stageName === PipelineStageName.SCAN) {
@@ -498,9 +509,22 @@ export class PipelineService {
       });
     }
 
-    // Load project-specific prompt override (if set via Settings)
+    // Load prompt override: prefer per-request override (re-run with edited prompt),
+    // then fall back to project-level override (set via Settings page).
     const stagePrompts = (run.project as any).stage_prompts as Record<string, string> | null;
-    const promptOverride = stagePrompts?.[stageName] || undefined;
+    let promptOverride = options?.promptOverride || stagePrompts?.[stageName] || undefined;
+
+    // Append validation feedback from previous run to the prompt so the LLM can address issues
+    if (options?.validationFeedback && options.validationFeedback.length > 0) {
+      const failedFindings = options.validationFeedback.filter(f => !f.passed);
+      if (failedFindings.length > 0) {
+        const feedbackBlock = failedFindings.map(f =>
+          `- [${(f.severity || 'warning').toUpperCase()}] ${f.name}: ${f.feedback}`
+        ).join('\n');
+        const feedbackPrompt = `\n\n--- VALIDATION FEEDBACK FROM PREVIOUS RUN ---\nThe previous output had the following issues. Please address ALL of them in this run:\n${feedbackBlock}\n--- END VALIDATION FEEDBACK ---`;
+        promptOverride = (promptOverride || '') + feedbackPrompt;
+      }
+    }
 
     // Create LLM call and eval functions — with optional model overrides.
     // If an agent was assigned, prefer the agent's model configuration.
@@ -512,13 +536,72 @@ export class PipelineService {
     const projectSettings = (run.project as any).settings as Record<string, unknown> | null;
     const configuredMaxTokens = (projectSettings?.maxTokens as number) || 32768;
 
-    let llmCallFn = llmProxyService.createCallFn({
+    // BYOK: extract per-project LLM provider credentials.
+    // The frontend saves providers under camelCase key "llmProviders" with credentials
+    // in the "api_key_encrypted" field. For Bedrock, this is a JSON string containing
+    // {accessKeyId, secretAccessKey, sessionToken, region}.
+    let projectCredentials: import("@/services/llm-proxy.js").ProjectCredentials | undefined;
+    const llmProviders = (
+      (projectSettings?.llmProviders as Record<string, unknown>[])
+      || (projectSettings?.llm_providers as Record<string, unknown>[])
+      || []
+    );
+    if (llmProviders.length > 0) {
+      // Find the default provider, or the first one
+      const defaultProvider = llmProviders.find((p: any) => p.is_default) || llmProviders[0];
+      const ptype = (defaultProvider as any).provider_type as string;
+      const apiKeyField = (defaultProvider as any).api_key_encrypted as string || "";
+
+      projectCredentials = { provider: ptype };
+      if (ptype === "bedrock") {
+        // Bedrock credentials can be:
+        //   1. Bearer token as plain string: "bedrock-api-key-..." — never expires
+        //   2. Bearer token as JSON: {"bearerToken":"bedrock-api-key-..."} — from UI form
+        //   3. IAM/STS JSON: {accessKeyId, secretAccessKey, sessionToken?, region}
+        let bearerToken: string | undefined;
+        let parsed: Record<string, string> | undefined;
+
+        if (typeof apiKeyField === "string" && apiKeyField.startsWith("{")) {
+          try {
+            parsed = JSON.parse(apiKeyField);
+            // Check if it's a bearer token wrapper
+            bearerToken = parsed?.bearerToken || parsed?.bearer_token || parsed?.apiKey || parsed?.api_key;
+          } catch {
+            console.warn("[Pipeline] Failed to parse Bedrock credentials from api_key_encrypted");
+          }
+        } else if (typeof apiKeyField === "string" && apiKeyField.length > 10) {
+          // Plain string — treat as bearer token directly
+          bearerToken = apiKeyField;
+        }
+
+        if (bearerToken) {
+          projectCredentials.aws_bearer_token = bearerToken;
+          projectCredentials.aws_region = parsed?.region || parsed?.aws_region || "us-east-2";
+        } else if (parsed) {
+          projectCredentials.aws_access_key_id = parsed.accessKeyId || parsed.aws_access_key_id || "";
+          projectCredentials.aws_secret_access_key = parsed.secretAccessKey || parsed.aws_secret_access_key || "";
+          projectCredentials.aws_session_token = parsed.sessionToken || parsed.aws_session_token || "";
+          projectCredentials.aws_region = parsed.region || parsed.aws_region || "us-east-1";
+        }
+      } else if (ptype === "anthropic") {
+        projectCredentials.anthropic_api_key = apiKeyField;
+      } else if (ptype === "openai") {
+        projectCredentials.openai_api_key = apiKeyField;
+        const baseUrl = (defaultProvider as any).base_url as string;
+        if (baseUrl) projectCredentials.openai_endpoint = baseUrl;
+      } else if (ptype === "gemini") {
+        projectCredentials.gemini_api_key = apiKeyField;
+      }
+    }
+
+    let llmCallFn: LLMCallFn = llmProxyService.createCallFn({
       maxTokens: configuredMaxTokens,
       model: modelName,
+      credentials: projectCredentials,
     });
     const llmEvalFn = options?.skipLlmEval
       ? undefined
-      : llmProxyService.createEvalFn({ model: options?.evaluatorModel });
+      : llmProxyService.createEvalFn({ model: options?.evaluatorModel, credentials: projectCredentials });
 
     // Reviewer LLM — uses the evaluator model (different from generator to avoid
     // self-validation bias). This enables the full multi-agent loop:
@@ -527,7 +610,7 @@ export class PipelineService {
     // hasValidationModel() check: verify the evaluator model resolves to a
     // configured provider with credentials before attempting dual-model flow.
     // Without this, the reviewer step fails silently. Ported from legacy-bridge.
-    let reviewerLlmCallFn: ReturnType<typeof llmProxyService.createCallFn> | undefined;
+    let reviewerLlmCallFn: LLMCallFn | undefined;
     const wantedEvaluatorModel = options?.evaluatorModel
       || agentCtx?.evaluatorModel
       || process.env.LLM_EVALUATOR_MODEL;
@@ -537,6 +620,7 @@ export class PipelineService {
         reviewerLlmCallFn = llmProxyService.createCallFn({
           maxTokens: 2048,
           model: wantedEvaluatorModel,
+          credentials: projectCredentials,
         });
       } else {
         // Evaluator model is not resolvable — skip reviewer, rely on validation only
@@ -640,6 +724,7 @@ export class PipelineService {
         onDelta: options?.onDelta,
         signal: options?.signal,
         model: modelName,
+        credentials: projectCredentials,
       });
 
       // Store result + record agent completion (reuse existing flow below)
@@ -668,20 +753,56 @@ export class PipelineService {
           // Non-fatal
         }
         if (agentExec) {
-          try { await agentExec.complete(); } catch { /* swallow */ }
+          try { await agentExec.complete(); } catch (e) { console.error("[PipelineService] Agent completion failed:", e); }
         }
       }
 
+      // Record token usage from SCAN orchestration
+      try {
+        const scanTokens = (llmCallFn as any).tokenUsage as { inputTokens: number; outputTokens: number } | undefined;
+        if (scanTokens && (scanTokens.inputTokens > 0 || scanTokens.outputTokens > 0)) {
+          const cost = estimateCostCents(scanTokens.inputTokens, scanTokens.outputTokens, modelName);
+          await recordPipelineSpend(pipelineRunId, cost);
+          await db.insert(llmUsage).values({
+            id: crypto.randomUUID(),
+            project_id: run.project.id,
+            pipeline_run_id: pipelineRunId,
+            model: modelName || "unknown",
+            input_tokens: scanTokens.inputTokens,
+            output_tokens: scanTokens.outputTokens,
+            cost: Math.round(cost),
+          });
+          // Emit usage event for frontend
+          options?.onEvent?.({
+            phase: 'usage' as any,
+            stageName,
+            stageIndex: stageConfig.index,
+            timestamp: new Date().toISOString(),
+            data: { input_tokens: scanTokens.inputTokens, output_tokens: scanTokens.outputTokens, cost },
+          });
+        }
+      } catch { /* non-fatal */ }
+
       // Update stage progress + create approval gate
       if (scanResult.output) {
-        await this.updateStageProgress(pipelineRunId, stageName, "completed", 100);
-        emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: scanResult.duration, confidenceScore: scanResult.validation?.confidenceScore });
-
-        // Create approval gate for SCAN stage (same logic as normal path)
+        const scanScore = scanResult.validation?.confidenceScore ?? 70;
         const scanConfig = this.getStageConfig(stageName);
-        if (scanConfig.requiresApproval) {
-          await this.createApprovalGate(pipelineRunId, stageName, scanConfig.requiredRole || "admin");
-          await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100);
+        await db.transaction(async (tx) => {
+          await this.updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: scanScore });
+          if (scanConfig.requiresApproval) {
+            await this.createApprovalGate(pipelineRunId, stageName, scanConfig.requiredRole || "admin", tx);
+            await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: scanScore });
+          }
+        });
+        emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: scanResult.duration, confidenceScore: scanScore });
+
+        // Auto-populate tailored prompts for stages 2-8 based on SCAN + BREE output
+        try {
+          const { generateAndSaveProjectPrompts } = await import("./prompt-generator.js");
+          const { stagesPopulated } = await generateAndSaveProjectPrompts(run.project.id, pipelineRunId);
+          console.log(`[Pipeline] Auto-generated tailored prompts for ${stagesPopulated} stages`);
+        } catch (err: unknown) {
+          console.warn("[Pipeline] Prompt auto-generation failed (non-fatal):", err instanceof Error ? err.message : err);
         }
       } else {
         await this.updateStageProgress(pipelineRunId, stageName, "failed", 0);
@@ -778,6 +899,7 @@ export class PipelineService {
         signal: options?.signal,
         model: modelName,
         maxTokens: configuredMaxTokens,
+        credentials: projectCredentials,
       });
 
       // Store result
@@ -806,21 +928,38 @@ export class PipelineService {
           // Non-fatal
         }
         if (agentExec) {
-          try { await agentExec.complete(); } catch { /* swallow */ }
+          try { await agentExec.complete(); } catch (e) { console.error("[PipelineService] Agent completion failed:", e); }
         }
       }
 
+      // Record token usage from DECODE orchestration
+      try {
+        const decodeTokens = (llmCallFn as any).tokenUsage as { inputTokens: number; outputTokens: number } | undefined;
+        if (decodeTokens && (decodeTokens.inputTokens > 0 || decodeTokens.outputTokens > 0)) {
+          const cost = estimateCostCents(decodeTokens.inputTokens, decodeTokens.outputTokens, modelName);
+          await recordPipelineSpend(pipelineRunId, cost);
+          await db.insert(llmUsage).values({
+            id: crypto.randomUUID(), project_id: run.project.id, pipeline_run_id: pipelineRunId,
+            model: modelName || "unknown", input_tokens: decodeTokens.inputTokens, output_tokens: decodeTokens.outputTokens, cost: Math.round(cost),
+          });
+          options?.onEvent?.({ phase: 'usage' as any, stageName, stageIndex: stageConfig.index, timestamp: new Date().toISOString(),
+            data: { input_tokens: decodeTokens.inputTokens, output_tokens: decodeTokens.outputTokens, cost },
+          });
+        }
+      } catch { /* non-fatal */ }
+
       // Update stage progress + create approval gate
       if (decodeResult.output) {
-        await this.updateStageProgress(pipelineRunId, stageName, "completed", 100);
-        emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: decodeResult.duration, confidenceScore: decodeResult.validation?.confidenceScore });
-
-        // Create approval gate for DECODE stage (same logic as normal path)
+        const decodeScore = decodeResult.validation?.confidenceScore ?? 70;
         const decodeConfig = this.getStageConfig(stageName);
-        if (decodeConfig.requiresApproval) {
-          await this.createApprovalGate(pipelineRunId, stageName, decodeConfig.requiredRole || "admin");
-          await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100);
-        }
+        await db.transaction(async (tx) => {
+          await this.updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: decodeScore });
+          if (decodeConfig.requiresApproval) {
+            await this.createApprovalGate(pipelineRunId, stageName, decodeConfig.requiredRole || "admin", tx);
+            await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: decodeScore });
+          }
+        });
+        emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: decodeResult.duration, confidenceScore: decodeScore });
       } else {
         await this.updateStageProgress(pipelineRunId, stageName, "failed", 0);
         emitStageFailed({ pipelineRunId, projectId: run.project.id, stageName, error: "DECODE produced no output" });
@@ -841,6 +980,7 @@ export class PipelineService {
         signal: options?.signal,
         model: modelName,
         maxTokens: configuredMaxTokens,
+        credentials: projectCredentials,
       });
 
       if (forgeResult.output) {
@@ -849,19 +989,51 @@ export class PipelineService {
 
       if (agentCtx && forgeResult.output) {
         try {
-          await recordAgentCompletion(agentCtx, forgeResult.output, forgeResult.duration, forgeResult.validation?.confidenceScore);
+          await recordAgentCompletion(
+            agentCtx,
+            {
+              costCents: 0,
+              tokensUsed: 0,
+              refinementCount: forgeResult.refinementCount,
+              result: { orchestrated: true },
+            },
+            pipelineRunId,
+            "auto",
+            modelName || "default",
+            0,
+            0,
+            PipelineStageName.FORGE,
+          );
         } catch { /* non-fatal */ }
       }
 
-      if (forgeResult.output) {
-        await this.updateStageProgress(pipelineRunId, stageName, "completed", 100);
-        emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: forgeResult.duration, confidenceScore: forgeResult.validation?.confidenceScore });
-
-        const forgeConfig = this.getStageConfig(stageName);
-        if (forgeConfig.requiresApproval) {
-          await this.createApprovalGate(pipelineRunId, stageName, forgeConfig.requiredRole || "admin");
-          await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100);
+      // Record token usage from FORGE orchestration
+      try {
+        const forgeTokens = (llmCallFn as any).tokenUsage as { inputTokens: number; outputTokens: number } | undefined;
+        if (forgeTokens && (forgeTokens.inputTokens > 0 || forgeTokens.outputTokens > 0)) {
+          const cost = estimateCostCents(forgeTokens.inputTokens, forgeTokens.outputTokens, modelName);
+          await recordPipelineSpend(pipelineRunId, cost);
+          await db.insert(llmUsage).values({
+            id: crypto.randomUUID(), project_id: run.project.id, pipeline_run_id: pipelineRunId,
+            model: modelName || "unknown", input_tokens: forgeTokens.inputTokens, output_tokens: forgeTokens.outputTokens, cost: Math.round(cost),
+          });
+          options?.onEvent?.({ phase: 'usage' as any, stageName, stageIndex: stageConfig.index, timestamp: new Date().toISOString(),
+            data: { input_tokens: forgeTokens.inputTokens, output_tokens: forgeTokens.outputTokens, cost },
+          });
         }
+      } catch { /* non-fatal */ }
+
+      if (forgeResult.output) {
+        const forgeScore = forgeResult.validation?.confidenceScore ?? 70;
+        const forgeConfig = this.getStageConfig(stageName);
+        await db.transaction(async (tx) => {
+          await this.updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: forgeScore });
+          if (forgeConfig.requiresApproval) {
+            await this.createApprovalGate(pipelineRunId, stageName, forgeConfig.requiredRole || "admin", tx);
+            await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: forgeScore });
+          }
+        });
+        emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: forgeResult.duration, confidenceScore: forgeScore });
       } else {
         await this.updateStageProgress(pipelineRunId, stageName, "failed", 0);
         emitStageFailed({ pipelineRunId, projectId: run.project.id, stageName, error: "FORGE produced no output" });
@@ -886,11 +1058,136 @@ export class PipelineService {
       }
     }
 
+    // ── CHUNKED MULTI-PASS GENERATION ──────────────────────────────
+    // Always use chunked generation with gap-fill for BLUEPRINT, SPEC_LOCK, ARCHITECT
+    // to ensure comprehensive coverage of all entities/components.
+    const entityPattern = /ALL\s+(\d+)\s+(?:Database\s+)?Entities|(\d+)\s+total/i;
+    const entityMatch = (promptOverride || '').match(entityPattern);
+
+    // Extract entity names from the prompt for chunking
+    const entityListMatch = (promptOverride || '').match(/## ALL \d+ (?:Database )?Entities[^:]*:\s*\n([^#]+)/i);
+    let promptEntities = entityListMatch
+      ? entityListMatch[1].split(/[,\n]/).map(e => e.trim()).filter(e => e.length > 2 && !e.startsWith('-'))
+      : [];
+
+    // Also extract BR-{ids} and CAP-{ids} from prior stage outputs as entities to cover
+    if (promptEntities.length === 0) {
+      const priorText = priorOutputs.map(p => p.output).join('\n');
+      const brIds = [...new Set((priorText.match(/BR-\d+/g) || []))];
+      const capIds = [...new Set((priorText.match(/CAP-\d+/g) || []))];
+      // Extract entity names from DECODE tables
+      const entityNames = [...new Set((priorText.match(/(?:^|\|)\s*([A-Z][a-zA-Z]+(?:Service|Controller|Model|Entity|Module|Manager|Handler|Repository))\s*(?:\||$)/gm) || [])
+        .map(m => m.replace(/\|/g, '').trim())
+        .filter(n => n.length > 3))];
+      promptEntities = [...brIds, ...capIds, ...entityNames];
+    }
+
+    // Always use chunked runner when we have entities to cover (no minimum threshold)
+    if (promptEntities.length > 0) {
+      // Use chunked runner for comprehensive coverage
+      options?.onEvent?.({
+        phase: 'generating',
+        stageName,
+        stageIndex: stageConfig.index,
+        timestamp: new Date().toISOString(),
+        data: { message: `Using chunked generation for ${promptEntities.length} entities`, chunked: true },
+      });
+
+      const { runChunkedStage } = await import("@revamp/core-engine");
+
+      // Build chunk-specific prompt template
+      const stagePrompts = (run.project as any).stage_prompts as Record<string, string> || {};
+      const stageIdx = stageConfig.index;
+      const basePrompt = stagePrompts[String(stageIdx)] || promptOverride || '';
+
+      const priorContext = priorOutputs.map(p => `## ${p.stageName} Output (excerpt):\n${p.output.slice(0, 8000)}`).join('\n\n');
+
+      const chunkedResult = await runChunkedStage({
+        stageName,
+        systemPrompt: `You are performing ${stageName} analysis for a legacy application modernization. Be thorough — cover EVERY entity listed.`,
+        userPromptTemplate: `${basePrompt}\n\n## FOCUS: Analyze ONLY these specific entities in this chunk:\n{{CHUNK_ENTITIES}}\n\n{{CHUNK_CONTEXT}}\n\n## Prior Stage Context:\n{{SHARED_CONTEXT}}`,
+        compositionPrompt: `Compose the final ${stageName} document from the following analysis chunks. CONSOLIDATE duplicates. Use tables. Ensure EVERY entity is covered.\n\nCoverage: {{COVERAGE_PERCENT}}% ({{COVERED_ENTITIES}}/{{TOTAL_ENTITIES}} entities)\n\n{{CHUNK_RESULTS}}`,
+        allEntities: promptEntities,
+        sharedContext: priorContext,
+        chunkSize: 8,
+        llmCallFn,
+        coverageTarget: 0.85,
+        maxGapFillRounds: 2,
+        onProgress: (phase, message, data) => {
+          options?.onEvent?.({
+            phase: phase as any,
+            stageName,
+            stageIndex: stageConfig.index,
+            timestamp: new Date().toISOString(),
+            data: { message, ...data },
+          });
+        },
+        onDelta: options?.onDelta,
+        signal: options?.signal,
+      });
+
+      // Convert to StageRunResult format
+      const result: StageRunResult = {
+        stageName,
+        stageIndex: stageConfig.index,
+        output: chunkedResult.output,
+        validation: null,
+        refinementCount: 0,
+        duration: chunkedResult.duration,
+        phases: [],
+        aborted: false,
+      };
+
+      // Store result
+      if (result.output) {
+        await this.storeStageOutput(pipelineRunId, stageName, result);
+      }
+
+      // Record token usage
+      try {
+        const tokens = (llmCallFn as any).tokenUsage as { inputTokens: number; outputTokens: number } | undefined;
+        if (tokens && (tokens.inputTokens > 0 || tokens.outputTokens > 0)) {
+          const cost = estimateCostCents(tokens.inputTokens, tokens.outputTokens, modelName);
+          await recordPipelineSpend(pipelineRunId, cost);
+          await db.insert(llmUsage).values({
+            id: crypto.randomUUID(), project_id: run.project.id, pipeline_run_id: pipelineRunId,
+            model: modelName || "unknown", input_tokens: tokens.inputTokens, output_tokens: tokens.outputTokens, cost: Math.round(cost),
+          });
+          options?.onEvent?.({ phase: 'usage' as any, stageName, stageIndex: stageConfig.index, timestamp: new Date().toISOString(),
+            data: { input_tokens: tokens.inputTokens, output_tokens: tokens.outputTokens, cost },
+          });
+        }
+      } catch { /* non-fatal */ }
+
+      // Update stage progress
+      if (result.output) {
+        const score = chunkedResult.coverage.percentage;
+        const config = this.getStageConfig(stageName);
+        await db.transaction(async (tx) => {
+          await this.updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: score });
+          if (config.requiresApproval) {
+            await this.createApprovalGate(pipelineRunId, stageName, config.requiredRole || "admin", tx);
+            await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: score });
+          }
+        });
+        emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: chunkedResult.duration, confidenceScore: score });
+      } else {
+        await this.updateStageProgress(pipelineRunId, stageName, "failed", 0);
+        emitStageFailed({ pipelineRunId, projectId: run.project.id, stageName, error: `${stageName} chunked generation produced no output` });
+      }
+
+      return result;
+    }
+
+    // ── STANDARD SINGLE-PASS GENERATION ─────────────────────────────
     // Execute stage — with fallback chain.
-    // If the Go orchestrator is unreachable or overloaded, we retry with
-    // degraded settings (no reviewer, no LLM eval) to maximize the chance
-    // of returning a useful result. Ported from legacy-bridge stageAI.ts
-    // runStageAgent() fallback logic.
+    // Safety net: accumulate all streamed text in case result.output is empty
+    let serviceAccumulatedOutput = "";
+    const wrappedOnDelta = (text: string) => {
+      serviceAccumulatedOutput += text;
+      options?.onDelta?.(text);
+    };
+
     let result: StageRunResult;
     try {
       result = await runStage({
@@ -905,12 +1202,38 @@ export class PipelineService {
         priorOutputs,
         feedback,
         onEvent: options?.onEvent,
-        onDelta: options?.onDelta,
+        onDelta: wrappedOnDelta,
         signal: options?.signal,
         skipLlmEval: options?.skipLlmEval,
         promptOverride,
         model: modelName,
       });
+
+      // If output is empty but we streamed text, use the accumulated text
+      if (!result.output && serviceAccumulatedOutput.length > 20) {
+        console.warn(`[PipelineService] result.output empty but ${serviceAccumulatedOutput.length} chars streamed — recovering`);
+        // Re-run deterministic validation on recovered output
+        let recoveredValidation = result.validation;
+        try {
+          const { runAllDeterministicChecks, stageValidationRules } = await import("@revamp/core-engine");
+          const rule = stageValidationRules.find((r: any) => r.stageName === stageName);
+          if (rule) {
+            const { results: detResults, aggregateScore } = runAllDeterministicChecks(serviceAccumulatedOutput, rule.deterministicChecks);
+            const recoveredScore = Math.round(aggregateScore * 100);
+            recoveredValidation = {
+              ...result.validation,
+              passed: recoveredScore >= 60,
+              confidenceScore: recoveredScore,
+              deterministicResults: detResults,
+              llmResults: [],
+              issues: [],
+              recommendations: [],
+            } as any;
+            console.log(`[PipelineService] Recovered validation score: ${recoveredScore}%`);
+          }
+        } catch { /* non-fatal */ }
+        result = { ...result, output: serviceAccumulatedOutput, validation: recoveredValidation };
+      }
     } catch (primaryErr: unknown) {
       // Abort errors should not be retried
       if (primaryErr instanceof Error && primaryErr.message === 'Stage execution aborted') {
@@ -971,7 +1294,8 @@ export class PipelineService {
 
     // ─── Contract enforcement + auto-refinement ───────────────────
     if (result.output) {
-      const contractResult = enforceContract(stageName, result.output);
+      // Pass LLM function for agent-based section validation (all stages)
+      const contractResult = await enforceContract(stageName, result.output, undefined, llmCallFn as any);
 
       if (!contractResult.passed && contractResult.refinementPrompt) {
         const maxPasses = contractResult.violations.some((v) => v.severity === 'critical') ? 2 : 1;
@@ -1011,7 +1335,7 @@ export class PipelineService {
 
             if (refinedResult.output && refinedResult.output.length > result.output.length) {
               result = refinedResult;
-              const recheck = enforceContract(stageName, result.output);
+              const recheck = await enforceContract(stageName, result.output);
               if (recheck.passed) break;
             } else {
               break; // Refinement didn't improve — stop
@@ -1104,7 +1428,7 @@ export class PipelineService {
         // Non-fatal — cost tracking failure shouldn't break pipeline
         // Still try to release the agent
         if (agentExec) {
-          try { await agentExec.complete(); } catch { /* swallow */ }
+          try { await agentExec.complete(); } catch (e) { console.error("[PipelineService] Agent completion failed:", e); }
         }
       }
     } else if (agentExec) {
@@ -1152,15 +1476,25 @@ export class PipelineService {
 
     if (validationPassed && confidenceScore >= APPROVAL_THRESHOLD) {
       // ── Validation passed — complete stage and create approval gate ──
-      // Store confidence score in stage_progress for threshold checks on approval
-      await this.updateStageProgress(pipelineRunId, stageName, "completed", 100);
-      // Explicitly set the confidenceScore (updateStageProgress preserves it)
-      {
-        const [r] = await db.select({ stage_progress: pipelineRuns.stage_progress }).from(pipelineRuns).where(eq(pipelineRuns.id, pipelineRunId)).limit(1);
-        const sp = (r?.stage_progress as Record<string, any>) || {};
-        sp[stageName] = { ...sp[stageName], confidenceScore };
-        await db.update(pipelineRuns).set({ stage_progress: sp }).where(eq(pipelineRuns.id, pipelineRunId));
-      }
+      const currentConfig = this.getStageConfig(stageName);
+      const nextStage = this.getNextStage(stageName);
+
+      await db.transaction(async (tx) => {
+        await this.updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore });
+
+        if (currentConfig.requiresApproval) {
+          await this.createApprovalGate(pipelineRunId, stageName, currentConfig.requiredRole || "admin", tx);
+          await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore });
+        }
+
+        if (!nextStage) {
+          await tx.update(pipelineRuns).set({
+            status: "completed",
+            completed_at: new Date(),
+            updated_at: new Date(),
+          }).where(eq(pipelineRuns.id, pipelineRunId));
+        }
+      });
 
       emitStageCompleted({
         pipelineRunId,
@@ -1170,21 +1504,7 @@ export class PipelineService {
         confidenceScore,
       });
 
-      // Only create approval gate if the stage requires it AND validation passed threshold
-      const currentConfig = this.getStageConfig(stageName);
-      if (currentConfig.requiresApproval) {
-        await this.createApprovalGate(pipelineRunId, stageName, currentConfig.requiredRole || "admin");
-        await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100);
-      }
-
-      const nextStage = this.getNextStage(stageName);
       if (!nextStage) {
-        await db.update(pipelineRuns).set({
-          status: "completed",
-          completed_at: new Date(),
-          updated_at: new Date(),
-        }).where(eq(pipelineRuns.id, pipelineRunId));
-
         pipelineEventBus.fire({
           type: "pipeline.completed",
           timestamp: new Date().toISOString(),
@@ -1314,57 +1634,59 @@ export class PipelineService {
     result: StageRunResult,
   ): Promise<void> {
     const artifactId = crypto.randomUUID();
-    await db.insert(stageArtifacts).values({
-      id: artifactId,
-      pipeline_run_id: pipelineRunId,
-      stage_name: stageName,
-      artifact_type: "stage_output",
-      storage_path: `pipeline/${pipelineRunId}/${stageName}/output.md`,
-      file_size: Buffer.byteLength(result.output, "utf-8"),
-      metadata: {
-        content: result.output,
-        validation: result.validation ? {
-          passed: result.validation.passed,
-          confidenceScore: result.validation.confidenceScore,
-          issueCount: result.validation.issues.length,
-        } : null,
-        refinementCount: result.refinementCount,
-        duration: result.duration,
-      },
+
+    await db.transaction(async (tx) => {
+      await tx.insert(stageArtifacts).values({
+        id: artifactId,
+        pipeline_run_id: pipelineRunId,
+        stage_name: stageName,
+        artifact_type: "stage_output",
+        storage_path: `pipeline/${pipelineRunId}/${stageName}/output.md`,
+        file_size: Buffer.byteLength(result.output, "utf-8"),
+        metadata: {
+          content: result.output,
+          validation: result.validation ? {
+            passed: result.validation.passed,
+            confidenceScore: result.validation.confidenceScore,
+            issueCount: result.validation.issues.length,
+          } : null,
+          refinementCount: result.refinementCount,
+          duration: result.duration,
+        },
+      });
+
+      if (result.validation) {
+        await tx.insert(stageArtifacts).values({
+          id: crypto.randomUUID(),
+          pipeline_run_id: pipelineRunId,
+          stage_name: stageName,
+          artifact_type: "validation_result",
+          storage_path: `pipeline/${pipelineRunId}/${stageName}/validation.json`,
+          file_size: 0,
+          metadata: {
+            passed: result.validation.passed,
+            confidenceScore: result.validation.confidenceScore,
+            deterministicResults: result.validation.deterministicResults.map((r: { name: string; score: number; status: string; message: string }) => ({
+              name: r.name,
+              score: r.score,
+              status: r.status,
+              message: r.message,
+            })),
+            llmResults: result.validation.llmResults.map((r: { dimension: string; score: number; reasoning: string }) => ({
+              dimension: r.dimension,
+              score: r.score,
+              reasoning: r.reasoning,
+            })),
+            contractViolations: result.validation.contractResult.violations,
+            issues: result.validation.issues,
+            recommendations: result.validation.recommendations,
+          },
+        });
+      }
     });
 
     // Fire-and-forget: generate L0/L1 tier summaries (OpenViking pattern)
     generateTierSummaries(artifactId, stageName, result.output).catch(() => {});
-
-    // Store validation result as separate artifact
-    if (result.validation) {
-      await db.insert(stageArtifacts).values({
-        id: crypto.randomUUID(),
-        pipeline_run_id: pipelineRunId,
-        stage_name: stageName,
-        artifact_type: "validation_result",
-        storage_path: `pipeline/${pipelineRunId}/${stageName}/validation.json`,
-        file_size: 0,
-        metadata: {
-          passed: result.validation.passed,
-          confidenceScore: result.validation.confidenceScore,
-          deterministicResults: result.validation.deterministicResults.map((r: { name: string; score: number; status: string; message: string }) => ({
-            name: r.name,
-            score: r.score,
-            status: r.status,
-            message: r.message,
-          })),
-          llmResults: result.validation.llmResults.map((r: { dimension: string; score: number; reasoning: string }) => ({
-            dimension: r.dimension,
-            score: r.score,
-            reasoning: r.reasoning,
-          })),
-          contractViolations: result.validation.contractResult.violations,
-          issues: result.validation.issues,
-          recommendations: result.validation.recommendations,
-        },
-      });
-    }
   }
 
   /**
@@ -1375,11 +1697,11 @@ export class PipelineService {
     stageName: PipelineStageName,
     status: string,
     progress: number,
+    options?: { conn?: DbConnection; confidenceScore?: number },
   ): Promise<void> {
+    const conn = options?.conn ?? db;
     // Read current progress, merge the new stage entry, then write back.
-    // This avoids raw SQL jsonb_build_object which has parameter-binding
-    // issues with Drizzle's sql template literal + ::jsonb casts.
-    const [run] = await db
+    const [run] = await conn
       .select({ stage_progress: pipelineRuns.stage_progress })
       .from(pipelineRuns)
       .where(eq(pipelineRuns.id, pipelineRunId))
@@ -1387,19 +1709,29 @@ export class PipelineService {
 
     const current = (run?.stage_progress as Record<string, any>) || {};
     const existing = current[stageName] || {};
+    // Preserve startedAt across updates so the elapsed timer can survive page refreshes.
+    // Set it the first time the stage transitions into a running state and clear it on terminal states.
+    const isRunning = status === 'in_progress' || status === 'generating' || status === 'validating';
+    const isTerminal = status === 'completed' || status === 'failed' || status === 'awaiting_approval';
+    let startedAt: string | undefined = existing.startedAt;
+    if (isRunning && !startedAt) {
+      startedAt = new Date().toISOString();
+    } else if (isTerminal) {
+      startedAt = existing.startedAt; // keep last value for record; frontend stops counting on terminal
+    }
     const updated = {
       ...current,
       [stageName]: {
         ...existing,
         status,
         progress,
-        // Preserve confidenceScore if already set (from validation)
-        confidenceScore: existing.confidenceScore ?? progress,
+        confidenceScore: options?.confidenceScore ?? existing.confidenceScore ?? progress,
+        startedAt,
         updatedAt: new Date().toISOString(),
       },
     };
 
-    await db.update(pipelineRuns).set({
+    await conn.update(pipelineRuns).set({
       current_stage: stageName,
       stage_progress: updated,
       updated_at: new Date(),
@@ -1413,8 +1745,9 @@ export class PipelineService {
     pipelineRunId: string,
     stageName: PipelineStageName,
     requiredRole: string,
+    conn: DbConnection = db,
   ): Promise<void> {
-    await db.insert(approvalGates).values({
+    await conn.insert(approvalGates).values({
       id: crypto.randomUUID(),
       pipeline_run_id: pipelineRunId,
       stage_name: stageName,
@@ -1434,22 +1767,24 @@ export class PipelineService {
     const currentStage = run.current_stage as PipelineStageName;
     const nextStage = this.getNextStage(currentStage);
 
-    if (!nextStage) {
-      await db.update(pipelineRuns).set({
-        status: "completed",
-        completed_at: new Date(),
+    await db.transaction(async (tx) => {
+      if (!nextStage) {
+        await tx.update(pipelineRuns).set({
+          status: "completed",
+          completed_at: new Date(),
+          updated_at: new Date(),
+        }).where(eq(pipelineRuns.id, pipelineRunId));
+        return;
+      }
+
+      await this.updateStageProgress(pipelineRunId, currentStage, "approved", 100, { conn: tx });
+      await this.updateStageProgress(pipelineRunId, nextStage, "in_progress", 0, { conn: tx });
+
+      await tx.update(pipelineRuns).set({
+        current_stage: nextStage,
         updated_at: new Date(),
       }).where(eq(pipelineRuns.id, pipelineRunId));
-      return;
-    }
-
-    await this.updateStageProgress(pipelineRunId, currentStage, "approved", 100);
-    await this.updateStageProgress(pipelineRunId, nextStage, "in_progress", 0);
-
-    await db.update(pipelineRuns).set({
-      current_stage: nextStage,
-      updated_at: new Date(),
-    }).where(eq(pipelineRuns.id, pipelineRunId));
+    });
   }
 
   /**
@@ -1461,64 +1796,77 @@ export class PipelineService {
     approvedBy: string,
     comment?: string,
   ): Promise<void> {
-    const gate = await db.query.approvalGates.findFirst({
-      where: and(
-        eq(approvalGates.pipeline_run_id, pipelineRunId),
-        eq(approvalGates.stage_name, stageName),
-      ),
-    });
-
-    if (!gate) throw new Error("Approval gate not found");
-    if (gate.status !== "pending") throw new Error(`Gate already ${gate.status}`);
-
-    // Confidence threshold check — block approval if validation score is below threshold
-    const run = await db.query.pipelineRuns.findFirst({
-      where: eq(pipelineRuns.id, pipelineRunId),
-      columns: { project_id: true, stage_progress: true },
-    });
-    if (run) {
-      const project = await db.query.projects.findFirst({
-        where: eq(projects.id, run.project_id),
-        columns: { settings: true },
+    await db.transaction(async (tx) => {
+      const gate = await tx.query.approvalGates.findFirst({
+        where: and(
+          eq(approvalGates.pipeline_run_id, pipelineRunId),
+          eq(approvalGates.stage_name, stageName),
+        ),
       });
-      const threshold = (project?.settings as any)?.confidenceThreshold ?? 75;
-      const stageProgress = (run.stage_progress as Record<string, any>) || {};
-      const stageScore = stageProgress[stageName]?.confidenceScore;
-      if (typeof stageScore === 'number' && stageScore < threshold) {
-        throw new Error(
-          `Cannot approve: confidence score ${stageScore}% is below the threshold of ${threshold}%. Re-run the stage to improve the score.`
-        );
+
+      if (!gate) throw new Error("Approval gate not found");
+      if (gate.status !== "pending") throw new Error(`Gate already ${gate.status}`);
+
+      // Confidence threshold check — block approval if validation score is below threshold
+      const run = await tx.query.pipelineRuns.findFirst({
+        where: eq(pipelineRuns.id, pipelineRunId),
+        columns: { project_id: true, stage_progress: true },
+      });
+      if (run) {
+        const project = await tx.query.projects.findFirst({
+          where: eq(projects.id, run.project_id),
+          columns: { settings: true },
+        });
+        const threshold = (project?.settings as any)?.confidenceThreshold ?? 75;
+        const stageProgress = (run.stage_progress as Record<string, any>) || {};
+        let stageScore = stageProgress[stageName]?.confidenceScore;
+
+        if (typeof stageScore !== 'number' || stageScore === 0) {
+          const valArtifact = await tx.query.stageArtifacts.findFirst({
+            where: and(
+              eq(stageArtifacts.pipeline_run_id, pipelineRunId),
+              eq(stageArtifacts.stage_name, stageName),
+              eq(stageArtifacts.artifact_type, "validation_result"),
+            ),
+          });
+          if (valArtifact?.metadata) {
+            stageScore = (valArtifact.metadata as any).confidenceScore ?? stageScore;
+          }
+        }
+
+        if (typeof stageScore === 'number' && stageScore > 0 && stageScore < threshold) {
+          throw new Error(
+            `Cannot approve: confidence score ${stageScore}% is below the threshold of ${threshold}%. Re-run the stage to improve the score.`
+          );
+        }
       }
-    }
 
-    await db.update(approvalGates).set({
-      status: "approved",
-      approved_by: approvedBy,
-      approval_comment: comment,
-      approved_at: new Date(),
-    }).where(
-      and(
-        eq(approvalGates.pipeline_run_id, pipelineRunId),
-        eq(approvalGates.stage_name, stageName),
-      ),
-    );
+      await tx.update(approvalGates).set({
+        status: "approved",
+        approved_by: approvedBy,
+        approval_comment: comment,
+        approved_at: new Date(),
+      }).where(
+        and(
+          eq(approvalGates.pipeline_run_id, pipelineRunId),
+          eq(approvalGates.stage_name, stageName),
+        ),
+      );
 
-    // Mark stage as approved (gate is on the completed stage, not the next one)
-    await this.updateStageProgress(pipelineRunId, stageName, "approved", 100);
+      await this.updateStageProgress(pipelineRunId, stageName, "approved", 100, { conn: tx });
 
-    // Advance current_stage to the next stage in the pipeline
-    const nextStage = this.getNextStage(stageName);
-    if (nextStage) {
-      await db.update(pipelineRuns).set({
-        current_stage: nextStage,
-      }).where(eq(pipelineRuns.id, pipelineRunId));
-    } else {
-      // All stages approved — mark pipeline as completed
-      await db.update(pipelineRuns).set({
-        status: "completed",
-        completed_at: new Date(),
-      }).where(eq(pipelineRuns.id, pipelineRunId));
-    }
+      const nextStage = this.getNextStage(stageName);
+      if (nextStage) {
+        await tx.update(pipelineRuns).set({
+          current_stage: nextStage,
+        }).where(eq(pipelineRuns.id, pipelineRunId));
+      } else {
+        await tx.update(pipelineRuns).set({
+          status: "completed",
+          completed_at: new Date(),
+        }).where(eq(pipelineRuns.id, pipelineRunId));
+      }
+    });
   }
 
   /**
@@ -1530,20 +1878,21 @@ export class PipelineService {
     rejectedBy: string,
     reason: string,
   ): Promise<void> {
-    await db.update(approvalGates).set({
-      status: "rejected",
-      approved_by: rejectedBy,
-      approval_comment: reason,
-      approved_at: new Date(),
-    }).where(
-      and(
-        eq(approvalGates.pipeline_run_id, pipelineRunId),
-        eq(approvalGates.stage_name, stageName),
-      ),
-    );
+    await db.transaction(async (tx) => {
+      await tx.update(approvalGates).set({
+        status: "rejected",
+        approved_by: rejectedBy,
+        approval_comment: reason,
+        approved_at: new Date(),
+      }).where(
+        and(
+          eq(approvalGates.pipeline_run_id, pipelineRunId),
+          eq(approvalGates.stage_name, stageName),
+        ),
+      );
 
-    // Mark stage as needing re-work (don't fail the whole pipeline)
-    await this.updateStageProgress(pipelineRunId, stageName, "rejected", 0);
+      await this.updateStageProgress(pipelineRunId, stageName, "rejected", 0, { conn: tx });
+    });
   }
 
   /**
@@ -1603,50 +1952,48 @@ export class PipelineService {
     result: StageRunResult,
   ): Promise<void> {
     try {
-      // Fetch current project metrics
-      const project = await db.query.projects.findFirst({
-        where: eq(projects.id, projectId),
-        columns: { metrics: true },
+      await db.transaction(async (tx) => {
+        const project = await tx.query.projects.findFirst({
+          where: eq(projects.id, projectId),
+          columns: { metrics: true },
+        });
+
+        const currentMetrics = (project?.metrics as Record<string, unknown>) || {};
+
+        const usageRecords = await tx.query.llmUsage.findMany({
+          where: eq(llmUsage.pipeline_run_id, pipelineRunId),
+        });
+
+        let runTokens = 0;
+        let runCost = 0;
+        for (const record of usageRecords) {
+          runTokens += record.input_tokens + record.output_tokens;
+          runCost += record.cost;
+        }
+
+        const updatedMetrics: Record<string, unknown> = {
+          ...currentMetrics,
+          total_pipeline_runs: ((currentMetrics.total_pipeline_runs as number) || 0) + 1,
+          total_tokens: ((currentMetrics.total_tokens as number) || 0) + runTokens,
+          total_cost_cents: ((currentMetrics.total_cost_cents as number) || 0) + runCost,
+          last_run_duration_ms: result.duration,
+          last_run_at: new Date().toISOString(),
+          stages_completed: ((currentMetrics.stages_completed as number) || 0) + 1,
+          total_refinements: ((currentMetrics.total_refinements as number) || 0) + result.refinementCount,
+        };
+
+        if (result.validation) {
+          updatedMetrics.last_confidence_score = result.validation.confidenceScore;
+          updatedMetrics.total_validation_issues =
+            ((currentMetrics.total_validation_issues as number) || 0) +
+            result.validation.issues.length;
+        }
+
+        await tx
+          .update(projects)
+          .set({ metrics: updatedMetrics, updated_at: new Date() })
+          .where(eq(projects.id, projectId));
       });
-
-      const currentMetrics = (project?.metrics as Record<string, unknown>) || {};
-
-      // Aggregate LLM usage for this pipeline run
-      const usageRecords = await db.query.llmUsage.findMany({
-        where: eq(llmUsage.pipeline_run_id, pipelineRunId),
-      });
-
-      let runTokens = 0;
-      let runCost = 0;
-      for (const record of usageRecords) {
-        runTokens += record.input_tokens + record.output_tokens;
-        runCost += record.cost;
-      }
-
-      // Merge with existing metrics
-      const updatedMetrics: Record<string, unknown> = {
-        ...currentMetrics,
-        total_pipeline_runs: ((currentMetrics.total_pipeline_runs as number) || 0) + 1,
-        total_tokens: ((currentMetrics.total_tokens as number) || 0) + runTokens,
-        total_cost_cents: ((currentMetrics.total_cost_cents as number) || 0) + runCost,
-        last_run_duration_ms: result.duration,
-        last_run_at: new Date().toISOString(),
-        stages_completed: ((currentMetrics.stages_completed as number) || 0) + 1,
-        total_refinements: ((currentMetrics.total_refinements as number) || 0) + result.refinementCount,
-      };
-
-      // If validation was run, track validation stats
-      if (result.validation) {
-        updatedMetrics.last_confidence_score = result.validation.confidenceScore;
-        updatedMetrics.total_validation_issues =
-          ((currentMetrics.total_validation_issues as number) || 0) +
-          result.validation.issues.length;
-      }
-
-      await db
-        .update(projects)
-        .set({ metrics: updatedMetrics, updated_at: new Date() })
-        .where(eq(projects.id, projectId));
     } catch (err: any) {
       // Non-fatal — don't fail the stage because metrics failed
       console.warn(`[PipelineService] Failed to update project metrics: ${err.message}`);

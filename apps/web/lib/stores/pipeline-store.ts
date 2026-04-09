@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
+import { useAuthStore } from './auth-store';
 
 // ─── Stage Names & Labels ──────────────────────────────────────────
 
@@ -111,9 +112,12 @@ export interface ScanSubtaskState {
   id: string;
   type: string;
   label: string;
+  title?: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   output?: string;
   agentName?: string;
+  duration?: number;
+  error?: string;
 }
 
 export interface StageState {
@@ -135,7 +139,19 @@ export interface StageState {
   pendingApprovalSince: string | null;
   artifacts: StageArtifact[];
   subtasks: ScanSubtaskState[];
+  /** Overall progress across all gap-fill rounds, deduped by title with best-status-wins.
+   *  Distinct from `subtasks.length` which only reflects the latest batch shown in the bot grid. */
+  subtaskProgress?: {
+    total: number;
+    completed: number;
+    running: number;
+    failed: number;
+    pending: number;
+    rounds: number;
+  };
   tokenUsage: { input: number; output: number; cost: number } | null;
+  /** Execution progress percentage (0-100) */
+  progress: number;
   errorMessage: string | null;
   /** Alias for errorMessage — used by some components as stage.error */
   error?: string | null;
@@ -201,10 +217,12 @@ interface PipelineState {
   setActiveStage: (index: number) => void;
   advanceToNextStage: () => void;
   setStageStatus: (index: number, status: StageStatus) => void;
+  /** Override startedAt — used by backend sync to restore the real server start time after page refresh. */
+  setStageStartedAt: (index: number, startedAt: string | null) => void;
   setStageOutput: (index: number, output: string) => void;
   appendStreamingText: (text: string) => void;
   clearStreamingText: () => void;
-  setStageApproval: (index: number, status: 'approved' | 'rejected', comment?: string) => void;
+  setStageApproval: (index: number, status: 'approved' | 'rejected' | 'pending', comment?: string) => void;
   setStageValidation: (index: number, validation: StageValidation) => void;
   resetStage: (index: number) => void;
   /** Re-run a stage: preserves previous validation, clears output, cascades reset to downstream stages */
@@ -241,7 +259,7 @@ function createDefaultStage(name: string): StageState {
     status: 'idle',
     output: '',
     streamingOutput: '',
-    approvalStatus: stageRequiresApproval(name) ? 'pending' : 'not_required',
+    approvalStatus: 'not_required', // becomes 'pending' only after stage completes and gate is created
     startedAt: null,
     completedAt: null,
     validation: null,
@@ -252,6 +270,7 @@ function createDefaultStage(name: string): StageState {
     subtasks: [],
     runCount: 0,
     tokenUsage: null,
+    progress: 0,
     errorMessage: null,
   };
 }
@@ -317,11 +336,19 @@ export const usePipelineStore = create<PipelineState>()(
       setStageStatus: (index, status) => {
         set((state) => {
           const stages = [...state.stages];
+          const prevStatus = stages[index].status;
           stages[index] = { ...stages[index], status };
           if (status === 'generating') {
-            stages[index].startedAt = new Date().toISOString();
-            stages[index].errorMessage = null;
-            stages[index].error = null;
+            // Only reset startedAt when transitioning from a non-running state
+            // (fresh execution / re-run). Preserve it on idempotent re-applies
+            // from backend sync so the elapsed timer survives page refreshes.
+            const wasRunning = prevStatus === 'generating' || prevStatus === 'validating';
+            if (!wasRunning || !stages[index].startedAt) {
+              stages[index].startedAt = new Date().toISOString();
+              stages[index].completedAt = null; // Reset so elapsed timer restarts
+              stages[index].errorMessage = null;
+              stages[index].error = null;
+            }
           }
           if (status === 'completed' || status === 'failed' || status === 'approved') {
             stages[index].completedAt = new Date().toISOString();
@@ -330,6 +357,15 @@ export const usePipelineStore = create<PipelineState>()(
             (s) => s.status === 'generating' || s.status === 'validating',
           );
           return { stages, isGenerating };
+        });
+      },
+
+      setStageStartedAt: (index, startedAt) => {
+        set((state) => {
+          if (state.stages[index]?.startedAt === startedAt) return state;
+          const stages = [...state.stages];
+          stages[index] = { ...stages[index], startedAt };
+          return { stages };
         });
       },
 
@@ -362,11 +398,18 @@ export const usePipelineStore = create<PipelineState>()(
 
           // Only record real approval actions in history (not config states)
           const isRealAction = status === 'approved' || status === 'rejected';
+          // Resolve user display name from auth store
+          const authUser = useAuthStore.getState().user;
+          const userName = authUser?.name
+            || (authUser?.first_name ? `${authUser.first_name} ${authUser.last_name || ''}`.trim() : null)
+            || authUser?.email
+            || 'User';
+
           const history = isRealAction
             ? [...stage.approvalHistory, {
                 action: status as 'approved' | 'rejected',
                 timestamp: new Date().toISOString(),
-                user: 'User',
+                user: userName,
                 comment,
                 confidenceScore: stage.validation?.score,
               }]
@@ -411,16 +454,22 @@ export const usePipelineStore = create<PipelineState>()(
         });
       },
 
-      rerunStage: (index, user = 'User') => {
+      rerunStage: (index, user) => {
         set((state) => {
           const stages = [...state.stages];
           const current = stages[index];
 
-          // Preserve previous validation for comparison, clear current
+          const authUser = useAuthStore.getState().user;
+          const resolvedUser = user
+            || authUser?.name
+            || (authUser?.first_name ? `${authUser.first_name} ${authUser.last_name || ''}`.trim() : null)
+            || authUser?.email
+            || 'User';
+
           const entry: ApprovalHistoryEntry = {
             action: 'rerun',
             timestamp: new Date().toISOString(),
-            user,
+            user: resolvedUser,
             comment: 'Stage re-run initiated',
           };
 
@@ -637,50 +686,25 @@ export const usePipelineStore = create<PipelineState>()(
     }),
     {
       name: 'pipeline-storage',
-      version: 4,
+      version: 7, // v7: stop persisting volatile state — stages rehydrate from API
       storage: createJSONStorage(() =>
         typeof window !== 'undefined' ? localStorage : ({} as Storage),
       ),
-      migrate: (persisted: any, version: number) => {
-        if (persisted && Array.isArray(persisted.stages)) {
-          persisted.stages = persisted.stages.map((s: any) => {
-            // v3: clean stale data, add new fields, reset stages with no output
-            const hasRealOutput = !!(s.output && s.output.length > 10);
-            const isStaleCompleted = (s.status === 'completed' || s.status === 'approved') && !hasRealOutput;
-            return {
-              ...s,
-              label: STAGE_LABELS[s.name] ?? s.name,
-              // Reset stale "completed" stages that have no output back to pending
-              status: isStaleCompleted ? 'pending' : s.status,
-              approvalStatus: isStaleCompleted ? 'not_required' : s.approvalStatus,
-              // Clean 'not_required' from history
-              approvalHistory: (s.approvalHistory || []).filter(
-                (e: any) => e.action !== 'not_required',
-              ),
-              previousValidation: s.previousValidation ?? null,
-              pendingApprovalSince: s.pendingApprovalSince ?? null,
-              runCount: s.runCount ?? 0,
-            };
-          });
-        }
-        return persisted;
+      migrate: (_persisted: any, version: number) => {
+        // v7: wipe everything — only preferences survive via partialize
+        if (version < 7) return {};
+        return _persisted;
       },
-      // Exclude large streaming/output fields from persistence
+      // Only persist user preferences — NOT stages, run IDs, or project context.
+      // Stages are ephemeral: created fresh by initPipeline(), synced from API.
+      // This eliminates stale data across projects/runs/sessions entirely.
       partialize: (state) => ({
-        activeStageIndex: state.activeStageIndex,
-        currentPipelineRunId: state.currentPipelineRunId,
-        currentProjectId: state.currentProjectId,
         stageModelOverrides: state.stageModelOverrides,
         stageEvaluatorModelOverrides: state.stageEvaluatorModelOverrides,
         stagePromptOverrides: state.stagePromptOverrides,
         stageValidationPromptOverrides: state.stageValidationPromptOverrides,
         activeTemplateId: state.activeTemplateId,
         deepAnalysis: state.deepAnalysis,
-        stages: state.stages.map((s) => ({
-          ...s,
-          output: '', // strip large output — rehydrated from API
-          streamingOutput: '',
-        })),
       }),
     },
   ),
@@ -731,15 +755,14 @@ export function hasBeenExecuted(stage: StageState): boolean {
  *   - Approval gate is for reviewing OUTPUT, not for recovering from errors
  */
 export function shouldShowApprovalGate(stage: StageState): boolean {
-  // Never show approval gate for failed, pending, generating, or idle stages
-  if (stage.status === 'failed' || stage.status === 'pending' || stage.status === 'idle' ||
-      stage.status === 'generating' || stage.status === 'validating' || stage.status === 'locked') {
+  // Never show approval gate for actively running stages
+  if (stage.status === 'generating' || stage.status === 'validating') {
     return false;
   }
   // Only show for stages that require approval
   if (!stageRequiresApproval(stage.name)) return false;
-  // Show when completed (awaiting review) or already approved (can re-run)
-  return stage.status === 'completed' || stage.status === 'approved';
+  // Show when completed, approved, OR has output (covers rehydration where status may lag behind data)
+  return stage.status === 'completed' || stage.status === 'approved' || !!stage.output;
 }
 
 /**

@@ -1,10 +1,10 @@
 'use client';
 
-import { memo, useState } from 'react';
-import { Play, Square, SkipForward, RotateCcw, Undo2, CheckCircle, XCircle, ShieldCheck } from 'lucide-react';
+import { memo } from 'react';
+import { Play, Square, SkipForward, RotateCcw, Undo2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { StageState } from '@/lib/stores/pipeline-store';
-import { usePipelineStore, canExecuteStage, getStageBlockReason, stageRequiresApproval } from '@/lib/stores/pipeline-store';
+import { usePipelineStore, canExecuteStage, getStageBlockReason } from '@/lib/stores/pipeline-store';
 
 // ─── Component ──────────────────────────────────────────────────
 
@@ -16,8 +16,6 @@ interface PipelineActionBarProps {
   onAdvance: () => void;
   onRerun: () => void;
   onReset: () => void;
-  onApprove?: (comment?: string) => void;
-  onReject?: (reason: string) => void;
   isLastStage: boolean;
   className?: string;
 }
@@ -30,8 +28,6 @@ export const PipelineActionBar = memo(function PipelineActionBar({
   onAdvance,
   onRerun,
   onReset,
-  onApprove,
-  onReject,
   isLastStage,
   className,
 }: PipelineActionBarProps) {
@@ -40,11 +36,6 @@ export const PipelineActionBar = memo(function PipelineActionBar({
   const activeStageIndex = usePipelineStore((s) => s.activeStageIndex);
   const stageExecutable = canExecuteStage(stages, activeStageIndex);
   const blockReason = getStageBlockReason(stages, activeStageIndex);
-
-  const [rejectReason, setRejectReason] = useState('');
-  const [showRejectInput, setShowRejectInput] = useState(false);
-
-  const needsApproval = stageRequiresApproval(stage.name) && stage.approvalStatus === 'pending';
 
   const canExecute =
     stageExecutable &&
@@ -68,70 +59,7 @@ export const PipelineActionBar = memo(function PipelineActionBar({
       </div>
 
       <div className="flex flex-col gap-1.5">
-        {/* Approval Gate — shown when stage requires approval before execution */}
-        {needsApproval && !isGenerating && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800">
-              <ShieldCheck className="w-4 h-4 text-amber-500 shrink-0" />
-              <p className="text-xs text-amber-700 dark:text-amber-300">
-                Approval required before execution
-              </p>
-            </div>
-            <div className="flex gap-1.5">
-              <button
-                onClick={() => onApprove?.()}
-                className={cn(
-                  'flex-1 flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium cursor-pointer',
-                  'bg-green-600 hover:bg-green-700 text-white transition-colors',
-                  'focus:outline-none focus:ring-2 focus:ring-green-500/20',
-                )}
-              >
-                <CheckCircle className="w-3.5 h-3.5" />
-                Approve
-              </button>
-              <button
-                onClick={() => setShowRejectInput(!showRejectInput)}
-                className={cn(
-                  'flex-1 flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium cursor-pointer',
-                  'bg-red-600 hover:bg-red-700 text-white transition-colors',
-                  'focus:outline-none focus:ring-2 focus:ring-red-500/20',
-                )}
-              >
-                <XCircle className="w-3.5 h-3.5" />
-                Reject
-              </button>
-            </div>
-            {showRejectInput && (
-              <div className="flex gap-1.5">
-                <input
-                  type="text"
-                  value={rejectReason}
-                  onChange={(e) => setRejectReason(e.target.value)}
-                  placeholder="Reason for rejection..."
-                  className="flex-1 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-slate-900 dark:text-slate-50 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-red-500"
-                />
-                <button
-                  onClick={() => {
-                    if (rejectReason.trim()) {
-                      onReject?.(rejectReason.trim());
-                      setRejectReason('');
-                      setShowRejectInput(false);
-                    }
-                  }}
-                  disabled={!rejectReason.trim()}
-                  className={cn(
-                    'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer',
-                    rejectReason.trim()
-                      ? 'bg-red-600 hover:bg-red-700 text-white'
-                      : 'bg-slate-200 dark:bg-slate-700 text-slate-400 cursor-not-allowed',
-                  )}
-                >
-                  Send
-                </button>
-              </div>
-            )}
-          </div>
-        )}
+        {/* Approval is handled in the inspector panel's ApprovalGate component */}
 
         {/* Execute / Stop */}
         {isGenerating ? (
