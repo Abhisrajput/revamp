@@ -767,13 +767,12 @@ async function executeSubtask(
   }
 
   // Execute via core-engine runStage with subtask-specific prompt.
-  // IMPORTANT: Do NOT stream subtask deltas to the frontend — the user
-  // should only see the composed final document.
-  let subtaskOutput = "";
-  const subtaskDelta = (text: string) => {
-    if (text) subtaskOutput += text;
-    // Intentionally NOT calling opts.onDelta — subtask output is internal.
-  };
+  // IMPORTANT: Do NOT pass onDelta — subtask output is internal and should NOT
+  // use the streaming SSE path. When onDelta is omitted, the llmCallFn uses the
+  // non-streaming /chat/completions endpoint which is a simple POST → JSON response.
+  // This avoids the browser SSE timeout bug: the outer SSE connection from the browser
+  // has no keepalive pings, so if the first Bedrock response takes 30+ seconds with no
+  // data flowing, the browser closes the connection → context canceled → hung subtask.
 
   // Wrap in try/finally to ensure agent is always released, even on errors.
   // Without this, a failed runStage() leaves the agent in 'working' state forever.
@@ -787,14 +786,14 @@ async function executeSubtask(
       llmCallFn,
       priorOutputs: opts.priorOutputs,
       feedback: opts.feedback,
-      onDelta: subtaskDelta,
+      // onDelta intentionally omitted → uses non-streaming path
       signal: opts.signal,
       skipValidation: true,
       promptOverride: filledPrompt,
       model: opts.model,
     });
 
-    const effectiveOutput = result.output || subtaskOutput;
+    const effectiveOutput = result.output;
 
     // Lightweight validation
     const validation = validateSubtaskOutput(plan.type, effectiveOutput);
@@ -1125,7 +1124,8 @@ function measureDecodeCoverage(
   for (const component of scanComponents) {
     const lower = component.toLowerCase();
     // Check for exact match, camelCase-to-words match, and snake_case match
-    const camelWords = lower.replace(/([A-Z])/g, ' $1').trim();
+    // Split on uppercase BEFORE lowercasing — otherwise .toLowerCase() removes all uppercase
+    const camelWords = component.replace(/([A-Z])/g, ' $1').trim().toLowerCase();
     const snakeWords = lower.replace(/_/g, ' ');
 
     if (outputLower.includes(lower) || outputLower.includes(camelWords) || outputLower.includes(snakeWords)) {

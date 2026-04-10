@@ -410,7 +410,7 @@ function measureCoverage(
     const lower = entity.toLowerCase();
     // Check for the entity name (with word boundary-like matching)
     if (allText.includes(lower) ||
-        allText.includes(lower.replace(/([A-Z])/g, ' $1').trim().toLowerCase())) {
+        allText.includes(entity.replace(/([A-Z])/g, ' $1').trim().toLowerCase())) {
       covered.add(lower);
     }
   }

@@ -227,21 +227,26 @@ export class LLMProxyService {
     signal?: AbortSignal,
   ): Promise<CompletionResponse> {
     await this.ensureModelsDiscovered();
-    const response: AxiosResponse = await this.client.post(
-      "/api/v1/chat/completions/stream",
-      {
-        messages: request.messages,
-        model: request.model || this.config.defaultModel,
-        max_tokens: request.max_tokens || 8192,
-        temperature: request.temperature ?? 0.3,
-        metadata: request.metadata,
-        ...(request.credentials ? { credentials: request.credentials } : {}),
-      },
-      {
-        responseType: "stream",
-        signal,
-      },
-    );
+    let response: AxiosResponse;
+    try {
+      response = await this.client.post(
+        "/api/v1/chat/completions/stream",
+        {
+          messages: request.messages,
+          model: request.model || this.config.defaultModel,
+          max_tokens: request.max_tokens || 8192,
+          temperature: request.temperature ?? 0.3,
+          metadata: request.metadata,
+          ...(request.credentials ? { credentials: request.credentials } : {}),
+        },
+        {
+          responseType: "stream",
+          signal,
+        },
+      );
+    } catch (err: any) {
+      throw err;
+    }
 
     return new Promise((resolve, reject) => {
       let accumulated = "";

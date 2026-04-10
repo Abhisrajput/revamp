@@ -573,6 +573,9 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       // If THIS stage already has a pending approval gate (e.g. re-run attempt
       // after completion), block until the existing gate is resolved.
       const currentStatus = stageProgress[stageName]?.status;
+      if (currentStatus === "in_progress") {
+        return reply.status(409).send({ error: "Stage is already executing" });
+      }
       if (currentStatus === "awaiting_approval") {
         const pendingGate = await db.query.approvalGates.findFirst({
           where: and(
@@ -677,6 +680,14 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
             eq(stageArtifacts.pipeline_run_id, pipelineRunId),
             eq(stageArtifacts.stage_name, stageName),
           ));
+          // Clean up stale pending approval gates from prior attempts
+          await db.delete(approvalGates).where(
+            and(
+              eq(approvalGates.pipeline_run_id, pipelineRunId),
+              eq(approvalGates.stage_name, stageName),
+              eq(approvalGates.status, "pending"),
+            ),
+          );
           persistLog("info", `Cleaned up artifacts from ${attempt - 1} prior attempt(s)`, "initializing");
         } catch {
           // Non-fatal — duplicates are cosmetic, not blocking

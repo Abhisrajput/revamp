@@ -166,10 +166,13 @@ export class PipelineService {
     initiatedBy: string,
     options?: { budgetCents?: number },
   ): Promise<string> {
-    // Return most recent existing run (prevents duplicate runs on page refresh)
-    // Returns running/pending first, then completed — only creates new if none exist
+    // Return most recent active run (prevents duplicate runs on page refresh)
+    // Only returns running/pending — completed/cancelled runs should not be reused
     const existingRun = await db.query.pipelineRuns.findFirst({
-      where: eq(pipelineRuns.project_id, projectId),
+      where: and(
+        eq(pipelineRuns.project_id, projectId),
+        inArray(pipelineRuns.status, ["pending", "running"]),
+      ),
       orderBy: (table, { desc }) => [desc(table.started_at)],
     });
 

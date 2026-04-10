@@ -216,7 +216,8 @@ export function measureStringCoverage(
 
   for (const item of referenceItems) {
     const lower = item.toLowerCase();
-    const camelWords = lower.replace(/([A-Z])/g, ' $1').trim();
+    // Split on uppercase BEFORE lowercasing — otherwise .toLowerCase() removes all uppercase
+    const camelWords = item.replace(/([A-Z])/g, ' $1').trim().toLowerCase();
     const snakeWords = lower.replace(/_/g, ' ');
 
     if (outputLower.includes(lower) || outputLower.includes(camelWords) || outputLower.includes(snakeWords)) {

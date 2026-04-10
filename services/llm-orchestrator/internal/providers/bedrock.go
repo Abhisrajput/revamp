@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -108,7 +109,7 @@ func NewBedrockProviderWithCreds(accessKeyID, secretKey, sessionToken, region st
 
 // IsAvailable checks if the Bedrock provider is available
 func (bp *BedrockProvider) IsAvailable() bool {
-	return bp.client != nil
+	return bp.client != nil || bp.hasBearerToken()
 }
 
 // SupportsModel checks if Bedrock supports a specific model
@@ -154,7 +155,7 @@ func (bp *BedrockProvider) completeWithBearerToken(ctx context.Context, req *Com
 		return &CompletionResponse{Provider: "bedrock", Model: req.Model, Error: err.Error(), Latency: time.Since(start)}, err
 	}
 
-	url := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/invoke", bp.region, req.Model)
+	url := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/invoke", bp.region, url.PathEscape(req.Model))
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payloadBytes))
 	if err != nil {
 		bp.RecordError(err)
@@ -623,7 +624,7 @@ func calculateBedrockCost(model string, inputTokens, outputTokens int) float64 {
 // and emits the result as a single chunk — this is simpler and more reliable
 // than parsing Bedrock's event-stream format over raw HTTP.
 func (bp *BedrockProvider) streamWithBearerToken(ctx context.Context, req *CompletionRequest) (<-chan *StreamChunk, error) {
-	out := make(chan *StreamChunk)
+	out := make(chan *StreamChunk, 1) // buffered so goroutine can exit even if nobody reads
 	go func() {
 		defer close(out)
 		// Use the non-streaming bearer-token path and emit as a single chunk.

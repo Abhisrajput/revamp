@@ -239,7 +239,8 @@ func (s *Server) handleStreamCompletion(w http.ResponseWriter, r *http.Request) 
 	// Stream chunks
 	for chunk := range stream {
 		if chunk.Error != "" {
-			fmt.Fprintf(w, "event: error\ndata: %s\n\n", chunk.Error)
+			errJSON, _ := json.Marshal(chunk.Error)
+			fmt.Fprintf(w, "event: error\ndata: %s\n\n", string(errJSON))
 			flusher.Flush()
 			continue
 		}

@@ -136,16 +136,25 @@ func (e *Engine) Complete(ctx context.Context, req *CompletionRequest) (*Complet
 		zap.Duration("routing_latency", routingLatency),
 	)
 
-	// Check circuit breaker
-	if !e.circuitBreaker.CanExecute(provider.Name()) {
+	// Skip circuit breaker for ephemeral BYOK providers — their failures
+	// should not affect the global provider or other users' requests.
+	isEphemeral := req.Credentials != nil
+
+	if !isEphemeral && !e.circuitBreaker.CanExecute(provider.Name()) {
 		err := fmt.Errorf("circuit breaker open for provider %s", provider.Name())
 		e.logger.Warn("Circuit breaker open", zap.Error(err), zap.String("request_id", req.RequestID))
 		e.metrics.RecordError(req.Model, "circuit_breaker_open")
 		return nil, err
 	}
 
-	// Execute completion with circuit breaker protection
-	providerResp, err := e.circuitBreaker.Execute(ctx, provider, req.CompletionRequest)
+	// Execute completion — ephemeral providers bypass circuit breaker protection
+	var providerResp *providers.CompletionResponse
+	var err error
+	if isEphemeral {
+		providerResp, err = provider.Complete(ctx, req.CompletionRequest)
+	} else {
+		providerResp, err = e.circuitBreaker.Execute(ctx, provider, req.CompletionRequest)
+	}
 	if err != nil {
 		e.logger.Error("Completion failed",
 			zap.Error(err),
@@ -215,8 +224,10 @@ func (e *Engine) Stream(ctx context.Context, req *CompletionRequest) (<-chan *St
 		return outChan, err
 	}
 
-	// Check circuit breaker
-	if !e.circuitBreaker.CanExecute(provider.Name()) {
+	// Skip circuit breaker for ephemeral BYOK providers — their failures
+	// should not affect the global provider or other users' requests.
+	isEphemeral := req.Credentials != nil
+	if !isEphemeral && !e.circuitBreaker.CanExecute(provider.Name()) {
 		err := fmt.Errorf("circuit breaker open for provider %s", provider.Name())
 		e.logger.Warn("Circuit breaker open", zap.Error(err), zap.String("request_id", req.RequestID))
 		outChan := make(chan *StreamingChunk)
@@ -316,6 +327,11 @@ func (cr *CompletionRequest) getCacheKey() string {
 	}
 	// Don't cache tool-calling requests — responses are non-deterministic
 	if len(cr.Tools) > 0 {
+		return ""
+	}
+	// Don't cache BYOK/ephemeral requests — different credentials mean
+	// different accounts, and we must not leak responses across users.
+	if cr.Credentials != nil {
 		return ""
 	}
 
