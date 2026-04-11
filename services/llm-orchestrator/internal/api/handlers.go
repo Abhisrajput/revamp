@@ -167,7 +167,18 @@ func (s *Server) handleCompletion(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.engine.Complete(r.Context(), req)
 	if err != nil {
 		s.logger.Error("Completion failed", zap.Error(err))
-		http.Error(w, fmt.Sprintf("Completion failed: %v", err), http.StatusInternalServerError)
+		// Pass through client errors (400, 401, 403, 404, 422) so the Node proxy
+		// can classify them as non-retryable. Default to 500 for unknown errors.
+		errMsg := err.Error()
+		statusCode := http.StatusInternalServerError
+		if strings.Contains(errMsg, "StatusCode: 400") || strings.Contains(errMsg, "ValidationException") || strings.Contains(errMsg, "model identifier is invalid") {
+			statusCode = http.StatusBadRequest
+		} else if strings.Contains(errMsg, "StatusCode: 401") || strings.Contains(errMsg, "StatusCode: 403") || strings.Contains(errMsg, "ExpiredTokenException") {
+			statusCode = http.StatusForbidden
+		} else if strings.Contains(errMsg, "StatusCode: 429") || strings.Contains(errMsg, "ThrottlingException") {
+			statusCode = http.StatusTooManyRequests
+		}
+		http.Error(w, fmt.Sprintf("Completion failed: %v", err), statusCode)
 		return
 	}
 

@@ -958,76 +958,6 @@ async function executeSubtask(
   }
 }
 
-// ─── COMPOSITION ────────────────────────────────────────────────
-
-async function composeResults(
-  opts: DecodeOrchestrationOptions,
-  results: SubtaskResult[],
-): Promise<string> {
-  const successfulResults = results.filter((r) => r.status === "completed" && r.output);
-
-  // Cap each subtask output to stay within the model's 200K context window.
-  // Reserve ~30K tokens for system prompt, composition template, and failed notes.
-  // Remaining budget is split evenly across successful subtask outputs.
-  const MODEL_CTX_LIMIT = 190_000; // tokens (conservative — leave headroom)
-  const OVERHEAD_TOKENS = 30_000;
-  const availableTokens = MODEL_CTX_LIMIT - OVERHEAD_TOKENS;
-  // Rough chars-to-tokens: 1 token ≈ 4 chars
-  const maxCharsPerSubtask = Math.floor((availableTokens * 4) / Math.max(successfulResults.length, 1));
-
-  const subtaskResultsText = successfulResults
-    .map((r, i) => {
-      const outputText = r.output.length > maxCharsPerSubtask
-        ? r.output.slice(0, maxCharsPerSubtask) + `\n\n[... truncated from ${r.output.length} to ${maxCharsPerSubtask} chars to fit context window ...]`
-        : r.output;
-      return [
-        `═══ SUBTASK ${i + 1}: ${r.title} (${r.type}) ═══`,
-        `Agent: ${r.agentName}`,
-        `Duration: ${Math.round(r.duration / 1000)}s`,
-        "",
-        outputText,
-        "",
-      ].join("\n");
-    })
-    .join("\n");
-
-  const failedResults = results.filter((r) => r.status === "failed");
-  const failedNote = failedResults.length > 0
-    ? `\n\nNOTE: The following subtasks failed and are not included:\n${failedResults.map((r) => `- ${r.title}: ${r.error}`).join("\n")}\nAddress these gaps in the composition if possible.\n`
-    : "";
-
-  const prompt = DECODE_COMPOSITION.replace(
-    "{{subtaskResults}}",
-    subtaskResultsText + failedNote,
-  );
-
-  // Use maximum output tokens — this is the SOLE output the user sees
-  const composerCallFn = llmProxyService.createCallFn({
-    maxTokens: opts.maxTokens || 32768,
-    model: opts.model || "",
-    credentials: opts.credentials,
-    advisor: DECODE_ADVISOR_CONFIG,
-  });
-
-  // Clear delta before composition — signals fresh start to frontend
-  opts.onDelta?.("");
-
-  return composerCallFn({
-    systemPrompt: [
-      "You are a lead architect composing a comprehensive DECODE / Intent Extraction document.",
-      "CRITICAL: This document is the SOLE output the user will see from the entire DECODE analysis.",
-      "You MUST preserve the full depth and detail from each specialist report.",
-      "Every business rule must keep its Rule ID, source citation, and code snippet.",
-      "Produce thorough, well-structured markdown with clear H2/H3 headings.",
-      "Include ALL Mermaid diagrams, ALL tables, ALL file path references verbatim.",
-      "The output should be AT LEAST 8000 words. Do NOT summarize — merge and organize.",
-    ].join(" "),
-    userPrompt: prompt,
-    onDelta: opts.onDelta,
-    signal: opts.signal,
-  });
-}
-
 // ─── REFINEMENT ─────────────────────────────────────────────────
 
 async function refineComposition(
@@ -1035,13 +965,21 @@ async function refineComposition(
   output: string,
   refinementPrompt: string,
 ): Promise<string> {
+  // Use composer model for refinement (same tier that composed the output)
+  const refineModel = opts.composerModel || opts.model || "";
+  const isLargeCtx = /opus/i.test(refineModel) || /gemini.*pro/i.test(refineModel);
   const callFn = llmProxyService.createCallFn({
     maxTokens: opts.maxTokens || 32768,
-    model: opts.model || "",
+    model: refineModel,
     credentials: opts.credentials,
   });
 
   opts.onDelta?.("");
+
+  // Large-context models see the full output; standard models get truncated
+  const outputBudget = isLargeCtx ? output.length : Math.min(output.length, 500000);
+  const includedOutput = output.slice(0, outputBudget);
+  const wasTruncated = outputBudget < output.length;
 
   const prompt = [
     "# Refinement Required",
@@ -1049,8 +987,8 @@ async function refineComposition(
     "Your previous DECODE output needs specific improvements.",
     "",
     "## Your Previous Output",
-    output.slice(0, 16000),
-    output.length > 16000 ? "\n[... truncated ...]" : "",
+    includedOutput,
+    wasTruncated ? `\n[... truncated from ${output.length} to ${outputBudget} chars ...]` : "",
     "",
     "## Required Improvements",
     refinementPrompt,
