@@ -179,10 +179,11 @@ export async function runValidation(
 ): Promise<FullValidationResult> {
   const { pipelineRunId, stageName, stageOutput } = options;
 
-  // If no stage prompt provided, return a pass with minimal checks
-  console.log(`[ValidationRunner] stageName=${stageName}, stagePrompt length=${options.stagePrompt?.length ?? 0}, validationPrompt length=${options.validationPrompt?.length ?? 0}`);
+  // If no stage prompt provided, we cannot run prompt-derived validation.
+  // Return a low-confidence result that requires human approval rather than
+  // silently passing with score 70.
   if (!options.stagePrompt) {
-    console.log(`[ValidationRunner] No stagePrompt — returning minimal result`);
+    console.warn(`[ValidationRunner] No stagePrompt for ${stageName} — validation degraded, requires approval`);
     return buildMinimalResult(pipelineRunId, stageName, stageOutput);
   }
 
@@ -350,28 +351,37 @@ function buildMinimalResult(
   const wordCount = output.split(/\s+/).filter(w => w.length > 0).length;
   const hasSubstance = wordCount > 100;
 
+  // Without a stage prompt, we can't validate structural requirements.
+  // Cap at 45 (below typical pass threshold of 50-60) so the stage
+  // requires human approval rather than silently advancing.
   return {
     pipelineRunId,
     stageName,
     timestamp: new Date().toISOString(),
-    passed: hasSubstance,
-    confidenceScore: hasSubstance ? 70 : 30,
+    passed: false,
+    confidenceScore: hasSubstance ? 45 : 20,
     deterministicResults: [{
       type: 'output_substance',
       name: 'Output Substance',
       status: hasSubstance ? 'PASS' : 'FAIL',
       score: Math.min(1, wordCount / 200),
-      message: `${wordCount} words`,
+      message: `${wordCount} words (no stagePrompt — structural validation skipped)`,
       weight: 1,
     }],
     llmResults: [],
-    issues: hasSubstance ? [] : [{
+    issues: [{
+      id: 'min-0',
+      code: 'no_stage_prompt',
+      severity: 'WARN' as const,
+      title: 'Validation degraded — no stage prompt',
+      description: 'Stage prompt unavailable — prompt-derived validation was skipped. Human approval required.',
+    }, ...(hasSubstance ? [] : [{
       id: 'min-1',
       code: 'insufficient_output',
-      severity: 'ERROR',
+      severity: 'ERROR' as any,
       title: 'Output too short',
       description: `Only ${wordCount} words — expected at least 100`,
-    }],
+    }])],
     recommendations: [],
     contractResult: {
       stageName,

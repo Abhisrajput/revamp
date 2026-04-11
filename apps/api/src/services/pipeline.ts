@@ -1733,7 +1733,9 @@ export class PipelineService {
     });
 
     // Fire-and-forget: generate L0/L1 tier summaries (OpenViking pattern)
-    generateTierSummaries(artifactId, stageName, result.output).catch(() => {});
+    generateTierSummaries(artifactId, stageName, result.output).catch((err) => {
+      console.error(`[Pipeline] tier summary generation failed for ${stageName}:`, err instanceof Error ? err.message : err);
+    });
   }
 
   /**

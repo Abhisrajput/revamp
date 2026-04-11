@@ -133,25 +133,25 @@ async function bootstrap() {
     });
   });
 
-  // BREE Engine proxy routes — forward to Rust service
-  fastify.get("/bree/languages", async (req, reply) => {
+  // BREE Engine proxy routes — forward to Rust service (auth-gated)
+  fastify.get("/bree/languages", { onRequest: [fastify.authenticate] }, async (req, reply) => {
     const { breeListLanguages } = await import("@/services/bree-client.js");
     return reply.send(await breeListLanguages());
   });
-  fastify.get("/bree/tiers", async (req, reply) => {
+  fastify.get("/bree/tiers", { onRequest: [fastify.authenticate] }, async (req, reply) => {
     const { breeListTiers } = await import("@/services/bree-client.js");
     return reply.send(await breeListTiers());
   });
-  fastify.get("/bree/readiness", async (req, reply) => {
+  fastify.get("/bree/readiness", { onRequest: [fastify.authenticate] }, async (req, reply) => {
     const { breeReadiness } = await import("@/services/bree-client.js");
     return reply.send(await breeReadiness());
   });
-  fastify.post("/bree/detect", async (req, reply) => {
+  fastify.post("/bree/detect", { onRequest: [fastify.authenticate] }, async (req, reply) => {
     const { breeDetect } = await import("@/services/bree-client.js");
     const body = req.body as { files: Array<{ path: string; content: string }> };
     return reply.send(await breeDetect(body.files));
   });
-  fastify.post("/bree/analyze", async (req, reply) => {
+  fastify.post("/bree/analyze", { onRequest: [fastify.authenticate] }, async (req, reply) => {
     const { breeAnalyze } = await import("@/services/bree-client.js");
     const body = req.body as { files: Array<{ path: string; content: string }> };
     return reply.send(await breeAnalyze(body.files));

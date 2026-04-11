@@ -368,16 +368,19 @@ export async function breeFullContext(
   const results: BreeFullContext = { online: true };
 
   // Run all analyses in parallel — each is independent and non-fatal
+  const logBreeErr = (label: string) => (err: unknown) => {
+    console.error(`[BREE] ${label} failed:`, err instanceof Error ? err.message : err);
+  };
   const promises = [
     input.path
-      ? breeScanDirectory(input.path).then(r => { results.scanResult = r; }).catch(() => {})
+      ? breeScanDirectory(input.path).then(r => { results.scanResult = r; }).catch(logBreeErr('scanDirectory'))
       : Promise.resolve(),
-    breeAnalyzeRequirements(input).then(r => { results.requirements = r; }).catch(() => {}),
-    breeAnalyzeGraph(input).then(r => { results.graphAnalysis = r; }).catch(() => {}),
+    breeAnalyzeRequirements(input).then(r => { results.requirements = r; }).catch(logBreeErr('analyzeRequirements')),
+    breeAnalyzeGraph(input).then(r => { results.graphAnalysis = r; }).catch(logBreeErr('analyzeGraph')),
     input.path
-      ? breeAnalyzeDirectory(input.path).then(r => { results.analysisReport = r; }).catch(() => {})
+      ? breeAnalyzeDirectory(input.path).then(r => { results.analysisReport = r; }).catch(logBreeErr('analyzeDirectory'))
       : input.files
-        ? breeAnalyze(input.files).then(r => { results.analysisReport = r; }).catch(() => {})
+        ? breeAnalyze(input.files).then(r => { results.analysisReport = r; }).catch(logBreeErr('analyze'))
         : Promise.resolve(),
   ];
 

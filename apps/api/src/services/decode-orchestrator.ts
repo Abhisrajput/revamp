@@ -320,7 +320,9 @@ export async function orchestrateDecodeStage(
       checkAbort();
       while (active.size < CONCURRENCY && nextIdx < createdSubtasks.length) {
         const item = createdSubtasks[nextIdx++];
-        const p = runSubtaskWorker(item).catch(() => {});
+        const p = runSubtaskWorker(item).catch((err) => {
+          console.error(`[DECODE] subtask worker failed for ${item.plan.type}:`, err instanceof Error ? err.message : err);
+        });
         active.add(p);
         p.finally(() => active.delete(p));
       }

@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -20,6 +21,8 @@ import (
 type VertexAIProvider struct {
 	*BaseProvider
 	client             *genai.Client
+	clientOnce         sync.Once
+	clientErr          error
 	logger             *zap.Logger
 	projectID          string
 	location           string
@@ -100,40 +103,41 @@ func (vp *VertexAIProvider) SupportsModel(model string) bool {
 }
 
 // initClient lazily initializes the Vertex AI client with appropriate credentials.
+// Thread-safe via sync.Once — concurrent requests share a single client instance.
 func (vp *VertexAIProvider) initClient(ctx context.Context) error {
-	if vp.client != nil {
-		return nil
-	}
-
-	clientConfig := &genai.ClientConfig{
-		Project:  vp.projectID,
-		Location: vp.location,
-		Backend:  genai.BackendVertexAI,
-	}
-
-	// Set credentials based on auth mode
-	if vp.serviceAccountJSON != "" {
-		creds, err := google.CredentialsFromJSON(ctx, []byte(vp.serviceAccountJSON),
-			"https://www.googleapis.com/auth/cloud-platform",
-		)
-		if err != nil {
-			return fmt.Errorf("failed to parse service account JSON: %w", err)
+	vp.clientOnce.Do(func() {
+		clientConfig := &genai.ClientConfig{
+			Project:  vp.projectID,
+			Location: vp.location,
+			Backend:  genai.BackendVertexAI,
 		}
-		clientConfig.Credentials = creds
-	} else if vp.accessToken != "" {
-		// Wrap the static access token in a google.Credentials via a TokenSource
-		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: vp.accessToken})
-		clientConfig.Credentials = &google.Credentials{TokenSource: ts}
-	}
-	// If neither is set, the SDK uses Application Default Credentials (ADC)
 
-	client, err := genai.NewClient(ctx, clientConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create Vertex AI client: %w", err)
-	}
+		// Set credentials based on auth mode
+		if vp.serviceAccountJSON != "" {
+			creds, err := google.CredentialsFromJSON(ctx, []byte(vp.serviceAccountJSON),
+				"https://www.googleapis.com/auth/cloud-platform",
+			)
+			if err != nil {
+				vp.clientErr = fmt.Errorf("failed to parse service account JSON: %w", err)
+				return
+			}
+			clientConfig.Credentials = creds
+		} else if vp.accessToken != "" {
+			// Wrap the static access token in a google.Credentials via a TokenSource
+			ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: vp.accessToken})
+			clientConfig.Credentials = &google.Credentials{TokenSource: ts}
+		}
+		// If neither is set, the SDK uses Application Default Credentials (ADC)
 
-	vp.client = client
-	return nil
+		client, err := genai.NewClient(ctx, clientConfig)
+		if err != nil {
+			vp.clientErr = fmt.Errorf("failed to create Vertex AI client: %w", err)
+			return
+		}
+
+		vp.client = client
+	})
+	return vp.clientErr
 }
 
 // Complete sends a completion request to Vertex AI

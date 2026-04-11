@@ -446,15 +446,11 @@ export async function runMultiAgentStage(
 
   const successfulResults = subtaskResults.filter(r => r.status === 'completed');
   if (successfulResults.length === 0) {
-    return {
-      output: '',
-      subtaskResults,
-      coveragePercentage: 0,
-      gapFillRounds: 0,
-      refinementCount: 0,
-      duration: Date.now() - startTime,
-      subtaskCount: plan.length,
-    };
+    const failedTypes = subtaskResults.map(r => `${r.type}(${r.status})`).join(', ');
+    throw new Error(
+      `All ${plan.length} subtasks failed — cannot compose. Failed: [${failedTypes}]. ` +
+      `Check LLM provider availability and error logs.`
+    );
   }
 
   // ── STEP 3: COMPOSITION ────────────────────────────────────

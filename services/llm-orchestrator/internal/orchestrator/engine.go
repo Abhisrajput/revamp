@@ -290,10 +290,11 @@ func (e *Engine) multiplexStream(ctx context.Context, in <-chan *providers.Strea
 
 			totalTokens += len(chunk.Delta)
 			out <- &StreamingChunk{
-				RequestID: requestID,
-				Provider:  providerName,
-				Delta:     chunk.Delta,
-				Index:     chunk.Index,
+				RequestID:       requestID,
+				Provider:        providerName,
+				Delta:           chunk.Delta,
+				Index:           chunk.Index,
+				AdvisorThinking: chunk.AdvisorThinking,
 			}
 
 		case <-ctx.Done():
@@ -305,14 +306,15 @@ func (e *Engine) multiplexStream(ctx context.Context, in <-chan *providers.Strea
 
 // StreamingChunk represents a chunk of streaming data
 type StreamingChunk struct {
-	RequestID    string
-	Provider     string
-	Delta        string
-	Index        int
-	FinishReason string
-	TotalTokens  int
-	Latency      time.Duration
-	Error        string
+	RequestID       string
+	Provider        string
+	Delta           string
+	Index           int
+	FinishReason    string
+	TotalTokens     int
+	Latency         time.Duration
+	Error           string
+	AdvisorThinking bool // keepalive signal during advisor (Opus) sub-inference
 }
 
 // getCacheKey generates a SHA256-based cache key for a request.
@@ -337,7 +339,13 @@ func (cr *CompletionRequest) getCacheKey() string {
 
 	h := sha256.New()
 	h.Write([]byte(cr.Model))
-	h.Write([]byte(fmt.Sprintf("%.2f", cr.Temperature)))
+	h.Write([]byte(fmt.Sprintf("t=%.2f,p=%.2f,think=%v", cr.Temperature, cr.TopP, cr.ExtendedThinking)))
+	for _, s := range cr.Stop {
+		h.Write([]byte("stop:" + s))
+	}
+	if cr.ResponseFormat != nil {
+		h.Write([]byte(fmt.Sprintf("rf=%s", cr.ResponseFormat.Type)))
+	}
 	for _, msg := range cr.Messages {
 		h.Write([]byte(msg.Role))
 		h.Write([]byte(msg.Content))

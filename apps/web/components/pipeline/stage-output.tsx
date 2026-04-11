@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useEffect, memo, useMemo } from 'react';
+import DOMPurify from 'dompurify';
 import { cn } from '@/lib/utils';
 
 // --- Types ---
@@ -284,7 +285,16 @@ export const StageOutput = memo(function StageOutput({ output, isStreaming }: St
   }, [output, isStreaming]);
 
   const contentRef = useRef<HTMLDivElement>(null);
-  const html = useMemo(() => renderMarkdown(normalizeMarkdown(output)), [output]);
+  const html = useMemo(() => {
+    const raw = renderMarkdown(normalizeMarkdown(output));
+    // Sanitize to prevent XSS from LLM-generated or user-injected content.
+    // Allow class/style attrs and data-chart for mermaid, but block javascript: URLs.
+    return DOMPurify.sanitize(raw, {
+      ADD_ATTR: ['data-chart', 'data-rendered'],
+      ADD_TAGS: ['style'],
+      FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover'],
+    });
+  }, [output]);
 
   // Render mermaid diagrams after HTML is mounted
   useEffect(() => {

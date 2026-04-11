@@ -163,6 +163,13 @@ func (s *Server) handleCompletion(w http.ResponseWriter, r *http.Request) {
 		UserID:    r.Header.Get("X-User-ID"),
 	}
 
+	// Extend WriteTimeout for slow models — WriteTimeout covers the entire
+	// handler execution (including the blocking LLM call), not just the response write.
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Now().Add(dynamicTimeout + 2*time.Minute)); err != nil {
+		s.logger.Warn("Failed to extend write deadline for completion", zap.Error(err))
+	}
+
 	// Process request
 	resp, err := s.engine.Complete(r.Context(), req)
 	if err != nil {
@@ -290,39 +297,78 @@ func (s *Server) handleStreamCompletion(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Stream chunks
-	for chunk := range stream {
-		if chunk.Error != "" {
-			errJSON, _ := json.Marshal(chunk.Error)
-			fmt.Fprintf(w, "event: error\ndata: %s\n\n", string(errJSON))
-			flusher.Flush()
-			continue
-		}
+	// Extend the HTTP server's WriteTimeout for this SSE connection.
+	// The server default (cfg.StreamTimeout, typically 300s) is too short for
+	// long-running Opus composition streams (5-10+ min).  ResponseController
+	// lets us push the deadline forward per-request without disabling the
+	// server-level timeout for non-streaming handlers.
+	rc := http.NewResponseController(w)
+	writeDeadline := streamDynamicTimeout + 2*time.Minute // buffer beyond the LLM timeout
+	if err := rc.SetWriteDeadline(time.Now().Add(writeDeadline)); err != nil {
+		s.logger.Warn("Failed to extend SSE write deadline", zap.Error(err))
+	}
 
-		// Advisor thinking keepalive — tells clients the stream is alive during Opus call
-		if chunk.AdvisorThinking {
-			fmt.Fprintf(w, "event: advisor_thinking\ndata: {}\n\n")
-			flusher.Flush()
-			continue
-		}
+	// Keepalive ticker — sends SSE comments every 30s to:
+	//  1. Prevent intermediate proxies (nginx, ALB) from closing idle connections
+	//  2. Re-extend the write deadline so it never expires during active streams
+	keepaliveTicker := time.NewTicker(30 * time.Second)
+	defer keepaliveTicker.Stop()
 
-		if chunk.Delta != "" {
-			// SSE data fields cannot contain raw newlines — they break the
-			// line-based protocol.  Send each line of the delta as a separate
-			// "data:" line within the same event; per the SSE spec the client
-			// reassembles them joined by "\n".
-			lines := strings.Split(chunk.Delta, "\n")
-			fmt.Fprintf(w, "event: message\n")
-			for _, line := range lines {
-				fmt.Fprintf(w, "data: %s\n", line)
+	// Stream chunks with interleaved keepalive
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				// Stream closed normally
+				return
 			}
-			fmt.Fprintf(w, "\n") // blank line = end of event
-			flusher.Flush()
-		}
 
-		if chunk.FinishReason != "" {
-			fmt.Fprintf(w, "event: done\ndata: {\"finish_reason\": \"%s\"}\n\n", chunk.FinishReason)
+			if chunk.Error != "" {
+				errJSON, _ := json.Marshal(chunk.Error)
+				fmt.Fprintf(w, "event: error\ndata: %s\n\n", string(errJSON))
+				flusher.Flush()
+				continue
+			}
+
+			// Advisor thinking keepalive — tells clients the stream is alive during Opus call
+			if chunk.AdvisorThinking {
+				fmt.Fprintf(w, "event: advisor_thinking\ndata: {}\n\n")
+				flusher.Flush()
+				continue
+			}
+
+			if chunk.Delta != "" {
+				// SSE data fields cannot contain raw newlines — they break the
+				// line-based protocol.  Send each line of the delta as a separate
+				// "data:" line within the same event; per the SSE spec the client
+				// reassembles them joined by "\n".
+				lines := strings.Split(chunk.Delta, "\n")
+				fmt.Fprintf(w, "event: message\n")
+				for _, line := range lines {
+					fmt.Fprintf(w, "data: %s\n", line)
+				}
+				fmt.Fprintf(w, "\n") // blank line = end of event
+				flusher.Flush()
+			}
+
+			if chunk.FinishReason != "" {
+				fmt.Fprintf(w, "event: done\ndata: {\"finish_reason\": \"%s\"}\n\n", chunk.FinishReason)
+				flusher.Flush()
+			}
+
+		case <-keepaliveTicker.C:
+			// SSE comment — ignored by clients but keeps the connection alive
+			if _, err := fmt.Fprintf(w, ": keepalive\n\n"); err != nil {
+				s.logger.Debug("SSE keepalive write failed, client disconnected", zap.Error(err))
+				return
+			}
 			flusher.Flush()
+			// Re-extend write deadline so the server never kills an active stream
+			rc.SetWriteDeadline(time.Now().Add(writeDeadline))
+
+		case <-r.Context().Done():
+			// Client disconnected
+			return
 		}
 	}
 }

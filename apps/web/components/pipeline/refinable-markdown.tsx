@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useRef, useEffect, memo, useMemo } from 'react';
+import DOMPurify from 'dompurify';
 import { Pencil, X, Loader2, Send } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -125,7 +126,7 @@ export const RefinableMarkdown = memo(function RefinableMarkdown({
         {preText.trim() && (
           <div
             className="stage-output text-sm text-slate-700 dark:text-slate-300 mb-2"
-            dangerouslySetInnerHTML={{ __html: renderSimple(preText) }}
+            dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderSimple(preText)) }}
           />
         )}
 
@@ -138,7 +139,7 @@ export const RefinableMarkdown = memo(function RefinableMarkdown({
               <div className="flex items-center gap-2 mt-3">
                 <div
                   className="stage-output text-sm text-slate-700 dark:text-slate-300 flex-1 font-semibold"
-                  dangerouslySetInnerHTML={{ __html: renderSimple(section.heading) }}
+                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderSimple(section.heading)) }}
                 />
                 {!isRefining && (
                   <Button
@@ -208,7 +209,7 @@ export const RefinableMarkdown = memo(function RefinableMarkdown({
               {/* Section content */}
               <div
                 className="stage-output text-sm text-slate-700 dark:text-slate-300 overflow-x-auto"
-                dangerouslySetInnerHTML={{ __html: renderSimple(section.content) }}
+                dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderSimple(section.content)) }}
               />
             </div>
           );
@@ -218,13 +219,20 @@ export const RefinableMarkdown = memo(function RefinableMarkdown({
         {postText.trim() && (
           <div
             className="stage-output text-sm text-slate-700 dark:text-slate-300 mt-2"
-            dangerouslySetInnerHTML={{ __html: renderSimple(postText) }}
+            dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderSimple(postText)) }}
           />
         )}
       </div>
     </div>
   );
 });
+
+/** Sanitize HTML output from markdown renderer to prevent XSS */
+function sanitizeHtml(html: string): string {
+  return DOMPurify.sanitize(html, {
+    FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover'],
+  });
+}
 
 // --- Simple markdown renderer (reuses logic from StageOutput) ---
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/genai"
@@ -13,10 +14,12 @@ import (
 // GeminiProvider implements the LLMProvider interface for Google Gemini
 type GeminiProvider struct {
 	*BaseProvider
-	client    *genai.Client
-	logger    *zap.Logger
-	projectID string
-	apiKey    string
+	client     *genai.Client
+	clientOnce sync.Once
+	clientErr  error
+	logger     *zap.Logger
+	projectID  string
+	apiKey     string
 }
 
 // NewGeminiProvider creates a new Gemini provider.
@@ -77,21 +80,20 @@ func (gp *GeminiProvider) Complete(ctx context.Context, req *CompletionRequest) 
 		defer cancel()
 	}
 
-	// Initialize Gemini client if not already done
-	if gp.client == nil {
-		var err error
-		gp.client, err = genai.NewClient(ctx, &genai.ClientConfig{
+	// Thread-safe lazy initialization of Gemini client
+	gp.clientOnce.Do(func() {
+		gp.client, gp.clientErr = genai.NewClient(ctx, &genai.ClientConfig{
 			Project: gp.projectID,
 		})
-		if err != nil {
-			gp.RecordError(err)
-			return &CompletionResponse{
-				Provider: "gemini",
-				Model:    req.Model,
-				Error:    err.Error(),
-				Latency:  time.Since(start),
-			}, err
-		}
+	})
+	if gp.clientErr != nil {
+		gp.RecordError(gp.clientErr)
+		return &CompletionResponse{
+			Provider: "gemini",
+			Model:    req.Model,
+			Error:    gp.clientErr.Error(),
+			Latency:  time.Since(start),
+		}, gp.clientErr
 	}
 
 	// Build content for Gemini
@@ -190,19 +192,18 @@ func (gp *GeminiProvider) Stream(ctx context.Context, req *CompletionRequest) (<
 	go func() {
 		defer close(out)
 
-		// Initialize Gemini client if not already done
-		if gp.client == nil {
-			var err error
-			gp.client, err = genai.NewClient(ctx, &genai.ClientConfig{
+		// Thread-safe lazy initialization of Gemini client
+		gp.clientOnce.Do(func() {
+			gp.client, gp.clientErr = genai.NewClient(ctx, &genai.ClientConfig{
 				Project: gp.projectID,
 			})
-			if err != nil {
-				gp.RecordError(err)
-				out <- &StreamChunk{
-					Error: fmt.Sprintf("client init failed: %v", err),
-				}
-				return
+		})
+		if gp.clientErr != nil {
+			gp.RecordError(gp.clientErr)
+			out <- &StreamChunk{
+				Error: fmt.Sprintf("client init failed: %v", gp.clientErr),
 			}
+			return
 		}
 
 		// Build content for Gemini

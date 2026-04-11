@@ -18,6 +18,10 @@
  */
 
 import crypto from "crypto";
+// Advisor tool: enable Opus guidance for planning calls
+const FORGE_ADVISOR_ENABLED = process.env.ADVISOR_ENABLED !== 'false';
+const FORGE_ADVISOR_CONFIG = FORGE_ADVISOR_ENABLED ? { enabled: true, model: 'claude-opus-4-6', max_uses: 3 } as const : undefined;
+
 import { db } from "@/db/index.js";
 import { modernizedFiles, traceabilityEntries, stageArtifacts } from "@/db/schema.js";
 import { eq, and } from "drizzle-orm";
@@ -112,7 +116,7 @@ export async function orchestrateForgeStage(
   emit("director_planning", { message: "Planning code generation..." });
   checkAbort();
 
-  const planCallFn = llmProxyService.createCallFn({ maxTokens: opts.maxTokens || 8192, model: opts.model, credentials: opts.credentials });
+  const planCallFn = llmProxyService.createCallFn({ maxTokens: opts.maxTokens || 8192, model: opts.model, credentials: opts.credentials, advisor: FORGE_ADVISOR_CONFIG });
 
   // Extract frontend signals from SCAN output for planning
   const scanLower = scanOutput.toLowerCase();
@@ -514,7 +518,9 @@ ${gapBatch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.lang
               pipeline_run_id: opts.pipelineRunId,
               file_path: filePath, file_name: filePath.split('/').pop() || filePath,
               language, content, file_size: content.length, is_new: true,
-            }).catch(() => {});
+            }).catch((err) => {
+              console.error(`[FORGE] failed to save modernized file ${filePath}:`, err instanceof Error ? err.message : err);
+            });
 
             emit("file_generated" as any, { path: filePath, language, size: content.length });
           }
@@ -549,7 +555,9 @@ ${gapBatch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.lang
         status: "implemented",
         confidence: "0.85",
         notes: file.description,
-      }).catch(() => {}); // non-fatal
+      }).catch((err) => {
+        console.error(`[FORGE] traceability entry failed for ${file.path}/${ruleId}:`, err instanceof Error ? err.message : err);
+      });
     }
   }
 

@@ -490,7 +490,7 @@ export async function runStage(options: StageRunnerOptions): Promise<StageRunRes
       pipelineRunId: options.pipelineRunId,
       stageName: options.stageName,
       stageOutput: output,
-      stagePrompt: assembled.systemPrompt || options.promptOverride || '',
+      stagePrompt: assembled.userPrompt || options.promptOverride || '',
       validationPrompt: (options.project as any)?.validationPrompts?.[String(options.stageIndex)] || '',
       priorStageKeywords: assembled.priorStageKeywords,
       priorStageOutputs: options.priorOutputs?.map(po => ({ stageName: po.stageName, output: po.output })),
@@ -545,12 +545,12 @@ export async function runStage(options: StageRunnerOptions): Promise<StageRunRes
         pipelineRunId: options.pipelineRunId,
         stageName: options.stageName,
         stageOutput: output,
-        stagePrompt: assembled.systemPrompt || options.promptOverride || '',
+        stagePrompt: assembled.userPrompt || options.promptOverride || '',
         validationPrompt: (options.project as any)?.validationPrompts?.[String(options.stageIndex)] || '',
         priorStageKeywords: assembled.priorStageKeywords,
         priorStageOutputs: options.priorOutputs?.map(po => ({ stageName: po.stageName, output: po.output })),
         llmEvalFn: options.llmEvalFn,
-        skipLlmEval: true, // skip LLM on retry to save cost
+        skipLlmEval: options.skipLlmEval,
       });
     }
 
@@ -640,7 +640,6 @@ function buildRefinementRequest(
  * replace those sections. Otherwise, append new sections.
  */
 function mergeRefinement(original: string, refined: string): string {
-  // Extract headings from refined output
   const refinedSections = parseMarkdownSections(refined);
 
   if (refinedSections.length === 0) {
@@ -648,24 +647,47 @@ function mergeRefinement(original: string, refined: string): string {
     return original + '\n\n' + refined;
   }
 
-  let merged = original;
+  const originalSections = parseMarkdownSections(original);
+  if (originalSections.length === 0) {
+    return original + '\n\n' + refined;
+  }
 
+  // Build lookup of refined sections by normalized heading
+  const refinedMap = new Map(
+    refinedSections.map((s) => [s.heading.trim().toLowerCase(), s.content]),
+  );
+
+  // Preserve preamble (text before first heading)
+  const firstHeadingMatch = original.match(/^#{1,3}\s+/m);
+  const preamble = firstHeadingMatch?.index && firstHeadingMatch.index > 0
+    ? original.slice(0, firstHeadingMatch.index).trimEnd()
+    : '';
+
+  // Rebuild: keep original section order, replace content where refined
+  const parts: string[] = [];
+  if (preamble) parts.push(preamble);
+
+  for (const section of originalSections) {
+    const key = section.heading.trim().toLowerCase();
+    const replacement = refinedMap.get(key);
+
+    // Detect heading level from original text
+    const hMatch = original.match(new RegExp(`^(#{1,3})\\s+${escapeRegex(section.heading)}`, 'm'));
+    const prefix = hMatch ? hMatch[1] : '##';
+
+    parts.push(`${prefix} ${section.heading}\n${replacement ?? section.content}`);
+    refinedMap.delete(key);
+  }
+
+  // Append new sections from refinement not present in original
   for (const section of refinedSections) {
-    const headingPattern = new RegExp(
-      `^(#{1,3}\\s*${escapeRegex(section.heading)})([\\s\\S]*?)(?=^#{1,3}\\s|$)`,
-      'm',
-    );
-
-    if (headingPattern.test(merged)) {
-      // Replace existing section
-      merged = merged.replace(headingPattern, `$1\n${section.content}\n`);
-    } else {
-      // Append new section
-      merged += `\n\n## ${section.heading}\n${section.content}`;
+    if (refinedMap.has(section.heading.trim().toLowerCase())) {
+      // Section still in refinedMap means it was NOT matched/consumed above — it's new
+      parts.push(`## ${section.heading}\n${section.content}`);
     }
   }
 
-  return merged;
+  return parts.join('\n\n');
 }
 
 /**

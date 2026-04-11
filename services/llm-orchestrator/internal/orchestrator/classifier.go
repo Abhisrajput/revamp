@@ -76,6 +76,9 @@ type ModelSelector struct {
 }
 
 // tierCandidates defines the model preference order per tier.
+// Use canonical short names — the registry does prefix matching, so these
+// must match what providers register (e.g. "claude-sonnet-4-6", not a
+// date-suffixed version that may not exist in the registry).
 var tierCandidates = map[ComplexityTier][]string{
 	TierSimple: {
 		"claude-haiku-4-5-20251001",
@@ -83,15 +86,15 @@ var tierCandidates = map[ComplexityTier][]string{
 		"gpt-4o-mini",
 	},
 	TierStandard: {
-		"claude-sonnet-4-6-20250514",
+		"claude-sonnet-4-6",
 		"gpt-4o",
 		"gemini-1.5-pro",
-		"claude-sonnet-4-5-20250514",
+		"claude-sonnet-4-5",
 	},
 	TierComplex: {
-		"claude-opus-4-6-20250605",
+		"claude-opus-4-6",
 		"gpt-4o",
-		"claude-sonnet-4-6-20250514",
+		"claude-sonnet-4-6",
 	},
 }
 

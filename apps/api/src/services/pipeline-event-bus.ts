@@ -181,7 +181,9 @@ class PipelineEventBus {
    * Use for non-critical events where you don't want to block the caller.
    */
   fire(event: PipelineEvent): void {
-    this.emit(event).catch(() => {});
+    this.emit(event).catch((err) => {
+      console.error(`[EventBus] fire(${event.type}) failed:`, err instanceof Error ? err.message : err);
+    });
   }
 
   /**

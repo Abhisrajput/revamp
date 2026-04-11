@@ -291,7 +291,9 @@ export async function recordAgentCompletion(
       stageOutput,
       findings: extractFindings(result.result),
       decisions: extractDecisions(result.result),
-    }).catch(() => {});
+    }).catch((err) => {
+      console.error('[AgentPipeline] failed to save session data:', err instanceof Error ? err.message : err);
+    });
   }
 }
 
