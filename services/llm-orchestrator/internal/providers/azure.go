@@ -390,25 +390,6 @@ func (s *lineScanner) Scan() bool {
 func (s *lineScanner) Text() string { return s.line }
 
 // calculateAzureCost estimates cost for Azure OpenAI.
-// Azure pricing varies by region and commitment tier; these are pay-as-you-go estimates.
 func calculateAzureCost(model string, inputTokens, outputTokens int) float64 {
-	// Azure uses deployment names, so we match common patterns
-	lower := strings.ToLower(model)
-	var inputCost, outputCost float64
-
-	switch {
-	case strings.Contains(lower, "gpt-4o"):
-		inputCost = 5.0 / 1000000
-		outputCost = 15.0 / 1000000
-	case strings.Contains(lower, "gpt-4"):
-		inputCost = 30.0 / 1000000
-		outputCost = 60.0 / 1000000
-	case strings.Contains(lower, "gpt-35"), strings.Contains(lower, "gpt-3.5"):
-		inputCost = 0.5 / 1000000
-		outputCost = 1.5 / 1000000
-	default:
-		return 0
-	}
-
-	return float64(inputTokens)*inputCost + float64(outputTokens)*outputCost
+	return CalculateCost(model, inputTokens, outputTokens)
 }

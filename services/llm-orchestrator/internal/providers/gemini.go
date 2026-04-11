@@ -282,21 +282,5 @@ func (gp *GeminiProvider) buildContents(req *CompletionRequest) ([]*genai.Conten
 
 // calculateGeminiCost calculates the cost of a Gemini API call
 func calculateGeminiCost(model string, inputTokens, outputTokens int) float64 {
-	var inputCost, outputCost float64
-
-	switch model {
-	case "gemini-2.0-flash":
-		inputCost = 0.075 / 1000000 // per token
-		outputCost = 0.30 / 1000000 // per token
-	case "gemini-1.5-pro":
-		inputCost = 1.25 / 1000000
-		outputCost = 5.0 / 1000000
-	case "gemini-1.5-flash":
-		inputCost = 0.075 / 1000000
-		outputCost = 0.30 / 1000000
-	default:
-		return 0
-	}
-
-	return float64(inputTokens)*inputCost + float64(outputTokens)*outputCost
+	return CalculateCost(model, inputTokens, outputTokens)
 }

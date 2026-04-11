@@ -103,10 +103,10 @@ export async function orchestrateForgeStage(
   const specLockOutput = opts.priorOutputs.find(o => o.stageName === "SPEC_LOCK")?.output || "";
   const scanOutput = opts.priorOutputs.find(o => o.stageName === "SCAN")?.output || "";
 
-  const projectConfig = opts.projectContext as any;
-  const targetStack = projectConfig?.target_stack || projectConfig?.targetStack || "typescript-express";
-  const targetCloud = projectConfig?.target_cloud || projectConfig?.targetCloud || "aws";
-  const sourceLanguages = (projectConfig?.sourceLanguages as string[])?.join(", ") || (projectConfig?.source_languages as string[])?.join(", ") || "unknown";
+  const projectConfig = opts.projectContext as unknown as Record<string, unknown>;
+  const targetStack = (projectConfig?.target_stack ?? projectConfig?.targetStack ?? "typescript-express") as string;
+  const targetCloud = (projectConfig?.target_cloud ?? projectConfig?.targetCloud ?? "aws") as string;
+  const sourceLanguages = ((projectConfig?.sourceLanguages ?? projectConfig?.source_languages) as string[] | undefined)?.join(", ") || "unknown";
 
   emit("context_retrieval", {
     message: `Context loaded: DECODE (${decodeOutput.length} chars), ARCHITECT (${architectOutput.length} chars), SPEC_LOCK (${specLockOutput.length} chars), SCAN (${scanOutput.length} chars)`,
@@ -344,7 +344,7 @@ Generate ALL ${batch.length} files with complete, working code. No stubs, no TOD
         // Store in DB
         const fileName = filePath.split("/").pop() || filePath;
         await db.insert(modernizedFiles).values({
-          project_id: (opts.projectContext as any).id || (opts.projectContext as any).projectId,
+          project_id: (projectConfig?.id ?? projectConfig?.projectId ?? opts.pipelineRunId) as string,
           pipeline_run_id: opts.pipelineRunId,
           file_path: filePath,
           file_name: fileName,
@@ -355,7 +355,7 @@ Generate ALL ${batch.length} files with complete, working code. No stubs, no TOD
         });
 
         // Emit file generated event
-        emit("file_generated" as any, {
+        emit("subtask_executing", {
           path: filePath,
           name: fileName,
           language,
@@ -514,7 +514,7 @@ ${gapBatch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.lang
             generatedFiles.push({ path: filePath, content, language, description: planned?.description || filePath, rules: planned?.rules || [] });
 
             await db.insert(modernizedFiles).values({
-              project_id: (opts.projectContext as any).id || (opts.projectContext as any).projectId,
+              project_id: (projectConfig?.id ?? projectConfig?.projectId ?? opts.pipelineRunId) as string,
               pipeline_run_id: opts.pipelineRunId,
               file_path: filePath, file_name: filePath.split('/').pop() || filePath,
               language, content, file_size: content.length, is_new: true,
@@ -522,7 +522,7 @@ ${gapBatch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.lang
               console.error(`[FORGE] failed to save modernized file ${filePath}:`, err instanceof Error ? err.message : err);
             });
 
-            emit("file_generated" as any, { path: filePath, language, size: content.length });
+            emit("subtask_executing", { path: filePath, language, size: content.length });
           }
         } catch (gapErr) {
           emit("subtask_executing", { message: `Gap batch error: ${gapErr instanceof Error ? gapErr.message : String(gapErr)}` });
@@ -543,7 +543,7 @@ ${gapBatch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.lang
   // ── STEP 4: Build traceability matrix ─────────────────────────
   emit("composing", { message: "Building traceability matrix..." });
 
-  const projectId = (opts.projectContext as any).id || (opts.projectContext as any).projectId;
+  const projectId = (projectConfig?.id ?? projectConfig?.projectId ?? opts.pipelineRunId) as string;
   for (const file of generatedFiles) {
     for (const ruleId of file.rules) {
       await db.insert(traceabilityEntries).values({
@@ -639,8 +639,8 @@ ${gapBatch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.lang
   // ── STEP 6: Validate ──────────────────────────────────────────
   emit("validating" as StagePhase, { message: "Validating generated code..." });
 
-  const stagePrompt = (opts.projectContext as any)?.stagePrompts?.["5"] || "";
-  const validationPrompt = (opts.projectContext as any)?.validationPrompts?.["5"] || "";
+  const stagePrompt = (projectConfig?.stagePrompts as Record<string, string> | undefined)?.["5"] || "";
+  const validationPrompt = (projectConfig?.validationPrompts as Record<string, string> | undefined)?.["5"] || "";
 
   let validationResult: FullValidationResult | null = null;
   try {

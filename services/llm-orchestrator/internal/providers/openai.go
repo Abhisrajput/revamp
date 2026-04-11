@@ -691,38 +691,7 @@ func (op *OpenAIProvider) streamViaResponsesAPI(ctx context.Context, req *Comple
 // calculateOpenAICost calculates the cost of an OpenAI API call.
 // Pricing per 1K tokens (as of 2026-03).
 func calculateOpenAICost(model string, inputTokens, outputTokens int) float64 {
-	var inputCost, outputCost float64
-
-	switch {
-	// GPT-5 Codex family
-	case isCodexResponsesModel(model):
-		inputCost = 0.002 / 1000
-		outputCost = 0.008 / 1000
-	// GPT-4o
-	case strings.HasPrefix(model, "gpt-4o"):
-		inputCost = 0.005 / 1000
-		outputCost = 0.015 / 1000
-	case model == "gpt-4-turbo":
-		inputCost = 0.01 / 1000
-		outputCost = 0.03 / 1000
-	case model == "gpt-4" || model == "gpt-4-0613":
-		inputCost = 0.03 / 1000
-		outputCost = 0.06 / 1000
-	case model == "gpt-4-32k":
-		inputCost = 0.06 / 1000
-		outputCost = 0.12 / 1000
-	case strings.HasPrefix(model, "gpt-3.5-turbo"):
-		inputCost = 0.0005 / 1000
-		outputCost = 0.0015 / 1000
-	// o-series reasoning models
-	case isReasoningModel(model):
-		inputCost = 0.015 / 1000
-		outputCost = 0.06 / 1000
-	default:
-		return 0
-	}
-
-	return float64(inputTokens)*inputCost + float64(outputTokens)*outputCost
+	return CalculateCost(model, inputTokens, outputTokens)
 }
 
 // ─── HELPERS ────────────────────────────────────────────────────

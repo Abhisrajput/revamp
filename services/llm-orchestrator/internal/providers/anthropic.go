@@ -1,8 +1,14 @@
 package providers
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/liushuangls/go-anthropic/v2"
@@ -19,9 +25,12 @@ import (
 //     enable thinking to let the model plan before responding.
 //   - Model separation: use Sonnet for generation, Haiku for evaluation
 //     to avoid self-validation bias.
+//   - Advisor tool: when enabled, uses raw HTTP to send the advisor_20260301
+//     server-side tool for Opus-backed guidance (beta feature).
 type AnthropicProvider struct {
 	*BaseProvider
 	client *anthropic.Client
+	apiKey string // stored separately for raw HTTP advisor calls
 	logger *zap.Logger
 }
 
@@ -44,6 +53,7 @@ func NewAnthropicProvider(apiKey string, logger *zap.Logger) *AnthropicProvider 
 	return &AnthropicProvider{
 		BaseProvider: NewBaseProvider("anthropic", models),
 		client:       client,
+		apiKey:       apiKey,
 		logger:       logger,
 	}
 }
@@ -65,6 +75,11 @@ func (ap *AnthropicProvider) SupportsModel(model string) bool {
 
 // Complete sends a completion request to Anthropic
 func (ap *AnthropicProvider) Complete(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
+	// Advisor tool: use raw HTTP path (SDK doesn't support advisor_20260301 type)
+	if req.Advisor != nil && req.Advisor.Enabled {
+		return ap.completeWithAdvisor(ctx, req)
+	}
+
 	start := time.Now()
 
 	messages, systemPrompt := ap.buildMessages(req)
@@ -163,6 +178,11 @@ func (ap *AnthropicProvider) Complete(ctx context.Context, req *CompletionReques
 
 // Stream sends a streaming completion request to Anthropic
 func (ap *AnthropicProvider) Stream(ctx context.Context, req *CompletionRequest) (<-chan *StreamChunk, error) {
+	// Advisor tool: use raw HTTP path for streaming
+	if req.Advisor != nil && req.Advisor.Enabled {
+		return ap.streamWithAdvisor(ctx, req)
+	}
+
 	out := make(chan *StreamChunk)
 
 	messages, systemPrompt := ap.buildMessages(req)
@@ -317,44 +337,390 @@ func (ap *AnthropicProvider) buildMessages(req *CompletionRequest) ([]anthropic.
 	return messages, systemPrompt
 }
 
+// ─── ADVISOR TOOL — RAW HTTP PATH ──────────────────────────────────
+
+const (
+	anthropicAPIURL     = "https://api.anthropic.com/v1/messages"
+	anthropicAPIVersion = "2023-06-01"
+	advisorBeta         = "advisor-tool-2026-03-01"
+)
+
+// advisorRequestBody is the raw HTTP request for the Anthropic Messages API with advisor tool.
+type advisorRequestBody struct {
+	Model       string             `json:"model"`
+	MaxTokens   int                `json:"max_tokens"`
+	System      string             `json:"system,omitempty"`
+	Messages    []advisorMessage   `json:"messages"`
+	Tools       []advisorTool      `json:"tools"`
+	Temperature *float32           `json:"temperature,omitempty"`
+	Stream      bool               `json:"stream,omitempty"`
+}
+
+type advisorMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type advisorTool struct {
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Model   string `json:"model"`
+	MaxUses int    `json:"max_uses,omitempty"`
+}
+
+// advisorResponseBody is the raw HTTP response from the Anthropic Messages API.
+type advisorResponseBody struct {
+	ID      string `json:"id"`
+	Model   string `json:"model"`
+	Content []struct {
+		Type      string `json:"type"` // "text", "thinking", "server_tool_use", "advisor_tool_result"
+		Text      string `json:"text,omitempty"`
+		Thinking  string `json:"thinking,omitempty"`
+		ToolUseID string `json:"tool_use_id,omitempty"`
+		Name      string `json:"name,omitempty"`
+		Content   *struct {
+			Type string `json:"type"` // "advisor_result"
+			Text string `json:"text,omitempty"`
+		} `json:"content,omitempty"`
+	} `json:"content"`
+	StopReason string `json:"stop_reason"`
+	Usage      struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+		Iterations   []struct {
+			Type         string `json:"type"` // "message" or "advisor_message"
+			Model        string `json:"model,omitempty"`
+			InputTokens  int    `json:"input_tokens"`
+			OutputTokens int    `json:"output_tokens"`
+		} `json:"iterations,omitempty"`
+	} `json:"usage"`
+}
+
+// resolveAPIKey returns the per-request API key if available, else the default.
+func (ap *AnthropicProvider) resolveAPIKey(req *CompletionRequest) string {
+	if req.Credentials != nil && req.Credentials.AnthropicAPIKey != "" {
+		return req.Credentials.AnthropicAPIKey
+	}
+	return ap.apiKey
+}
+
+// buildAdvisorTool creates the advisor tool definition for the request.
+func buildAdvisorTool(cfg *AdvisorConfig) advisorTool {
+	model := cfg.Model
+	if model == "" {
+		model = "claude-opus-4-6"
+	}
+	maxUses := cfg.MaxUses
+	if maxUses <= 0 {
+		maxUses = 3
+	}
+	return advisorTool{
+		Type:    "advisor_20260301",
+		Name:    "advisor",
+		Model:   model,
+		MaxUses: maxUses,
+	}
+}
+
+// buildAdvisorMessages converts internal messages to the advisor request format.
+func (ap *AnthropicProvider) buildAdvisorMessages(req *CompletionRequest) ([]advisorMessage, string) {
+	var system string
+	msgs := make([]advisorMessage, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		if m.Role == "system" {
+			system = m.Content
+			continue
+		}
+		msgs = append(msgs, advisorMessage{Role: m.Role, Content: m.Content})
+	}
+	return msgs, system
+}
+
+// completeWithAdvisor sends a non-streaming request with the advisor tool via raw HTTP.
+func (ap *AnthropicProvider) completeWithAdvisor(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
+	start := time.Now()
+
+	msgs, system := ap.buildAdvisorMessages(req)
+	body := advisorRequestBody{
+		Model:     req.Model,
+		MaxTokens: req.MaxTokens,
+		System:    system,
+		Messages:  msgs,
+		Tools:     []advisorTool{buildAdvisorTool(req.Advisor)},
+	}
+
+	if req.ExtendedThinking {
+		t := float32(1.0)
+		body.Temperature = &t
+	} else if req.Temperature > 0 {
+		body.Temperature = &req.Temperature
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal advisor request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", anthropicAPIURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("create advisor request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", ap.resolveAPIKey(req))
+	httpReq.Header.Set("anthropic-version", anthropicAPIVersion)
+	httpReq.Header.Set("anthropic-beta", advisorBeta)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		ap.RecordError(err)
+		return nil, fmt.Errorf("advisor HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read advisor response: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		ap.RecordError(fmt.Errorf("advisor API %d", resp.StatusCode))
+		return &CompletionResponse{
+			Provider: "anthropic",
+			Model:    req.Model,
+			Error:    fmt.Sprintf("advisor API error %d: %s", resp.StatusCode, string(respBody)),
+			Latency:  time.Since(start),
+		}, fmt.Errorf("advisor API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var parsed advisorResponseBody
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, fmt.Errorf("parse advisor response: %w", err)
+	}
+
+	// Extract text content (skip server_tool_use and advisor_tool_result — they're internal)
+	var content, thinkingContent string
+	for _, block := range parsed.Content {
+		switch block.Type {
+		case "text":
+			content += block.Text
+		case "thinking":
+			thinkingContent += block.Thinking
+		}
+	}
+
+	// Extract advisor usage from iterations[]
+	var advisorUsage *AdvisorUsage
+	advisorCalls := 0
+	advisorIn, advisorOut := 0, 0
+	for _, iter := range parsed.Usage.Iterations {
+		if iter.Type == "advisor_message" {
+			advisorCalls++
+			advisorIn += iter.InputTokens
+			advisorOut += iter.OutputTokens
+		}
+	}
+	if advisorCalls > 0 {
+		advisorModel := req.Advisor.Model
+		if advisorModel == "" {
+			advisorModel = "claude-opus-4-6"
+		}
+		advisorUsage = &AdvisorUsage{
+			AdvisorInputTokens:  advisorIn,
+			AdvisorOutputTokens: advisorOut,
+			AdvisorCalls:        advisorCalls,
+			AdvisorModel:        advisorModel,
+		}
+	}
+
+	ap.RecordSuccess()
+	latency := time.Since(start)
+
+	// Top-level usage = executor tokens only (advisor billed separately)
+	executorIn := parsed.Usage.InputTokens
+	executorOut := parsed.Usage.OutputTokens
+	cost := calculateAnthropicCost(req.Model, executorIn, executorOut)
+	if advisorUsage != nil {
+		advisorModel := advisorUsage.AdvisorModel
+		cost += calculateAnthropicCost(advisorModel, advisorIn, advisorOut)
+	}
+
+	result := &CompletionResponse{
+		ID:              parsed.ID,
+		Model:           parsed.Model,
+		Provider:        "anthropic",
+		Content:         content,
+		FinishReason:    parsed.StopReason,
+		InputTokens:     executorIn,
+		OutputTokens:    executorOut,
+		TotalTokens:     executorIn + executorOut,
+		ThinkingContent: thinkingContent,
+		AdvisorUsage:    advisorUsage,
+		Cost:            cost,
+		Latency:         latency,
+	}
+
+	ap.logger.Info("Anthropic advisor completion succeeded",
+		zap.String("model", req.Model),
+		zap.Int("executor_tokens", executorIn+executorOut),
+		zap.Int("advisor_calls", advisorCalls),
+		zap.Int("advisor_tokens", advisorIn+advisorOut),
+		zap.Duration("latency", latency),
+	)
+
+	return result, nil
+}
+
+// streamWithAdvisor sends a streaming request with the advisor tool via raw HTTP SSE.
+func (ap *AnthropicProvider) streamWithAdvisor(ctx context.Context, req *CompletionRequest) (<-chan *StreamChunk, error) {
+	out := make(chan *StreamChunk)
+
+	msgs, system := ap.buildAdvisorMessages(req)
+	body := advisorRequestBody{
+		Model:     req.Model,
+		MaxTokens: req.MaxTokens,
+		System:    system,
+		Messages:  msgs,
+		Tools:     []advisorTool{buildAdvisorTool(req.Advisor)},
+		Stream:    true,
+	}
+
+	if req.ExtendedThinking {
+		t := float32(1.0)
+		body.Temperature = &t
+	} else if req.Temperature > 0 {
+		body.Temperature = &req.Temperature
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal advisor stream request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", anthropicAPIURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("create advisor stream request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", ap.resolveAPIKey(req))
+	httpReq.Header.Set("anthropic-version", anthropicAPIVersion)
+	httpReq.Header.Set("anthropic-beta", advisorBeta)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("advisor stream HTTP failed: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("advisor stream error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	go func() {
+		defer close(out)
+		defer resp.Body.Close()
+
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer
+		chunkIndex := 0
+		var responseID string
+		inAdvisorCall := false
+
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// SSE format: "event: <type>" followed by "data: <json>"
+			if strings.HasPrefix(line, "event: ") {
+				eventType := strings.TrimPrefix(line, "event: ")
+				switch eventType {
+				case "content_block_start":
+					// Check if this is a server_tool_use block (advisor call starting)
+					// The next data line will tell us
+				case "content_block_delta":
+					// Normal text delta or advisor result
+				case "message_start":
+					// Extract response ID
+				case "message_delta":
+					// Final usage + stop reason
+				case "message_stop":
+					ap.RecordSuccess()
+				case "ping":
+					// Keepalive during advisor thinking
+					if inAdvisorCall {
+						out <- &StreamChunk{AdvisorThinking: true}
+					}
+				}
+				continue
+			}
+
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			data := strings.TrimPrefix(line, "data: ")
+
+			var event map[string]interface{}
+			if err := json.Unmarshal([]byte(data), &event); err != nil {
+				continue
+			}
+
+			eventType, _ := event["type"].(string)
+
+			switch eventType {
+			case "message_start":
+				if msg, ok := event["message"].(map[string]interface{}); ok {
+					responseID, _ = msg["id"].(string)
+				}
+
+			case "content_block_start":
+				if cb, ok := event["content_block"].(map[string]interface{}); ok {
+					blockType, _ := cb["type"].(string)
+					if blockType == "server_tool_use" {
+						inAdvisorCall = true
+						out <- &StreamChunk{AdvisorThinking: true}
+					}
+				}
+
+			case "content_block_delta":
+				if delta, ok := event["delta"].(map[string]interface{}); ok {
+					deltaType, _ := delta["type"].(string)
+					if deltaType == "text_delta" {
+						text, _ := delta["text"].(string)
+						if text != "" {
+							out <- &StreamChunk{
+								ID:    responseID,
+								Index: chunkIndex,
+								Delta: text,
+							}
+							chunkIndex++
+						}
+					}
+				}
+
+			case "content_block_stop":
+				if inAdvisorCall {
+					inAdvisorCall = false
+				}
+
+			case "message_delta":
+				if delta, ok := event["delta"].(map[string]interface{}); ok {
+					stopReason, _ := delta["stop_reason"].(string)
+					if stopReason != "" {
+						out <- &StreamChunk{FinishReason: stopReason}
+					}
+				}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			out <- &StreamChunk{Error: fmt.Sprintf("advisor stream scan error: %v", err)}
+		}
+	}()
+
+	return out, nil
+}
+
 // calculateAnthropicCost calculates the cost of an Anthropic API call.
 // Prices per 1K tokens (as of 2025).
 func calculateAnthropicCost(model string, inputTokens, outputTokens int) float64 {
-	var inputCost, outputCost float64
-
-	switch model {
-	// Claude 4.x (latest pricing)
-	case "claude-opus-4-6":
-		inputCost = 0.015 / 1000
-		outputCost = 0.075 / 1000
-	case "claude-sonnet-4-6":
-		inputCost = 0.003 / 1000
-		outputCost = 0.015 / 1000
-	case "claude-haiku-4-5-20251001":
-		inputCost = 0.0008 / 1000
-		outputCost = 0.004 / 1000
-	// Claude 3.5
-	case "claude-3-5-sonnet-20241022":
-		inputCost = 0.003 / 1000
-		outputCost = 0.015 / 1000
-	case "claude-3-5-haiku-20241022":
-		inputCost = 0.0008 / 1000
-		outputCost = 0.004 / 1000
-	// Claude 3 (legacy)
-	case "claude-3-opus-20240229":
-		inputCost = 0.015 / 1000
-		outputCost = 0.075 / 1000
-	case "claude-3-sonnet-20240229":
-		inputCost = 0.003 / 1000
-		outputCost = 0.015 / 1000
-	case "claude-3-haiku-20240307":
-		inputCost = 0.00025 / 1000
-		outputCost = 0.00125 / 1000
-	default:
-		// Fallback to mid-range pricing
-		inputCost = 0.003 / 1000
-		outputCost = 0.015 / 1000
-	}
-
-	return float64(inputTokens)*inputCost + float64(outputTokens)*outputCost
+	return CalculateCost(model, inputTokens, outputTokens)
 }

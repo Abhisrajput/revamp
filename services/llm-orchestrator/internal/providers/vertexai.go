@@ -299,28 +299,7 @@ func buildGeminiContents(req *CompletionRequest) ([]*genai.Content, *genai.Conte
 
 // calculateVertexAICost calculates the cost of a Vertex AI API call.
 // Vertex AI pricing differs slightly from AI Studio (pay-per-use, no free tier in production).
+// Vertex AI pricing differs slightly from AI Studio (pay-per-use, no free tier in production).
 func calculateVertexAICost(model string, inputTokens, outputTokens int) float64 {
-	var inputCost, outputCost float64
-
-	switch model {
-	case "gemini-2.5-pro":
-		inputCost = 1.25 / 1000000
-		outputCost = 10.0 / 1000000
-	case "gemini-2.5-flash":
-		inputCost = 0.15 / 1000000
-		outputCost = 0.60 / 1000000
-	case "gemini-2.0-flash":
-		inputCost = 0.075 / 1000000
-		outputCost = 0.30 / 1000000
-	case "gemini-1.5-pro":
-		inputCost = 1.25 / 1000000
-		outputCost = 5.0 / 1000000
-	case "gemini-1.5-flash":
-		inputCost = 0.075 / 1000000
-		outputCost = 0.30 / 1000000
-	default:
-		return 0
-	}
-
-	return float64(inputTokens)*inputCost + float64(outputTokens)*outputCost
+	return CalculateCost(model, inputTokens, outputTokens)
 }

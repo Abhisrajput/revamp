@@ -114,6 +114,18 @@ func (s *Server) handleCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate and normalize temperature for model-specific constraints.
+	// Reasoning models (o1, o3) only support temperature=0.
+	// Extended thinking (Anthropic) requires temperature=1.
+	modelLower := strings.ToLower(reqBody.Model)
+	isReasoning := strings.HasPrefix(modelLower, "o1") || strings.HasPrefix(modelLower, "o3")
+	if isReasoning && reqBody.Temperature != 0 {
+		reqBody.Temperature = 0
+	}
+	if reqBody.ExtendedThinking && reqBody.Temperature != 1 {
+		reqBody.Temperature = 1
+	}
+
 	// Resolve thinking token cap: explicit > legacy > default (10k)
 	thinkingBudget := reqBody.MaxThinkingTokens
 	if thinkingBudget == 0 && reqBody.ThinkingBudget > 0 {
@@ -230,6 +242,16 @@ func (s *Server) handleStreamCompletion(w http.ResponseWriter, r *http.Request) 
 	if reqBody.MaxTokens > maxAllowedTokens {
 		http.Error(w, fmt.Sprintf("max_tokens exceeds limit of %d", maxAllowedTokens), http.StatusBadRequest)
 		return
+	}
+
+	// Normalize temperature for model-specific constraints (same as non-streaming)
+	streamModelLower := strings.ToLower(reqBody.Model)
+	isStreamReasoning := strings.HasPrefix(streamModelLower, "o1") || strings.HasPrefix(streamModelLower, "o3")
+	if isStreamReasoning && reqBody.Temperature != 0 {
+		reqBody.Temperature = 0
+	}
+	if reqBody.ExtendedThinking && reqBody.Temperature != 1 {
+		reqBody.Temperature = 1
 	}
 
 	// Resolve thinking token cap for streaming

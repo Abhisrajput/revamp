@@ -65,6 +65,30 @@ import {
   emitPipelineBudgetWarning,
 } from "./pipeline-event-bus.js";
 
+// ─── PROJECT ROW TYPE (from Drizzle `with: { project: true }`) ──
+// Drizzle's inferred type omits 10X-specific columns from the relation result.
+// This interface matches the actual DB row shape returned by the query.
+interface ProjectRow {
+  id: string;
+  name: string;
+  description: string | null;
+  organization_id: string;
+  repository_url: string | null;
+  status: string;
+  config: Record<string, unknown> | null;
+  source_type: string | null;
+  source_url: string | null;
+  source_branch: string | null;
+  source_languages: string[] | null;
+  target_stack: string | null;
+  target_cloud: string | null;
+  stage_prompts: Record<string, string> | null;
+  validation_prompts: Record<string, string> | null;
+  settings: Record<string, unknown> | null;
+  created_by: string;
+  [key: string]: unknown; // allow additional fields
+}
+
 // ─── STAGE CONFIGURATION ────────────────────────────────────────
 
 export interface StageConfig {
@@ -242,7 +266,8 @@ export class PipelineService {
     const stageConfig = this.getStageConfig(stageName);
 
     // Check if stage is disabled in project config
-    const projectConfig = (run.project as any).config as Record<string, unknown> | null;
+    const proj = run.project as ProjectRow;
+    const projectConfig = proj.config;
     if (isStageDisabled(stageName, projectConfig)) {
       options?.onEvent?.({
         phase: 'completed',
@@ -277,31 +302,30 @@ export class PipelineService {
     });
 
     // Build project context from DB
-    const projectContext: ProjectContext = {
-      projectId: run.project.id,
-      projectName: run.project.name,
-      description: run.project.description || "",
-      codebaseSource: (run.project as any).source_url || (run.project as any).repository_url || "uploaded",
-      sourceLanguages: ((run.project as any).source_languages as string[]) || ["unknown"],
-      targetStack: ((run.project as any).target_stack as string) || "Java/Spring Boot",
-      targetCloud: ((run.project as any).target_cloud as string) || undefined,
+    const projectContext: ProjectContext & { stagePrompts?: Record<string, string>; validationPrompts?: Record<string, string> } = {
+      projectId: proj.id,
+      projectName: proj.name,
+      description: proj.description || "",
+      codebaseSource: proj.source_url || proj.repository_url || "uploaded",
+      sourceLanguages: proj.source_languages || ["unknown"],
+      targetStack: proj.target_stack || "Java/Spring Boot",
+      targetCloud: proj.target_cloud || undefined,
     };
     // Attach stage prompts for validation (prompt-derived validation needs these)
-    const rawStagePrompts = (run.project as any).stage_prompts || {};
-    const rawValidationPrompts = (run.project as any).validation_prompts || {};
-    console.log(`[Pipeline] stage_prompts keys: ${JSON.stringify(Object.keys(rawStagePrompts))}, prompt[0] length: ${(rawStagePrompts['0'] || '').length}`);
-    (projectContext as any).stagePrompts = rawStagePrompts;
-    (projectContext as any).validationPrompts = rawValidationPrompts;
+    const rawStagePrompts = proj.stage_prompts || {};
+    const rawValidationPrompts = proj.validation_prompts || {};
+    projectContext.stagePrompts = rawStagePrompts;
+    projectContext.validationPrompts = rawValidationPrompts;
 
     // For SCAN stage — run real file analysis on the codebase
     if (stageName === PipelineStageName.SCAN) {
-      const sourceType = (run.project as any).source_type as string | undefined;
-      const sourceUrl = (run.project as any).source_url || (run.project as any).repository_url;
+      const sourceType = proj.source_type;
+      const sourceUrl = proj.source_url || proj.repository_url;
 
       if (sourceType && sourceUrl) {
         const stageIdx = stageConfig.index;
         // Read access token from project settings (for private repos)
-        const projectSettings = (run.project as any).settings as Record<string, unknown> | null;
+        const projectSettings = proj.settings;
         const accessToken = (projectSettings?.access_token as string) || undefined;
         try {
           options?.onEvent?.({

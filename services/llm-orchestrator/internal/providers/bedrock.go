@@ -596,61 +596,7 @@ func parseBedrockResponse(body []byte, model string) (string, int, int) {
 
 // calculateBedrockCost calculates the cost of a Bedrock API call
 func calculateBedrockCost(model string, inputTokens, outputTokens int) float64 {
-	var inputCost, outputCost float64
-
-	switch model {
-	// Claude 4.6
-	case "us.anthropic.claude-sonnet-4-6-20251001-v1:0":
-		inputCost = 0.003 / 1000
-		outputCost = 0.015 / 1000
-	case "us.anthropic.claude-opus-4-6-20251001-v1:0":
-		inputCost = 0.015 / 1000
-		outputCost = 0.075 / 1000
-	case "us.anthropic.claude-haiku-4-6-20251001-v1:0":
-		inputCost = 0.0008 / 1000
-		outputCost = 0.004 / 1000
-	// Claude 4.5
-	case "us.anthropic.claude-sonnet-4-5-20251001-v1:0":
-		inputCost = 0.003 / 1000
-		outputCost = 0.015 / 1000
-	case "us.anthropic.claude-opus-4-5-20251001-v1:0":
-		inputCost = 0.015 / 1000
-		outputCost = 0.075 / 1000
-	case "us.anthropic.claude-haiku-4-5-20251001-v1:0":
-		inputCost = 0.0008 / 1000
-		outputCost = 0.004 / 1000
-	// Claude 3.7 / 3.5
-	case "us.anthropic.claude-3-7-sonnet-20250219-v1:0":
-		inputCost = 0.003 / 1000
-		outputCost = 0.015 / 1000
-	case "us.anthropic.claude-3-5-sonnet-20241022-v2:0":
-		inputCost = 0.003 / 1000
-		outputCost = 0.015 / 1000
-	case "us.anthropic.claude-3-5-haiku-20241022-v1:0":
-		inputCost = 0.0008 / 1000
-		outputCost = 0.004 / 1000
-	// Claude 3 classic
-	case "anthropic.claude-3-opus-20240229-v1:0":
-		inputCost = 0.015 / 1000
-		outputCost = 0.075 / 1000
-	case "anthropic.claude-3-sonnet-20240229-v1:0":
-		inputCost = 0.003 / 1000
-		outputCost = 0.015 / 1000
-	case "anthropic.claude-3-haiku-20240307-v1:0":
-		inputCost = 0.00025 / 1000
-		outputCost = 0.00125 / 1000
-	// Meta Llama
-	case "meta.llama3-70b-instruct-v1:0":
-		inputCost = 0.00495 / 1000
-		outputCost = 0.0066 / 1000
-	case "meta.llama3-8b-instruct-v1:0":
-		inputCost = 0.0006 / 1000
-		outputCost = 0.0008 / 1000
-	default:
-		return 0
-	}
-
-	return float64(inputTokens)*inputCost + float64(outputTokens)*outputCost
+	return CalculateCost(model, inputTokens, outputTokens)
 }
 
 // streamWithBearerToken streams from the Bedrock InvokeModelWithResponseStream
