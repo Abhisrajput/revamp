@@ -34,6 +34,7 @@ import {
   withRetry,
   classifyError,
   checkTokenBudget,
+  isReasoningModel,
   type ClassifiedError,
 } from './error-classifier';
 
@@ -359,6 +360,12 @@ export async function runStage(options: StageRunnerOptions): Promise<StageRunRes
       if (assembled.userPrompt.length > safeCharLimit) {
         assembled.userPrompt = assembled.userPrompt.slice(0, safeCharLimit) +
           '\n\n[... content truncated to fit model context window ...]';
+        // Re-derive cacheablePrefix from truncated content to avoid stale cache.
+        // The prefix is used for Anthropic prompt caching — if it doesn't match
+        // what the LLM actually sees, the cache serves inconsistent context.
+        if (assembled.cacheablePrefix.length > safeCharLimit) {
+          assembled.cacheablePrefix = assembled.cacheablePrefix.slice(0, safeCharLimit);
+        }
       }
     }
 
@@ -366,10 +373,19 @@ export async function runStage(options: StageRunnerOptions): Promise<StageRunRes
     emit('generating');
     checkAbort();
 
+    // OpenAI reasoning models (o1, o3) reject system prompts.
+    // Convert to a user-prefixed message instead.
+    let effectiveSystemPrompt = assembled.systemPrompt;
+    let effectiveUserPrompt = assembled.userPrompt;
+    if (isReasoningModel(model)) {
+      effectiveUserPrompt = `[System Instructions]\n${assembled.systemPrompt}\n\n[Task]\n${assembled.userPrompt}`;
+      effectiveSystemPrompt = '';
+    }
+
     let output = await withRetry(
       () => options.llmCallFn({
-        systemPrompt: assembled.systemPrompt,
-        userPrompt: assembled.userPrompt,
+        systemPrompt: effectiveSystemPrompt,
+        userPrompt: effectiveUserPrompt,
         onDelta: options.onDelta,
         signal: options.signal,
         cacheablePrefix: assembled.cacheablePrefix,

@@ -289,9 +289,6 @@ export default function PipelinePage() {
             const mappedStatus = dbStatus === 'in_progress' ? 'generating'
               : dbStatus === 'awaiting_approval' ? 'completed'
               : dbStatus;
-            console.warn(
-              `[Rehydrate] Stage ${storeStage.name} "${storeStage.status}" → "${mappedStatus}" (db: ${dbStatus})`,
-            );
             usePipelineStore.getState().setStageStatus(i, mappedStatus as any);
           }
           // Restore the real server-side startedAt so the elapsed timer survives refreshes.
@@ -444,8 +441,6 @@ export default function PipelinePage() {
         const st = freshStore.stages.find(s => s.name === name);
         return !st?.output || st.output.includes('Partial Result');
       });
-      console.log('[Rehydrate] stagesToLoad:', stagesToLoad);
-
       if (stagesToLoad.length > 0) {
         // Try IndexedDB cache first (instant, no network)
         const cached = await getCachedOutputsForRun(runId);
@@ -456,7 +451,6 @@ export default function PipelinePage() {
           if (cached[stageName] && !cached[stageName].includes('Partial Result') && cached[stageName].length > 500) {
             // Cache hit — instant load (skip stale partial results and tiny placeholders)
             usePipelineStore.getState().setStageOutput(idx, cached[stageName]);
-            console.log(`[Cache HIT] ${stageName}: ${cached[stageName].length} chars from IndexedDB`);
           } else {
             // Cache miss — fetch from API and store in IndexedDB
             try {
@@ -469,7 +463,6 @@ export default function PipelinePage() {
                 usePipelineStore.getState().setStageOutput(idx, content);
                 // Cache in IndexedDB for next visit
                 setCachedOutput(runId, stageName, content);
-                console.log(`[Cache MISS] ${stageName}: ${content.length} chars fetched → IndexedDB`);
               }
             } catch {
               // Non-fatal
@@ -613,7 +606,6 @@ export default function PipelinePage() {
       });
 
       if (stageNames.length === 0) return;
-      console.log('[OutputRehydrate] Loading outputs for:', stageNames);
       for (const stageName of stageNames) {
         try {
           const stageRes = await apiClient.get(
@@ -715,8 +707,8 @@ export default function PipelinePage() {
               });
             }
           }
-        } catch (err: any) {
-          console.error('[OutputRehydrate] Failed for', stageName, err?.message);
+        } catch {
+          // Non-fatal — output will be fetched on next rehydration cycle
         }
       }
     }, 1000); // 1s delay to let syncStagesFromBackend run first
@@ -818,11 +810,10 @@ export default function PipelinePage() {
     async (comment?: string) => {
       const s = usePipelineStore.getState();
       const stage = s.stages[s.activeStageIndex];
-      console.log('[Approve] stage:', stage?.name, 'status:', stage?.status, 'approvalStatus:', stage?.approvalStatus, 'hasOutput:', !!stage?.output, 'runId:', s.currentPipelineRunId, 'comment:', comment);
-      if (!s.currentPipelineRunId || !stage) { console.log('[Approve] BLOCKED: no runId or stage'); return; }
+      if (!s.currentPipelineRunId || !stage) return;
       // Guard: allow approval if stage has completed or has output (covers rehydration)
       const canApprove = (stage.status === 'completed' || !!stage.output) && stage.approvalStatus !== 'approved';
-      if (!canApprove) { console.log('[Approve] BLOCKED: canApprove=false'); return; }
+      if (!canApprove) return;
       try {
         await apiClient.post(
           `/pipeline/${s.currentPipelineRunId}/approve/${stage.name}`,

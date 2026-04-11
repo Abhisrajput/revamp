@@ -79,6 +79,10 @@ async function bootstrap() {
     credentials: true,
   });
 
+  // Cookie parser — required before authPlugin for HttpOnly JWT cookie extraction
+  const fastifyCookie = (await import("@fastify/cookie")).default;
+  await fastify.register(fastifyCookie);
+
   await fastify.register(authPlugin);
   await fastify.register(rateLimitPlugin);
   await fastify.register(websocketPlugin);

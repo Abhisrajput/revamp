@@ -68,6 +68,19 @@ const resetTokenStore = {
   },
 };
 
+/** Set JWT as HttpOnly cookie on auth responses. Prevents XSS token theft. */
+function setAuthCookie(reply: import("fastify").FastifyReply, token: string) {
+  const isProduction = process.env.NODE_ENV === 'production';
+  reply.header('Set-Cookie',
+    `revamp-token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${isProduction ? '; Secure' : ''}`
+  );
+}
+
+/** Clear the auth cookie on logout. */
+function clearAuthCookie(reply: import("fastify").FastifyReply) {
+  reply.header('Set-Cookie', 'revamp-token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+}
+
 const SignInSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
@@ -238,8 +251,9 @@ export async function authRoutes(fastify: FastifyInstance) {
           organization_id: user.organization_id ?? "",
         });
 
+        setAuthCookie(reply, token);
         return reply.send({
-          token,
+          token, // Still in body for backward compatibility during migration
           user: {
             id: user.id,
             email: user.email,
@@ -322,6 +336,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       organization_id: organizationId ?? "",
     });
 
+    setAuthCookie(reply, token);
     return reply.status(201).send({
       token,
       user: {
@@ -411,6 +426,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         organization_id: user.organization_id ?? "",
       });
 
+      setAuthCookie(reply, token);
       return reply.send({
         token,
         user: {

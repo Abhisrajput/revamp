@@ -41,7 +41,14 @@ func NewAzureProvider(endpoint, apiKey string, deployments []string, apiVersion 
 		apiVersion:   apiVersion,
 		deployments:  deployments,
 		logger:       logger,
-		httpClient:   &http.Client{Timeout: 10 * time.Minute},
+		httpClient: &http.Client{
+			Timeout: 10 * time.Minute,
+			Transport: &http.Transport{
+				MaxIdleConns:        20,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
 	}
 }
 

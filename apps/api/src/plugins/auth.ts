@@ -45,6 +45,12 @@ export const authPlugin = fp(async function authPlugin(fastify: FastifyInstance)
     sign: {
       expiresIn: process.env.JWT_EXPIRES_IN || "24h",
     },
+    // Extract JWT from Authorization header first, then fall back to HttpOnly cookie.
+    // This supports both API clients (Bearer token) and browsers (cookie).
+    cookie: {
+      cookieName: "revamp-token",
+      signed: false,
+    },
   });
 
   // ─── authenticate — verify JWT, return early on failure ─────────

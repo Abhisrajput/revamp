@@ -30,7 +30,14 @@ func NewOllamaProvider(endpoint string, models []string, logger *zap.Logger) *Ol
 
 	cfg := openai.DefaultConfig("ollama") // dummy key — Ollama needs no auth
 	cfg.BaseURL = baseURL
-	cfg.HTTPClient = &http.Client{Timeout: 10 * time.Minute} // Qwen3 MoE needs long timeouts for thinking
+	cfg.HTTPClient = &http.Client{
+		Timeout: 10 * time.Minute, // Qwen3 MoE needs long timeouts for thinking
+		Transport: &http.Transport{
+			MaxIdleConns:        10,
+			MaxIdleConnsPerHost: 5,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
 
 	client := openai.NewClientWithConfig(cfg)
 

@@ -77,7 +77,14 @@ func NewBedrockProviderWithBearerToken(token, region string, logger *zap.Logger)
 	p := NewBedrockProvider(nil, nil, logger)
 	p.bearerToken = cleanToken
 	p.region = region
-	p.httpClient = &http.Client{Timeout: 5 * time.Minute}
+	p.httpClient = &http.Client{
+		Timeout: 5 * time.Minute,
+		Transport: &http.Transport{
+			MaxIdleConns:        20,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
 	return p
 }
 
