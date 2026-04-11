@@ -437,9 +437,9 @@ func (ap *AnthropicProvider) buildAdvisorMessages(req *CompletionRequest) ([]adv
 }
 
 // completeWithAdvisor sends a non-streaming request with the advisor tool via raw HTTP.
-func (ap *AnthropicProvider) completeWithAdvisor(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
-	start := time.Now()
-
+// buildAdvisorHTTPRequest constructs the HTTP request for advisor calls,
+// deduplicating logic shared between completeWithAdvisor and streamWithAdvisor.
+func (ap *AnthropicProvider) buildAdvisorHTTPRequest(ctx context.Context, req *CompletionRequest, stream bool) (*http.Request, error) {
 	msgs, system := ap.buildAdvisorMessages(req)
 	body := advisorRequestBody{
 		Model:     req.Model,
@@ -447,6 +447,7 @@ func (ap *AnthropicProvider) completeWithAdvisor(ctx context.Context, req *Compl
 		System:    system,
 		Messages:  msgs,
 		Tools:     []advisorTool{buildAdvisorTool(req.Advisor)},
+		Stream:    stream,
 	}
 
 	if req.ExtendedThinking {
@@ -469,6 +470,16 @@ func (ap *AnthropicProvider) completeWithAdvisor(ctx context.Context, req *Compl
 	httpReq.Header.Set("x-api-key", ap.resolveAPIKey(req))
 	httpReq.Header.Set("anthropic-version", anthropicAPIVersion)
 	httpReq.Header.Set("anthropic-beta", advisorBeta)
+	return httpReq, nil
+}
+
+func (ap *AnthropicProvider) completeWithAdvisor(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
+	start := time.Now()
+
+	httpReq, err := ap.buildAdvisorHTTPRequest(ctx, req, false)
+	if err != nil {
+		return nil, err
+	}
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
@@ -574,36 +585,10 @@ func (ap *AnthropicProvider) completeWithAdvisor(ctx context.Context, req *Compl
 func (ap *AnthropicProvider) streamWithAdvisor(ctx context.Context, req *CompletionRequest) (<-chan *StreamChunk, error) {
 	out := make(chan *StreamChunk)
 
-	msgs, system := ap.buildAdvisorMessages(req)
-	body := advisorRequestBody{
-		Model:     req.Model,
-		MaxTokens: req.MaxTokens,
-		System:    system,
-		Messages:  msgs,
-		Tools:     []advisorTool{buildAdvisorTool(req.Advisor)},
-		Stream:    true,
-	}
-
-	if req.ExtendedThinking {
-		t := float32(1.0)
-		body.Temperature = &t
-	} else if req.Temperature > 0 {
-		body.Temperature = &req.Temperature
-	}
-
-	jsonBody, err := json.Marshal(body)
+	httpReq, err := ap.buildAdvisorHTTPRequest(ctx, req, true)
 	if err != nil {
-		return nil, fmt.Errorf("marshal advisor stream request: %w", err)
+		return nil, err
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", anthropicAPIURL, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("create advisor stream request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", ap.resolveAPIKey(req))
-	httpReq.Header.Set("anthropic-version", anthropicAPIVersion)
-	httpReq.Header.Set("anthropic-beta", advisorBeta)
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {

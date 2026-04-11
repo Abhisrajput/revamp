@@ -138,9 +138,10 @@ export const AuditLog = memo(function AuditLog({ projectId, className }: AuditLo
             {logs.map((log) => {
               const isExpanded = expandedId === log.id;
               const details: string[] = [];
-              if ((log.changes as any)?.stageName) details.push(`Stage: ${(log.changes as any).stageName}`);
-              if ((log.changes as any)?.model) details.push(`${(log.changes as any).model}`);
-              if ((log.changes as any)?.comment) details.push(`"${((log.changes as any).comment as string).slice(0, 40)}"`);
+              const ch = log.changes ?? {};
+              if (ch.stageName) details.push(`Stage: ${ch.stageName}`);
+              if (ch.model) details.push(`${ch.model}`);
+              if (ch.comment) details.push(`"${String(ch.comment).slice(0, 40)}"`);
 
               return (
                 <div

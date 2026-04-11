@@ -174,7 +174,7 @@ export default function ProjectSettingsPage() {
   // ─── Sync state when project loads ──────────────────────
   useEffect(() => {
     if (!project) return;
-    const settings = (project.settings as any) || {};
+    const settings = (project.settings ?? {}) as Record<string, unknown>;
 
     const llmConfig = settings.llmModels || {};
     if (llmConfig.defaultExecution) setDefaultExecutionModel(llmConfig.defaultExecution);

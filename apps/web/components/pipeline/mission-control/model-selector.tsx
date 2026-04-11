@@ -80,12 +80,12 @@ async function fetchAvailableModels(): Promise<ModelOption[]> {
           });
         }
       } else if (typeof raw === 'object') {
-        for (const [id, info] of Object.entries(raw as Record<string, any>)) {
+        for (const [id, info] of Object.entries(raw as Record<string, Record<string, unknown>>)) {
           models.push({
             id,
-            label: MODEL_LABELS[id] || (info as any).name || id,
-            provider: (info as any).provider || 'unknown',
-            contextWindow: (info as any).context_size || (info as any).contextWindow,
+            label: MODEL_LABELS[id] || (info.name as string) || id,
+            provider: (info.provider as string) || 'unknown',
+            contextWindow: (info.context_size ?? info.contextWindow) as number | undefined,
           });
         }
       }

@@ -52,6 +52,8 @@ export type StagePhase =
   | 'scout_assessment'    // Scout agent triaging codebase (multi-agent SCAN)
   | 'director_planning'   // Director planning subtask delegation (multi-agent SCAN)
   | 'subtask_executing'   // Specialist executing a subtask (multi-agent SCAN)
+  | 'subtask_completed'   // Specialist subtask finished successfully
+  | 'subtask_failed'      // Specialist subtask failed
   | 'composing'           // Composing subtask results into final output (multi-agent SCAN)
   | 'scout_failed'        // Scout triage failed (multi-agent SCAN)
   | 'bree_analysis'       // BREE Engine running static analysis

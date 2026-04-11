@@ -227,7 +227,7 @@ export default function ProjectDetailPage() {
 
   const stageIndex = project.current_stage_index ?? 0;
   const stageName = project.current_stage || 'SCAN';
-  const settings = (project.settings as any) || {};
+  const settings = (project.settings ?? {}) as Record<string, unknown>;
   const hasMembers = project.members && project.members.length > 0;
   const hasPipelineRuns = project.pipelineRuns && project.pipelineRuns.length > 0;
   const hasDocs = project.supportingDocuments && project.supportingDocuments.length > 0;
