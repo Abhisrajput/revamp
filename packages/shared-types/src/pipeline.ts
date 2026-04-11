@@ -95,7 +95,7 @@ export interface ApprovalGate {
   id: string;
   pipelineRunId: string;
   stageName: PipelineStageName;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  status: 'pending' | 'approved' | 'rejected';
   requestedAt: string;
   respondedAt?: string;
   reviewedBy?: string;

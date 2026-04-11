@@ -13,16 +13,60 @@ const OTP_EXPIRY_MS = 10 * 60 * 1000;
 /** Password reset token validity window in milliseconds (1 hour) */
 const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000;
 
-// In-memory store for password reset tokens (avoids overwriting OTP secret in DB)
-const resetTokenStore = new Map<string, { token: string; expiry: number; userId: string }>();
+// Redis-backed reset token store (survives restarts, works multi-instance).
+// Falls back to in-memory Map when Redis is unavailable.
+import Redis from "ioredis";
 
-/** Periodic cleanup of expired reset tokens (runs every 15 minutes) */
+const RESET_TOKEN_PREFIX = "revamp:reset:";
+let _redis: Redis | null = null;
+function getRedis(): Redis | null {
+  if (_redis) return _redis;
+  const url = process.env.REDIS_URL;
+  if (!url) return null;
+  try {
+    _redis = new Redis(url, { maxRetriesPerRequest: 1, connectTimeout: 2000, lazyConnect: true });
+    _redis.connect().catch(() => { _redis = null; });
+    return _redis;
+  } catch { return null; }
+}
+
+// In-memory fallback when Redis is unavailable
+const resetTokenMapFallback = new Map<string, { token: string; expiry: number; userId: string }>();
 setInterval(() => {
   const now = Date.now();
-  for (const [email, data] of resetTokenStore) {
-    if (now > data.expiry) resetTokenStore.delete(email);
+  for (const [email, data] of resetTokenMapFallback) {
+    if (now > data.expiry) resetTokenMapFallback.delete(email);
   }
 }, 15 * 60 * 1000).unref();
+
+const resetTokenStore = {
+  async set(email: string, data: { token: string; expiry: number; userId: string }) {
+    const redis = getRedis();
+    if (redis) {
+      const ttlSec = Math.ceil((data.expiry - Date.now()) / 1000);
+      await redis.set(RESET_TOKEN_PREFIX + email, JSON.stringify(data), "EX", ttlSec).catch(() => {
+        resetTokenMapFallback.set(email, data); // fallback
+      });
+    } else {
+      resetTokenMapFallback.set(email, data);
+    }
+  },
+  async get(email: string): Promise<{ token: string; expiry: number; userId: string } | undefined> {
+    const redis = getRedis();
+    if (redis) {
+      try {
+        const raw = await redis.get(RESET_TOKEN_PREFIX + email);
+        return raw ? JSON.parse(raw) : undefined;
+      } catch { return resetTokenMapFallback.get(email); }
+    }
+    return resetTokenMapFallback.get(email);
+  },
+  async delete(email: string) {
+    const redis = getRedis();
+    if (redis) await redis.del(RESET_TOKEN_PREFIX + email).catch(() => {});
+    resetTokenMapFallback.delete(email);
+  },
+};
 
 const SignInSchema = z.object({
   email: z.string().email(),
@@ -425,8 +469,8 @@ export async function authRoutes(fastify: FastifyInstance) {
       const token = generateResetToken();
       const expiry = Date.now() + RESET_TOKEN_EXPIRY_MS;
 
-      // Store reset token in memory — avoids overwriting the user's OTP secret
-      resetTokenStore.set(email, { token, expiry, userId: user.id });
+      // Store reset token — Redis with in-memory fallback
+      await resetTokenStore.set(email, { token, expiry, userId: user.id });
 
       await trySendEmail("password_reset", email, { token });
 
@@ -446,7 +490,7 @@ export async function authRoutes(fastify: FastifyInstance) {
 
       const { email, token } = validation.data;
 
-      const resetData = resetTokenStore.get(email);
+      const resetData = await resetTokenStore.get(email);
       if (
         !resetData ||
         !safeCompare(resetData.token, token) ||
@@ -472,7 +516,7 @@ export async function authRoutes(fastify: FastifyInstance) {
 
       const { email, token, new_password } = validation.data;
 
-      const resetData = resetTokenStore.get(email);
+      const resetData = await resetTokenStore.get(email);
       if (
         !resetData ||
         !safeCompare(resetData.token, token) ||
@@ -492,7 +536,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         .where(eq(users.id, resetData.userId));
 
       // Remove consumed token
-      resetTokenStore.delete(email);
+      await resetTokenStore.delete(email);
 
       return reply.send({ message: "Password reset successfully" });
     },
@@ -509,7 +553,7 @@ export async function authRoutes(fastify: FastifyInstance) {
 
       const { email, token, new_password } = validation.data;
 
-      const resetData = resetTokenStore.get(email);
+      const resetData = await resetTokenStore.get(email);
       if (
         !resetData ||
         !safeCompare(resetData.token, token) ||
@@ -525,7 +569,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         .where(eq(users.id, resetData.userId));
 
       // Remove consumed token
-      resetTokenStore.delete(email);
+      await resetTokenStore.delete(email);
 
       return reply.send({ message: "Password reset successfully" });
     },

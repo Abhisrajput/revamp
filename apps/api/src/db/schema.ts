@@ -25,7 +25,7 @@ export const users = pgTable(
     first_name: varchar("first_name", { length: 255 }),
     last_name: varchar("last_name", { length: 255 }),
     role: varchar("role", { length: 50 }).notNull().default("developer"), // admin, architect, developer, sme
-    organization_id: uuid("organization_id"),
+    organization_id: uuid("organization_id").references(() => organizations.id, { onDelete: "set null" }),
     avatar_url: text("avatar_url"),
     is_active: boolean("is_active").notNull().default(true),
     last_login: timestamp("last_login"),
@@ -63,7 +63,7 @@ export const projects = pgTable(
   "projects",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    organization_id: uuid("organization_id").notNull(),
+    organization_id: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
     repository_url: text("repository_url"),
@@ -89,13 +89,16 @@ export const projects = pgTable(
     settings: jsonb("settings").default({}),
     folder_structure: jsonb("folder_structure").default([]),
     metrics: jsonb("metrics").default({}),
-    created_by: uuid("created_by").notNull(),
+    created_by: uuid("created_by").notNull().references(() => users.id),
     created_at: timestamp("created_at").defaultNow().notNull(),
     updated_at: timestamp("updated_at").defaultNow().notNull(),
   },
   (table) => ({
     orgIdx: index("projects_organization_id_idx").on(table.organization_id),
     statusIdx: index("projects_status_idx").on(table.status),
+    orgStatusIdx: index("projects_org_status_idx").on(table.organization_id, table.status),
+    createdByIdx: index("projects_created_by_idx").on(table.created_by),
+    createdAtIdx: index("projects_created_at_idx").on(table.created_at),
   })
 );
 
@@ -104,8 +107,8 @@ export const projectMembers = pgTable(
   "project_members",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    project_id: uuid("project_id").notNull(),
-    user_id: uuid("user_id").notNull(),
+    project_id: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+    user_id: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     role: varchar("role", { length: 50 }).notNull().default("viewer"), // owner, editor, reviewer, viewer
     joined_at: timestamp("joined_at").defaultNow().notNull(),
   },
@@ -121,8 +124,8 @@ export const pipelineRuns = pgTable(
   "pipeline_runs",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    project_id: uuid("project_id").notNull(),
-    initiated_by: uuid("initiated_by").notNull(),
+    project_id: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+    initiated_by: uuid("initiated_by").notNull().references(() => users.id),
     status: varchar("status", { length: 50 }).notNull().default("pending"), // pending, running, completed, failed, cancelled
     current_stage: varchar("current_stage", { length: 100 }),
     stage_progress: jsonb("stage_progress").default({}),
@@ -145,7 +148,7 @@ export const stageArtifacts = pgTable(
   "stage_artifacts",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    pipeline_run_id: uuid("pipeline_run_id").notNull(),
+    pipeline_run_id: uuid("pipeline_run_id").notNull().references(() => pipelineRuns.id, { onDelete: "cascade" }),
     stage_name: varchar("stage_name", { length: 100 }).notNull(),
     artifact_type: varchar("artifact_type", { length: 100 }).notNull(), // analysis, modernized_code, report, etc
     storage_path: text("storage_path").notNull(),
@@ -173,7 +176,7 @@ export const approvalGates = pgTable(
   "approval_gates",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    pipeline_run_id: uuid("pipeline_run_id").notNull(),
+    pipeline_run_id: uuid("pipeline_run_id").notNull().references(() => pipelineRuns.id, { onDelete: "cascade" }),
     stage_name: varchar("stage_name", { length: 100 }).notNull(),
     required_role: varchar("required_role", { length: 50 }).notNull(), // architect, admin, etc
     status: varchar("status", { length: 50 }).notNull().default("pending"), // pending, approved, rejected

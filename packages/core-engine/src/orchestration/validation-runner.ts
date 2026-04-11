@@ -13,6 +13,8 @@
  */
 
 import { PipelineStageName } from '@revamp/shared-types/pipeline';
+import { getStageContract, type ContractResult, type ContractViolation } from '../validation/stage-contracts';
+import { scoreSectionCompleteness } from '../validation/deterministic-checks';
 import {
   runPromptDerivedValidation,
   extractRequirementsFromPrompt,
@@ -199,6 +201,9 @@ export async function runValidation(
     breeGroundTruth: options.breeGroundTruth,
   });
 
+  // Run stage contract enforcement (structural requirements per stage)
+  const contractResult = enforceStageContract(stageName, stageOutput);
+
   // Run prior-stage cross-reference
   const crossRef = crossReferencePriorStages(
     stageOutput,
@@ -312,20 +317,11 @@ export async function runValidation(
 
     recommendations: pdResult.recommendations,
 
-    // Contract-compatible result
+    // Stage contract enforcement — checks structural requirements per stage
     contractResult: {
-      stageName,
-      passed: pdResult.passed,
-      completenessScore: adjustedScore,
-      violations: pdResult.issues
-        .filter(i => i.severity === 'error')
-        .map(i => ({
-          type: 'missing_requirement',
-          severity: 'major' as const,
-          description: i.message,
-        })),
-      refinementPrompt: pdResult.refinementPrompt,
-      hardGated: false,
+      ...contractResult,
+      // Merge prompt-derived refinement prompt if contract doesn't generate one
+      refinementPrompt: contractResult.refinementPrompt || pdResult.refinementPrompt,
     },
 
     metadata: {
@@ -338,6 +334,112 @@ export async function runValidation(
       llmJudgeUsed: pdResult.llmJudgeScore !== null,
       llmJudgeScore: pdResult.llmJudgeScore !== null ? Math.round(pdResult.llmJudgeScore * 100) : null,
     },
+  };
+}
+
+// ─── CONTRACT ENFORCEMENT ───────────────────────────────────────
+
+/**
+ * Enforce stage contract — checks that required sections exist, meet
+ * minimum word counts, and contain required patterns. Returns a
+ * ContractResult with violations and hard-gate status.
+ */
+function enforceStageContract(stageName: PipelineStageName, output: string): ContractResult {
+  const contract = getStageContract(stageName);
+  if (!contract) {
+    return {
+      stageName,
+      passed: true,
+      completenessScore: 100,
+      violations: [],
+      refinementPrompt: null,
+      hardGated: false,
+    };
+  }
+
+  const violations: ContractViolation[] = [];
+
+  // Check required sections
+  if (contract.requiredSections.length > 0) {
+    const sectionCheck = scoreSectionCompleteness(output, {
+      requiredHeadings: contract.requiredSections.map(s => s.heading),
+      minWordsPerSection: contract.requiredSections[0]?.minWordCount ?? 40,
+    });
+    if (sectionCheck.details?.missing) {
+      for (const heading of sectionCheck.details.missing as string[]) {
+        const req = contract.requiredSections.find(s => s.heading === heading);
+        violations.push({
+          type: 'missing_section',
+          severity: req?.required ? 'critical' : 'minor',
+          description: `Missing required section: "${heading}"`,
+          section: heading,
+        });
+      }
+    }
+    if (sectionCheck.details?.thin) {
+      for (const desc of sectionCheck.details.thin as string[]) {
+        violations.push({
+          type: 'thin_section',
+          severity: 'major',
+          description: `Section too thin: ${desc}`,
+        });
+      }
+    }
+  }
+
+  // Check required patterns
+  if (contract.requiredPatterns) {
+    for (const pat of contract.requiredPatterns) {
+      const matches = output.match(pat.pattern);
+      const count = matches?.length ?? 0;
+      if (count < pat.minOccurrences) {
+        violations.push({
+          type: 'missing_pattern',
+          severity: 'major',
+          description: `Pattern "${pat.description}" found ${count} time(s), need ${pat.minOccurrences}+`,
+          actual: count,
+          expected: pat.minOccurrences,
+        });
+      }
+    }
+  }
+
+  // Check minimum total word count
+  if (contract.minTotalWords) {
+    const wordCount = output.split(/\s+/).filter(Boolean).length;
+    if (wordCount < contract.minTotalWords) {
+      violations.push({
+        type: 'too_short',
+        severity: 'critical',
+        description: `Output is ${wordCount} words, minimum is ${contract.minTotalWords}`,
+        actual: wordCount,
+        expected: contract.minTotalWords,
+      });
+    }
+  }
+
+  const criticalViolations = violations.filter(v => v.severity === 'critical').length;
+  const passed = criticalViolations === 0;
+  const completenessScore = violations.length === 0
+    ? 100
+    : Math.max(0, 100 - violations.reduce((sum, v) =>
+        sum + (v.severity === 'critical' ? 25 : v.severity === 'major' ? 10 : 3), 0));
+
+  // Generate refinement prompt from violations
+  let refinementPrompt: string | null = null;
+  if (violations.length > 0) {
+    refinementPrompt = `The following contract violations were found:\n` +
+      violations.map((v, i) => `${i + 1}. [${v.severity.toUpperCase()}] ${v.description}`).join('\n') +
+      `\n\nPlease address these violations in your next revision.`;
+  }
+
+  return {
+    stageName,
+    passed,
+    completenessScore,
+    violations,
+    refinementPrompt,
+    hardGated: contract.hardGate === true && !passed,
   };
 }
 

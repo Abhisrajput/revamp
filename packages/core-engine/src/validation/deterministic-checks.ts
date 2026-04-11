@@ -131,7 +131,11 @@ export function scoreCrossStageReferences(
   const lower = output.toLowerCase();
 
   for (const kw of priorStageKeywords) {
-    if (lower.includes(kw.toLowerCase())) {
+    // Use word-boundary matching to avoid false positives
+    // e.g., "order" should not match "reorder" or "border"
+    const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`\\b${escaped}\\b`, 'i');
+    if (pattern.test(output)) {
       found.push(kw);
     } else {
       missing.push(kw);
@@ -426,7 +430,17 @@ export function scoreMermaidValidity(output: string): CheckResult {
  * "TBD"/"TODO" items, very short paragraphs, overly generic language.
  */
 export function scoreOutputSubstance(output: string): CheckResult {
-  const totalWords = output.split(/\s+/).filter(Boolean).length;
+  // Strip markdown structural markup before counting content words.
+  // Headings (#), list markers (-/*), table separators, and code fence delimiters
+  // are not "substance" — only prose and code content count.
+  const strippedForCount = output
+    .replace(/^#{1,6}\s+/gm, '')           // heading markers
+    .replace(/^\s*[-*•]\s/gm, '')          // list bullets
+    .replace(/^\s*\d+\.\s/gm, '')         // numbered list markers
+    .replace(/^\|[-:\s|]+\|$/gm, '')       // table separator rows
+    .replace(/^```\w*$/gm, '')             // code fence delimiters
+    .replace(/^\s*---+\s*$/gm, '');        // horizontal rules
+  const totalWords = strippedForCount.split(/\s+/).filter(Boolean).length;
   const penalties: Array<{ reason: string; deduction: number }> = [];
 
   // 1. TBD/TODO/placeholder count

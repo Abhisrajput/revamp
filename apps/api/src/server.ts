@@ -188,12 +188,17 @@ async function bootstrap() {
     const SKIP_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.next', 'target', 'dist', 'build']);
     const BINARY_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'ico', 'svg', 'woff', 'woff2', 'ttf', 'eot', 'pdf', 'zip', 'tar', 'gz', 'exe', 'dll', 'so']);
 
+    const MAX_TOTAL_BYTES = 50 * 1024 * 1024; // 50 MB aggregate limit
+    let totalBytes = 0;
+
     async function readDir(dir: string): Promise<Array<{ path: string; content: string }>> {
       const files: Array<{ path: string; content: string }> = [];
+      if (totalBytes >= MAX_TOTAL_BYTES) return files;
       try {
         const entries = await fs.readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
           if (SKIP_DIRS.has(entry.name)) continue;
+          if (totalBytes >= MAX_TOTAL_BYTES) break;
           const fullPath = path.join(dir, entry.name);
           if (entry.isDirectory()) {
             files.push(...await readDir(fullPath));
@@ -202,7 +207,8 @@ async function bootstrap() {
             if (BINARY_EXTS.has(ext)) continue;
             try {
               const content = await fs.readFile(fullPath, 'utf-8');
-              if (content.length < 500_000) { // skip files > 500KB
+              if (content.length < 500_000 && totalBytes + content.length < MAX_TOTAL_BYTES) {
+                totalBytes += content.length;
                 files.push({ path: path.relative(codebasePath!, fullPath), content });
               }
             } catch { /* skip unreadable */ }
