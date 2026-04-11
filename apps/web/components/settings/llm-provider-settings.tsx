@@ -40,6 +40,8 @@ const PRESET_PROVIDERS = [
   { name: 'OpenAI (GPT)', provider_type: 'openai', base_url: 'https://api.openai.com/v1', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1-preview', 'o3-mini'] },
   { name: 'Google (Gemini)', provider_type: 'gemini', base_url: 'https://generativelanguage.googleapis.com/v1beta/openai', models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'] },
   { name: 'AWS Bedrock', provider_type: 'bedrock', base_url: '/api/ai/bedrock/v1', models: ['us.anthropic.claude-sonnet-4-5-20250929-v1:0', 'us.anthropic.claude-haiku-4-5-20251001-v1:0', 'anthropic.claude-3-5-sonnet-20241022-v2:0'] },
+  { name: 'Google (Vertex AI)', provider_type: 'vertexai', base_url: '/api/ai/vertexai/v1', models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'] },
+  { name: 'Azure AI Foundry', provider_type: 'azure', base_url: '', models: [] },
   { name: 'xAI (Grok)', provider_type: 'xai', base_url: 'https://api.x.ai/v1', models: ['grok-4-0709', 'grok-4-1-fast-reasoning', 'grok-3', 'grok-3-mini'] },
   { name: 'Local / Generic', provider_type: 'generic', base_url: 'http://localhost:11434/v1', models: ['llama3', 'codellama', 'mistral'] },
   { name: 'Custom', provider_type: 'custom', base_url: '', models: [] },
@@ -112,12 +114,28 @@ export function LLMProviderSettings({
   const [showAddForm, setShowAddForm] = useState(false);
 
   // AWS Bedrock credential fields
-  const [bedrockAuthMode, setBedrockAuthMode] = useState<'api_key' | 'iam'>('api_key');
+  const [bedrockAuthMode, setBedrockAuthMode] = useState<'api_key' | 'iam' | 'sso'>('sso');
   const [awsAccessKey, setAwsAccessKey] = useState('');
   const [awsSecretKey, setAwsSecretKey] = useState('');
   const [awsSessionToken, setAwsSessionToken] = useState('');
-  const [awsRegion, setAwsRegion] = useState('us-east-1');
+  const [awsRegion, setAwsRegion] = useState('us-east-2');
   const [bedrockApiKey, setBedrockApiKey] = useState('');
+  const [awsSSOProfile, setAwsSSOProfile] = useState('');
+
+  // Google Vertex AI credential fields
+  const [vertexAuthMode, setVertexAuthMode] = useState<'adc' | 'service_account' | 'access_token'>('adc');
+  const [vertexProjectId, setVertexProjectId] = useState('');
+  const [vertexLocation, setVertexLocation] = useState('us-central1');
+  const [vertexSAJson, setVertexSAJson] = useState('');
+  const [vertexAccessToken, setVertexAccessToken] = useState('');
+
+  // Azure AI Foundry credential fields
+  const [azureAuthMode, setAzureAuthMode] = useState<'api_key' | 'ad_token'>('api_key');
+  const [azureEndpoint, setAzureEndpoint] = useState('');
+  const [azureApiKey, setAzureApiKey] = useState('');
+  const [azureADToken, setAzureADToken] = useState('');
+  const [azureApiVersion, setAzureApiVersion] = useState('2024-12-01-preview');
+  const [azureDeployments, setAzureDeployments] = useState('');
 
   // Update key form
   const [editingKeyId, setEditingKeyId] = useState<string | null>(null);
@@ -125,11 +143,12 @@ export function LLMProviderSettings({
   const [showEditKey, setShowEditKey] = useState(false);
 
   // Bedrock credential editing (for existing providers)
-  const [editBedrockAuthMode, setEditBedrockAuthMode] = useState<'api_key' | 'iam'>('api_key');
+  const [editBedrockAuthMode, setEditBedrockAuthMode] = useState<'api_key' | 'iam' | 'sso'>('sso');
+  const [editAwsSSOProfile, setEditAwsSSOProfile] = useState('');
   const [editAwsAccessKey, setEditAwsAccessKey] = useState('');
   const [editAwsSecretKey, setEditAwsSecretKey] = useState('');
   const [editAwsSessionToken, setEditAwsSessionToken] = useState('');
-  const [editAwsRegion, setEditAwsRegion] = useState('us-east-1');
+  const [editAwsRegion, setEditAwsRegion] = useState('us-east-2');
   const [editBedrockApiKey, setEditBedrockApiKey] = useState('');
 
   // Edit models form
@@ -163,11 +182,11 @@ export function LLMProviderSettings({
     setAwsAccessKey('');
     setAwsSecretKey('');
     setAwsSessionToken('');
-    setAwsRegion('us-east-1');
+    setAwsRegion('us-east-2');
     setBedrockApiKey('');
   }, []);
 
-  const isApiKeyOptional = selectedPreset === 'AWS Bedrock' || selectedPreset === 'Local / Generic';
+  const isApiKeyOptional = selectedPreset === 'AWS Bedrock' || selectedPreset === 'Google (Vertex AI)' || selectedPreset === 'Azure AI Foundry' || selectedPreset === 'Local / Generic';
 
   // ─── Add provider ──────────────────────────────────────
   const handleAddProvider = useCallback(() => {
@@ -181,17 +200,37 @@ export function LLMProviderSettings({
     let apiKeyValue = newApiKey.trim() || 'none';
     if (selectedPreset === 'AWS Bedrock') {
       if (bedrockAuthMode === 'api_key' && bedrockApiKey.trim()) {
-        apiKeyValue = JSON.stringify({ bearerToken: bedrockApiKey.trim(), region: awsRegion.trim() || 'us-east-1' });
+        apiKeyValue = JSON.stringify({ bearerToken: bedrockApiKey.trim(), region: awsRegion.trim() || 'us-east-2' });
       } else if (bedrockAuthMode === 'iam' && awsAccessKey.trim() && awsSecretKey.trim()) {
         apiKeyValue = JSON.stringify({
           accessKeyId: awsAccessKey.trim(),
           secretAccessKey: awsSecretKey.trim(),
           ...(awsSessionToken.trim() ? { sessionToken: awsSessionToken.trim() } : {}),
-          region: awsRegion.trim() || 'us-east-1',
+          region: awsRegion.trim() || 'us-east-2',
+        });
+      } else if (bedrockAuthMode === 'sso') {
+        apiKeyValue = JSON.stringify({
+          ssoProfile: awsSSOProfile.trim() || '',
+          region: awsRegion.trim() || 'us-east-2',
         });
       } else {
         apiKeyValue = 'none';
       }
+    } else if (selectedPreset === 'Google (Vertex AI)') {
+      apiKeyValue = JSON.stringify({
+        projectId: vertexProjectId.trim(),
+        location: vertexLocation.trim() || 'us-central1',
+        ...(vertexAuthMode === 'service_account' && vertexSAJson.trim() ? { serviceAccountJson: vertexSAJson.trim() } : {}),
+        ...(vertexAuthMode === 'access_token' && vertexAccessToken.trim() ? { accessToken: vertexAccessToken.trim() } : {}),
+      });
+    } else if (selectedPreset === 'Azure AI Foundry') {
+      apiKeyValue = JSON.stringify({
+        endpoint: azureEndpoint.trim(),
+        apiVersion: azureApiVersion.trim() || '2024-12-01-preview',
+        deployments: azureDeployments.trim(),
+        ...(azureAuthMode === 'api_key' && azureApiKey.trim() ? { apiKey: azureApiKey.trim() } : {}),
+        ...(azureAuthMode === 'ad_token' && azureADToken.trim() ? { adToken: azureADToken.trim() } : {}),
+      });
     }
 
     const isFirstProvider = providers.length === 0;
@@ -219,7 +258,7 @@ export function LLMProviderSettings({
     setAwsAccessKey('');
     setAwsSecretKey('');
     setAwsSessionToken('');
-    setAwsRegion('us-east-1');
+    setAwsRegion('us-east-2');
     setBedrockApiKey('');
   }, [
     newName, newBaseUrl, newApiKey, newModels, selectedPreset, isApiKeyOptional,
@@ -261,13 +300,18 @@ export function LLMProviderSettings({
     if (isBedrock) {
       apiKeyValue = 'none';
       if (editBedrockAuthMode === 'api_key' && editBedrockApiKey.trim()) {
-        apiKeyValue = JSON.stringify({ bearerToken: editBedrockApiKey.trim(), region: editAwsRegion.trim() || 'us-east-1' });
+        apiKeyValue = JSON.stringify({ bearerToken: editBedrockApiKey.trim(), region: editAwsRegion.trim() || 'us-east-2' });
       } else if (editBedrockAuthMode === 'iam' && editAwsAccessKey.trim() && editAwsSecretKey.trim()) {
         apiKeyValue = JSON.stringify({
           accessKeyId: editAwsAccessKey.trim(),
           secretAccessKey: editAwsSecretKey.trim(),
           ...(editAwsSessionToken.trim() ? { sessionToken: editAwsSessionToken.trim() } : {}),
-          region: editAwsRegion.trim() || 'us-east-1',
+          region: editAwsRegion.trim() || 'us-east-2',
+        });
+      } else if (editBedrockAuthMode === 'sso') {
+        apiKeyValue = JSON.stringify({
+          ssoProfile: editAwsSSOProfile.trim() || '',
+          region: editAwsRegion.trim() || 'us-east-2',
         });
       }
     } else {
@@ -288,7 +332,7 @@ export function LLMProviderSettings({
     setEditAwsAccessKey('');
     setEditAwsSecretKey('');
     setEditAwsSessionToken('');
-    setEditAwsRegion('us-east-1');
+    setEditAwsRegion('us-east-2');
     setEditBedrockApiKey('');
   }, [
     providers, editKeyValue, editBedrockAuthMode, editBedrockApiKey,
@@ -413,21 +457,27 @@ export function LLMProviderSettings({
                             if (p.provider_type === 'bedrock' && p.api_key_encrypted && p.api_key_encrypted !== 'none') {
                               try {
                                 const creds = JSON.parse(p.api_key_encrypted);
-                                if (creds.bearerToken) {
+                                if (creds.ssoProfile !== undefined || creds.sso_profile !== undefined) {
+                                  setEditBedrockAuthMode('sso');
+                                  setEditAwsSSOProfile(creds.ssoProfile || creds.sso_profile || '');
+                                } else if (creds.bearerToken) {
                                   setEditBedrockAuthMode('api_key');
                                   setEditBedrockApiKey(creds.bearerToken);
-                                } else {
+                                } else if (creds.accessKeyId || creds.aws_access_key_id) {
                                   setEditBedrockAuthMode('iam');
                                   setEditAwsAccessKey(creds.accessKeyId || '');
                                   setEditAwsSecretKey(creds.secretAccessKey || '');
                                   setEditAwsSessionToken(creds.sessionToken || '');
+                                } else {
+                                  setEditBedrockAuthMode('sso');
+                                  setEditAwsSSOProfile('');
                                 }
-                                setEditAwsRegion(creds.region || 'us-east-1');
+                                setEditAwsRegion(creds.region || 'us-east-2');
                               } catch {
                                 setEditAwsAccessKey('');
                                 setEditAwsSecretKey('');
                                 setEditAwsSessionToken('');
-                                setEditAwsRegion('us-east-1');
+                                setEditAwsRegion('us-east-2');
                               }
                             }
                           }
@@ -489,8 +539,32 @@ export function LLMProviderSettings({
                           >
                             IAM Credentials
                           </Button>
+                          <Button
+                            size="sm"
+                            variant={editBedrockAuthMode === 'sso' ? 'default' : 'outline'}
+                            onClick={() => setEditBedrockAuthMode('sso')}
+                            type="button"
+                            className="h-7 text-xs"
+                          >
+                            AWS SSO
+                          </Button>
                         </div>
-                        {editBedrockAuthMode === 'api_key' ? (
+                        {editBedrockAuthMode === 'sso' ? (
+                          <div>
+                            <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                              SSO Profile <span className="text-slate-400">(from ~/.aws/config, leave empty for default)</span>
+                            </label>
+                            <Input
+                              value={editAwsSSOProfile}
+                              onChange={e => setEditAwsSSOProfile(e.target.value)}
+                              placeholder="default"
+                              className="mt-1"
+                            />
+                            <p className="text-xs text-slate-400 mt-1">
+                              Run <code className="bg-slate-100 dark:bg-slate-800 px-1 rounded">aws sso login</code> first
+                            </p>
+                          </div>
+                        ) : editBedrockAuthMode === 'api_key' ? (
                           <div>
                             <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
                               Bedrock API Key <span className="text-slate-400">(12-hour token)</span>
@@ -554,7 +628,7 @@ export function LLMProviderSettings({
                           <Input
                             value={editAwsRegion}
                             onChange={e => setEditAwsRegion(e.target.value)}
-                            placeholder="us-east-1"
+                            placeholder="us-east-2"
                             className="text-xs h-8 mt-1"
                           />
                         </div>
@@ -710,8 +784,32 @@ export function LLMProviderSettings({
                     >
                       IAM Credentials
                     </Button>
+                    <Button
+                      size="sm"
+                      variant={bedrockAuthMode === 'sso' ? 'default' : 'outline'}
+                      onClick={() => setBedrockAuthMode('sso')}
+                      type="button"
+                      className="h-7 text-xs"
+                    >
+                      AWS SSO
+                    </Button>
                   </div>
-                  {bedrockAuthMode === 'api_key' ? (
+                  {bedrockAuthMode === 'sso' ? (
+                    <div>
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                        SSO Profile <span className="text-slate-400">(from ~/.aws/config, leave empty for default)</span>
+                      </label>
+                      <Input
+                        value={awsSSOProfile}
+                        onChange={e => setAwsSSOProfile(e.target.value)}
+                        placeholder="default"
+                        className="mt-1"
+                      />
+                      <p className="text-xs text-slate-400 mt-1">
+                        Run <code className="bg-slate-100 dark:bg-slate-800 px-1 rounded">aws sso login</code> first to authenticate
+                      </p>
+                    </div>
+                  ) : bedrockAuthMode === 'api_key' ? (
                     <div>
                       <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
                         Bedrock API Key <span className="text-slate-400">(12-hour token)</span>
@@ -774,9 +872,86 @@ export function LLMProviderSettings({
                     <Input
                       value={awsRegion}
                       onChange={e => setAwsRegion(e.target.value)}
-                      placeholder="us-east-1"
+                      placeholder="us-east-2"
                       className="mt-1"
                     />
+                  </div>
+                </div>
+              ) : selectedPreset === 'Google (Vertex AI)' ? (
+                <div className="space-y-3">
+                  <div className="flex gap-2">
+                    <Button size="sm" variant={vertexAuthMode === 'adc' ? 'default' : 'outline'} onClick={() => setVertexAuthMode('adc')} type="button" className="h-7 text-xs">ADC (Default)</Button>
+                    <Button size="sm" variant={vertexAuthMode === 'service_account' ? 'default' : 'outline'} onClick={() => setVertexAuthMode('service_account')} type="button" className="h-7 text-xs">Service Account</Button>
+                    <Button size="sm" variant={vertexAuthMode === 'access_token' ? 'default' : 'outline'} onClick={() => setVertexAuthMode('access_token')} type="button" className="h-7 text-xs">Access Token</Button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">GCP Project ID</label>
+                      <Input value={vertexProjectId} onChange={e => setVertexProjectId(e.target.value)} placeholder="my-gcp-project" className="mt-1" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">Location / Region</label>
+                      <Input value={vertexLocation} onChange={e => setVertexLocation(e.target.value)} placeholder="us-central1" className="mt-1" />
+                    </div>
+                  </div>
+                  {vertexAuthMode === 'service_account' && (
+                    <div>
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">Service Account JSON Key</label>
+                      <textarea
+                        value={vertexSAJson}
+                        onChange={e => setVertexSAJson(e.target.value)}
+                        placeholder='{"type": "service_account", "project_id": "...", ...}'
+                        rows={4}
+                        className="mt-1 w-full rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-mono"
+                      />
+                    </div>
+                  )}
+                  {vertexAuthMode === 'access_token' && (
+                    <div>
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                        Access Token <span className="text-slate-400">(1-hour, from gcloud auth print-access-token)</span>
+                      </label>
+                      <Input type={showApiKey ? 'text' : 'password'} value={vertexAccessToken} onChange={e => setVertexAccessToken(e.target.value)} placeholder="ya29.a0..." className="mt-1" />
+                    </div>
+                  )}
+                  {vertexAuthMode === 'adc' && (
+                    <p className="text-xs text-slate-400">Uses Application Default Credentials. Run <code className="bg-slate-100 dark:bg-slate-800 px-1 rounded">gcloud auth application-default login</code> locally or deploy on GCP.</p>
+                  )}
+                </div>
+              ) : selectedPreset === 'Azure AI Foundry' ? (
+                <div className="space-y-3">
+                  <div className="flex gap-2">
+                    <Button size="sm" variant={azureAuthMode === 'api_key' ? 'default' : 'outline'} onClick={() => setAzureAuthMode('api_key')} type="button" className="h-7 text-xs">API Key</Button>
+                    <Button size="sm" variant={azureAuthMode === 'ad_token' ? 'default' : 'outline'} onClick={() => setAzureAuthMode('ad_token')} type="button" className="h-7 text-xs">Azure AD Token</Button>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-slate-700 dark:text-slate-300">Azure OpenAI Endpoint</label>
+                    <Input value={azureEndpoint} onChange={e => setAzureEndpoint(e.target.value)} placeholder="https://my-resource.openai.azure.com" className="mt-1" />
+                  </div>
+                  {azureAuthMode === 'api_key' ? (
+                    <div>
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">API Key</label>
+                      <Input type={showApiKey ? 'text' : 'password'} value={azureApiKey} onChange={e => setAzureApiKey(e.target.value)} placeholder="abc123..." className="mt-1" />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                        Azure AD Token <span className="text-slate-400">(from az account get-access-token)</span>
+                      </label>
+                      <Input type={showApiKey ? 'text' : 'password'} value={azureADToken} onChange={e => setAzureADToken(e.target.value)} placeholder="eyJ0eX..." className="mt-1" />
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">API Version</label>
+                      <Input value={azureApiVersion} onChange={e => setAzureApiVersion(e.target.value)} placeholder="2024-12-01-preview" className="mt-1" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                        Deployments <span className="text-slate-400">(comma-separated)</span>
+                      </label>
+                      <Input value={azureDeployments} onChange={e => setAzureDeployments(e.target.value)} placeholder="gpt-4o, gpt-4o-mini" className="mt-1" />
+                    </div>
                   </div>
                 </div>
               ) : (

@@ -38,11 +38,23 @@ export interface ProjectCredentials {
   aws_secret_access_key?: string;
   aws_session_token?: string;
   aws_region?: string;
-  aws_bearer_token?: string; // Bedrock API key (never expires, no IAM/STS)
+  aws_bearer_token?: string;   // Bedrock presigned token (may expire)
+  aws_sso_profile?: string;    // SSO profile name from ~/.aws/config (auto-refreshes)
   anthropic_api_key?: string;
   openai_api_key?: string;
   openai_endpoint?: string;
   gemini_api_key?: string;
+  // Google Vertex AI
+  vertex_ai_project_id?: string;
+  vertex_ai_location?: string;
+  vertex_ai_service_account_json?: string;
+  vertex_ai_access_token?: string;
+  // Azure AI Foundry (Azure OpenAI)
+  azure_endpoint?: string;
+  azure_api_key?: string;
+  azure_ad_token?: string;
+  azure_api_version?: string;
+  azure_deployments?: string;
 }
 
 export interface CompletionRequest {
@@ -54,6 +66,7 @@ export interface CompletionRequest {
   response_format?: "text" | "json";
   metadata?: Record<string, unknown>;
   credentials?: ProjectCredentials;
+  advisor?: { enabled: boolean; model?: string; max_uses?: number };
 }
 
 export interface CompletionResponse {
@@ -93,7 +106,7 @@ export class LLMProxyService {
       apiKey: config?.apiKey || process.env.LLM_ORCHESTRATOR_API_KEY || "",
       defaultModel: config?.defaultModel || process.env.LLM_DEFAULT_MODEL || "",
       evaluatorModel: config?.evaluatorModel || process.env.LLM_EVALUATOR_MODEL || "",
-      timeout: config?.timeout || 300000, // 5 min — Bedrock calls should finish well within this; prevents silent hangs
+      timeout: config?.timeout || 600000, // 10 min — composition and FORGE code generation need longer for large outputs
     };
 
     this.client = axios.create({
@@ -197,6 +210,7 @@ export class LLMProxyService {
                 : undefined,
               metadata: request.metadata,
               ...(request.credentials ? { credentials: request.credentials } : {}),
+              ...(request.advisor?.enabled ? { advisor: request.advisor } : {}),
             },
           );
           return response.data;
@@ -229,6 +243,7 @@ export class LLMProxyService {
     await this.ensureModelsDiscovered();
     let response: AxiosResponse;
     try {
+      const streamTimeout = request.advisor?.enabled ? 600000 : this.config.timeout;
       response = await this.client.post(
         "/api/v1/chat/completions/stream",
         {
@@ -238,10 +253,12 @@ export class LLMProxyService {
           temperature: request.temperature ?? 0.3,
           metadata: request.metadata,
           ...(request.credentials ? { credentials: request.credentials } : {}),
+          ...(request.advisor?.enabled ? { advisor: request.advisor } : {}),
         },
         {
           responseType: "stream",
           signal,
+          timeout: streamTimeout,
         },
       );
     } catch (err: any) {
@@ -279,6 +296,12 @@ export class LLMProxyService {
         if (currentEvent === "message") {
           accumulated += data;
           onDelta?.(data);
+          currentEvent = "";
+          return;
+        }
+
+        if (currentEvent === "advisor_thinking") {
+          // Keepalive during advisor (Opus) sub-inference — suppress timeout, don't emit
           currentEvent = "";
           return;
         }
@@ -384,7 +407,7 @@ export class LLMProxyService {
    * The returned function has a `.tokenUsage` property that accumulates
    * input/output tokens across all calls made through this function.
    */
-  createCallFn(options?: { model?: string; maxTokens?: number; credentials?: ProjectCredentials }): LLMCallFn & { tokenUsage: { inputTokens: number; outputTokens: number } } {
+  createCallFn(options?: { model?: string; maxTokens?: number; credentials?: ProjectCredentials; advisor?: { enabled: boolean; model?: string; max_uses?: number } }): LLMCallFn & { tokenUsage: { inputTokens: number; outputTokens: number } } {
     const tokenUsage = { inputTokens: 0, outputTokens: 0 };
     const fn = async (req: LLMCallRequest): Promise<string> => {
       const messages: ChatMessage[] = [];
@@ -434,6 +457,7 @@ export class LLMProxyService {
               useExtendedThinking: req.useExtendedThinking || false,
             },
             credentials: options?.credentials,
+            advisor: options?.advisor,
           },
           req.onDelta,
           req.signal,
@@ -452,6 +476,7 @@ export class LLMProxyService {
           useExtendedThinking: req.useExtendedThinking || false,
         },
         credentials: options?.credentials,
+        advisor: options?.advisor,
       });
 
       tokenUsage.inputTokens += response.input_tokens || 0;

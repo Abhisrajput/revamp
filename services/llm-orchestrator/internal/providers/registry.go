@@ -53,15 +53,59 @@ func (r *Registry) RegisterProviders() error {
 		r.logger.Info("Registered Gemini provider")
 	}
 
-	// Register Bedrock (only when explicit AWS credentials are provided)
-	if r.config.AWSAccessKeyID != "" {
+	// Register Bedrock — uses the AWS SDK default credential chain which supports:
+	//   1. Env vars (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)
+	//   2. SSO profiles (~/.aws/config + `aws sso login`)
+	//   3. IAM instance roles (EC2/ECS)
+	//   4. Credential process / credential file
+	{
 		bedrockProvider, err := r.createBedrockProvider()
 		if err != nil {
-			r.logger.Warn("Failed to register Bedrock provider", zap.Error(err))
+			r.logger.Warn("Bedrock provider not available", zap.Error(err))
 		} else {
 			r.Register("bedrock", bedrockProvider)
-			r.logger.Info("Registered Bedrock provider")
+			r.logger.Info("Registered Bedrock provider (default credential chain)")
 		}
+	}
+
+	// Register Vertex AI
+	if r.config.VertexAIProjectID != "" {
+		var vertexProvider *VertexAIProvider
+		if r.config.VertexAIServiceAccountJSON != "" {
+			vertexProvider = NewVertexAIProviderWithServiceAccount(
+				r.config.VertexAIProjectID, r.config.VertexAILocation,
+				r.config.VertexAIServiceAccountJSON, r.logger,
+			)
+		} else {
+			vertexProvider = NewVertexAIProvider(r.config.VertexAIProjectID, r.config.VertexAILocation, r.logger)
+		}
+		r.Register("vertexai", vertexProvider)
+		r.logger.Info("Registered Vertex AI provider",
+			zap.String("project", r.config.VertexAIProjectID),
+			zap.String("location", r.config.VertexAILocation),
+		)
+	}
+
+	// Register Azure AI Foundry (Azure OpenAI)
+	if r.config.AzureOpenAIEndpoint != "" && r.config.AzureOpenAIAPIKey != "" {
+		var deployments []string
+		if r.config.AzureOpenAIDeployments != "" {
+			for _, d := range strings.Split(r.config.AzureOpenAIDeployments, ",") {
+				d = strings.TrimSpace(d)
+				if d != "" {
+					deployments = append(deployments, d)
+				}
+			}
+		}
+		azureProvider := NewAzureProvider(
+			r.config.AzureOpenAIEndpoint, r.config.AzureOpenAIAPIKey,
+			deployments, r.config.AzureOpenAIAPIVersion, r.logger,
+		)
+		r.Register("azure", azureProvider)
+		r.logger.Info("Registered Azure AI Foundry provider",
+			zap.String("endpoint", r.config.AzureOpenAIEndpoint),
+			zap.Int("deployments", len(deployments)),
+		)
 	}
 
 	// Register Ollama (local / self-hosted LLM)
@@ -196,6 +240,9 @@ var modelMetadata = map[string]ModelInfo{
 	"gemini-2.0-flash": {Name: "Gemini 2.0 Flash", ContextSize: 1000000, CostPerInput: 0.000075, CostPerOutput: 0.00030, Owner: "Google"},
 	"gemini-1.5-pro":   {Name: "Gemini 1.5 Pro", ContextSize: 2000000, CostPerInput: 0.00125, CostPerOutput: 0.005, Owner: "Google"},
 	"gemini-1.5-flash": {Name: "Gemini 1.5 Flash", ContextSize: 1000000, CostPerInput: 0.000075, CostPerOutput: 0.00030, Owner: "Google"},
+	// Google Vertex AI (same models, slightly different pricing)
+	"gemini-2.5-pro":   {Name: "Gemini 2.5 Pro", ContextSize: 1000000, CostPerInput: 0.00125, CostPerOutput: 0.010, Owner: "Google (Vertex AI)"},
+	"gemini-2.5-flash": {Name: "Gemini 2.5 Flash", ContextSize: 1000000, CostPerInput: 0.00015, CostPerOutput: 0.00060, Owner: "Google (Vertex AI)"},
 }
 
 // providerOwners maps provider name to display owner
@@ -203,7 +250,9 @@ var providerOwners = map[string]string{
 	"openai":    "OpenAI",
 	"anthropic": "Anthropic",
 	"gemini":    "Google",
+	"vertexai":  "Google (Vertex AI)",
 	"bedrock":   "AWS",
+	"azure":     "Microsoft (Azure AI Foundry)",
 	"ollama":    "Local (Ollama)",
 }
 

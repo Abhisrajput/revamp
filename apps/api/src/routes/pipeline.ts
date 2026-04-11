@@ -73,6 +73,8 @@ const ExecuteStageSchema = z.object({
   skip_llm_eval: z.boolean().optional(),
   /** Override execution model for this stage (e.g. "claude-sonnet-4-20250514") */
   model: z.string().optional(),
+  /** Override director/composition model (e.g. "us.anthropic.claude-opus-4-6-v1:0") */
+  composer_model: z.string().optional(),
   /** Override evaluator/validation model for this stage */
   evaluator_model: z.string().optional(),
   /** Override stage prompt for this execution (re-run with edited prompt) */
@@ -393,10 +395,16 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         // a created_at within ~50ms — a 2-second window is generous and safe.
         const BATCH_CLUSTER_MS = 2000;
         const latestBatch: typeof subtaskRows = [];
+        // db.execute() returns raw strings for timestamps, not Date objects.
+        // Normalise to epoch-ms for safe comparison.
+        const toEpoch = (v: Date | string | null | undefined): number => {
+          if (!v) return 0;
+          return typeof v === 'string' ? new Date(v).getTime() : v.getTime();
+        };
         if (subtaskRows.length > 0) {
-          const newest = subtaskRows[0].created_at?.getTime() ?? 0;
+          const newest = toEpoch(subtaskRows[0].created_at);
           for (const row of subtaskRows) {
-            const t = row.created_at?.getTime() ?? 0;
+            const t = toEpoch(row.created_at);
             if (newest - t <= BATCH_CLUSTER_MS) {
               latestBatch.push(row);
             } else {
@@ -434,7 +442,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         }
         // Count distinct rounds (clusters of created_at within BATCH_CLUSTER_MS)
         const sortedTimes = subtaskRows
-          .map((r) => r.created_at?.getTime() ?? 0)
+          .map((r) => toEpoch(r.created_at))
           .sort((a, b) => b - a);
         if (sortedTimes.length > 0) {
           currentStageProgress.rounds = 1;
@@ -521,6 +529,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       const templateVars = body.success ? (body.data.template_vars || {}) : {};
       const skipLlmEval = body.success ? body.data.skip_llm_eval : false;
       const modelOverride = body.success ? body.data.model : undefined;
+      const composerModelOverride = body.success ? body.data.composer_model : undefined;
       const evaluatorModelOverride = body.success ? body.data.evaluator_model : undefined;
       const promptOverride = body.success ? body.data.prompt_override : undefined;
       const validationFeedback = body.success ? body.data.validation_feedback : undefined;
@@ -608,10 +617,16 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
 
       let closed = false;
       let accumulatedOutput = "";
-      const sendSSE = (event: string, data: unknown) => {
+      const sendSSE = (eventType: string, data: unknown) => {
         if (closed) return;
         try {
-          reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          // Include `type` in the JSON payload — the frontend's raw fetch parser
+          // reads only `data:` lines (skips `event:` lines), so it needs `type`
+          // in the JSON to dispatch correctly via switch(event.type).
+          const payload = typeof data === 'object' && data !== null
+            ? { type: eventType, ...data as Record<string, unknown> }
+            : { type: eventType, data };
+          reply.raw.write(`event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`);
         } catch {
           closed = true;
         }
@@ -701,6 +716,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           templateVars,
           {
             model: modelOverride,
+            composerModel: composerModelOverride,
             evaluatorModel: evaluatorModelOverride,
             promptOverride,
             validationFeedback,
@@ -1548,6 +1564,98 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       const { pipelineRunId, stage } = request.params;
       await pipelineService.updateStageProgress(pipelineRunId, stage as PipelineStageName, "pending", 0);
       return reply.send({ ok: true, stage, status: "pending" });
+    },
+  );
+
+  // ═══ TEST LLM CREDENTIALS ════════════════════════════════════
+  // Sends a minimal "ping" completion to verify credentials work before running the pipeline.
+  fastify.post<{ Params: { projectId: string } }>(
+    "/pipeline/test-credentials/:projectId",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const { projectId } = request.params;
+
+      try {
+        const project = await db.query.projects.findFirst({
+          where: eq(projects.id, projectId),
+        });
+        if (!project) return reply.status(404).send({ error: "Project not found" });
+
+        // Extract BYOK credentials (same logic as executeStage)
+        const settings = (project as any).settings as Record<string, unknown> | null;
+        const llmProviders = (
+          (settings?.llmProviders as Record<string, unknown>[])
+          || (settings?.llm_providers as Record<string, unknown>[])
+          || []
+        );
+
+        let credentials: import("../services/llm-proxy.js").ProjectCredentials | undefined;
+        let providerName = "default";
+
+        if (llmProviders.length > 0) {
+          const provider = (llmProviders.find((p: any) => p.is_default) || llmProviders[0]) as any;
+          const ptype = provider.provider_type as string;
+          const apiKeyField = provider.api_key_encrypted as string || "";
+          providerName = ptype;
+
+          credentials = { provider: ptype };
+          if (ptype === "bedrock") {
+            let bearerToken: string | undefined;
+            let parsed: Record<string, string> | undefined;
+            if (typeof apiKeyField === "string" && apiKeyField.startsWith("{")) {
+              try {
+                parsed = JSON.parse(apiKeyField);
+                bearerToken = parsed?.bearerToken || parsed?.bearer_token || parsed?.apiKey || parsed?.api_key;
+              } catch { /* */ }
+            } else if (typeof apiKeyField === "string" && apiKeyField.length > 10) {
+              bearerToken = apiKeyField;
+            }
+            if (bearerToken) {
+              credentials.aws_bearer_token = bearerToken;
+              credentials.aws_region = parsed?.region || parsed?.aws_region || "us-east-2";
+            } else if (parsed) {
+              credentials.aws_access_key_id = parsed.accessKeyId || parsed.aws_access_key_id || "";
+              credentials.aws_secret_access_key = parsed.secretAccessKey || parsed.aws_secret_access_key || "";
+              credentials.aws_session_token = parsed.sessionToken || parsed.aws_session_token || "";
+              credentials.aws_region = parsed.region || parsed.aws_region || "us-east-2";
+            }
+          } else if (ptype === "anthropic") {
+            credentials.anthropic_api_key = apiKeyField;
+          } else if (ptype === "openai") {
+            credentials.openai_api_key = apiKeyField;
+          } else if (ptype === "gemini") {
+            credentials.gemini_api_key = apiKeyField;
+          }
+        }
+
+        const { llmProxyService } = await import("../services/llm-proxy.js");
+        const callFn = llmProxyService.createCallFn({
+          maxTokens: 32,
+          credentials,
+        });
+
+        const start = Date.now();
+        const result = await callFn({
+          systemPrompt: "Respond with exactly: OK",
+          userPrompt: "Ping",
+        });
+        const latencyMs = Date.now() - start;
+
+        return reply.send({
+          ok: true,
+          provider: providerName,
+          response: result.slice(0, 50),
+          latencyMs,
+        });
+      } catch (err: any) {
+        const msg = err?.message || String(err);
+        return reply.status(400).send({
+          ok: false,
+          error: msg.includes("403") || msg.includes("401") || msg.includes("Authentication")
+            ? `Credential error: ${msg}`
+            : `LLM error: ${msg}`,
+        });
+      }
     },
   );
 }

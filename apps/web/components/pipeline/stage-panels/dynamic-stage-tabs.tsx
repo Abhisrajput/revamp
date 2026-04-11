@@ -266,12 +266,18 @@ export const DynamicStageTabs = memo(function DynamicStageTabs({
     const rawSections = parseMarkdownSections(output);
 
     // Step 1: Tag each section with display info
+    const seenSlugs = new Map<string, number>();
     const tagged = rawSections.map((s) => {
       const displayTitle = cleanTitle(s.title);
+      let id = slugify(s.title);
+      // Ensure unique IDs — append index suffix on collision
+      const count = seenSlugs.get(id) ?? 0;
+      seenSlugs.set(id, count + 1);
+      if (count > 0) id = `${id}-${count}`;
       return {
         ...s,
         displayTitle,
-        id: slugify(s.title),
+        id,
         icon: resolveIcon(displayTitle),
         stats: computeStats(s.content),
         contentLength: s.content.length,

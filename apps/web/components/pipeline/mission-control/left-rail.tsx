@@ -24,6 +24,8 @@ interface LeftRailProps {
   // Quick settings — LLM models
   model: string;
   onModelChange: (modelId: string) => void;
+  composerModel: string;
+  onComposerModelChange: (modelId: string) => void;
   evaluatorModel: string;
   onEvaluatorModelChange: (modelId: string) => void;
   templateId: string;
@@ -60,6 +62,8 @@ export const LeftRail = memo(function LeftRail({
   activeStageIndex,
   model,
   onModelChange,
+  composerModel,
+  onComposerModelChange,
   evaluatorModel,
   onEvaluatorModelChange,
   templateId,
@@ -182,8 +186,16 @@ export const LeftRail = memo(function LeftRail({
         <QuickSettings
           model={model}
           onModelChange={onModelChange}
+          composerModel={composerModel}
+          onComposerModelChange={onComposerModelChange}
           evaluatorModel={evaluatorModel}
           onEvaluatorModelChange={onEvaluatorModelChange}
+          projectModels={(() => {
+            try {
+              const providers = (project?.settings as any)?.llmProviders || (project?.settings as any)?.llm_providers || [];
+              return providers.flatMap((p: any) => p.available_models || []);
+            } catch { return []; }
+          })()}
           templateId={templateId}
           onTemplateChange={onTemplateChange}
           deepAnalysis={deepAnalysis}

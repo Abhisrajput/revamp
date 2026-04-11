@@ -100,23 +100,9 @@ export default function PipelinePage() {
   }, [pipelineStatusData]);
 
   // ─── Background execution detection ──────────────────────────
-  // When a stage is running on the server (in_progress) but the SSE
-  // stream is lost (page refresh, navigation), poll the status endpoint
-  // to detect completion and refresh outputs.
-  const queryClient_polling = useQueryClient();
-  useEffect(() => {
-    if (!pipelineStatusData?.stage_progress || !effectiveRunId) return;
-    const sp = pipelineStatusData.stage_progress as Record<string, { status?: string }>;
-    const hasRunningStage = Object.values(sp).some(s => s?.status === 'in_progress');
-    if (!hasRunningStage) return;
-
-    // Poll every 5 seconds until no stage is running
-    const interval = setInterval(() => {
-      queryClient_polling.invalidateQueries({ queryKey: ['pipeline-status', effectiveRunId] });
-      queryClient_polling.invalidateQueries({ queryKey: ['stage-output'] });
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [pipelineStatusData, effectiveRunId, queryClient_polling]);
+  // React Query's refetchInterval on usePipelineStatus already polls every 10s.
+  // No additional setInterval needed — the sync effect below handles
+  // completion detection from the polled data.
 
   // Sync stage outputs from React Query → store
   useEffect(() => {
@@ -160,6 +146,7 @@ export default function PipelinePage() {
   const logs = usePipelineStore((s) => s.logs);
   const stageModelOverrides = usePipelineStore((s) => s.stageModelOverrides);
   const stageEvaluatorModelOverrides = usePipelineStore((s) => s.stageEvaluatorModelOverrides);
+  const stageComposerModelOverrides = usePipelineStore((s) => s.stageComposerModelOverrides);
   const stagePromptOverrides = usePipelineStore((s) => s.stagePromptOverrides);
   const activeTemplateId = usePipelineStore((s) => s.activeTemplateId);
   const deepAnalysis = usePipelineStore((s) => s.deepAnalysis);
@@ -173,6 +160,7 @@ export default function PipelinePage() {
   const resetStage = usePipelineStore((s) => s.resetStage);
   const setStageModelOverride = usePipelineStore((s) => s.setStageModelOverride);
   const setStageEvaluatorModelOverride = usePipelineStore((s) => s.setStageEvaluatorModelOverride);
+  const setStageComposerModelOverride = usePipelineStore((s) => s.setStageComposerModelOverride);
   const setStagePromptOverride = usePipelineStore((s) => s.setStagePromptOverride);
   const clearStagePromptOverride = usePipelineStore((s) => s.clearStagePromptOverride);
   const stageValidationPromptOverrides = usePipelineStore((s) => s.stageValidationPromptOverrides);
@@ -562,40 +550,27 @@ export default function PipelinePage() {
   // ─── Poll for stuck stages (SSE drop recovery) ─────────────
   // If a stage is stuck in 'generating', poll DB to check if it actually
   // completed or was reset. Handles SSE drops, server restarts, and browser tab suspensions.
+  // ─── Stuck stage recovery ────────────────────────────────────
+  // Handled by the pipelineStatusData sync effect above — when React Query
+  // polls status every 10s, the sync detects stuck stages (store says
+  // 'generating' but DB says 'completed') and corrects them. No separate
+  // polling interval needed.
   useEffect(() => {
-    if (!currentPipelineRunId) return;
-    const checkStuck = () => {
-      const s = usePipelineStore.getState();
-      const hasStuck = s.stages.some(
-        (st) => st.status === 'generating' || st.status === 'validating',
-      );
-      if (!hasStuck) return;
-      apiClient
-        .get(`/pipeline/${currentPipelineRunId}/status`)
-        .then((res) => {
-          const stageProgress = res.data?.stage_progress;
-          if (!stageProgress) return;
-          const s2 = usePipelineStore.getState();
-          for (let i = 0; i < s2.stages.length; i++) {
-            const storeStage = s2.stages[i];
-            const dbStatus = stageProgress[storeStage.name]?.status;
-            if (
-              dbStatus &&
-              (storeStage.status === 'generating' || storeStage.status === 'validating') &&
-              (dbStatus === 'completed' || dbStatus === 'approved' || dbStatus === 'failed' || dbStatus === 'pending')
-            ) {
-              const mapped = dbStatus === 'pending' ? 'pending' : dbStatus;
-              usePipelineStore.getState().setStageStatus(i, mapped as any);
-            }
-          }
-        })
-        .catch(() => { /* silent — will retry on next interval */ });
-    };
-    // Check immediately on mount, then every 10s
-    checkStuck();
-    const interval = setInterval(checkStuck, 10_000);
-    return () => clearInterval(interval);
-  }, [currentPipelineRunId]);
+    if (!pipelineStatusData?.stage_progress) return;
+    const sp = pipelineStatusData.stage_progress as Record<string, { status?: string }>;
+    const s = usePipelineStore.getState();
+    for (let i = 0; i < s.stages.length; i++) {
+      const storeStage = s.stages[i];
+      const dbStatus = sp[storeStage.name]?.status;
+      if (
+        dbStatus &&
+        (storeStage.status === 'generating' || storeStage.status === 'validating') &&
+        (dbStatus === 'completed' || dbStatus === 'approved' || dbStatus === 'failed' || dbStatus === 'pending')
+      ) {
+        usePipelineStore.getState().setStageStatus(i, dbStatus as any);
+      }
+    }
+  }, [pipelineStatusData]);
 
   // ─── Refetch project data when SCAN completes (picks up folder_structure) ──
   const scanStatus = stages[0]?.status;
@@ -775,7 +750,16 @@ export default function PipelinePage() {
     if (stage.status === 'completed' || stage.status === 'failed') {
       resetStage(s.activeStageIndex);
     }
-    executeStage(s.currentPipelineRunId, stage.name, { skipLlmEval });
+    // Read model overrides from the store
+    const modelOverride = s.stageModelOverrides[stage.name];
+    const composerOverride = s.stageComposerModelOverrides[stage.name];
+    const evaluatorOverride = s.stageEvaluatorModelOverrides[stage.name];
+    executeStage(s.currentPipelineRunId, stage.name, {
+      skipLlmEval,
+      model: modelOverride || undefined,
+      composerModel: composerOverride || undefined,
+      evaluatorModel: evaluatorOverride || undefined,
+    });
   }, [executeStage, skipLlmEval, resetStage]);
 
   const handleRerunStage = useCallback((promptOverride?: string) => {
@@ -812,9 +796,15 @@ export default function PipelinePage() {
     }
     setTimeout(() => {
       const updated = usePipelineStore.getState();
+      const modelOverride = updated.stageModelOverrides[stage.name];
+      const composerOverride = updated.stageComposerModelOverrides[stage.name];
+      const evaluatorOverride = updated.stageEvaluatorModelOverrides[stage.name];
       executeStage(updated.currentPipelineRunId!, stage.name, {
         skipLlmEval,
         promptOverride,
+        model: modelOverride || undefined,
+        composerModel: composerOverride || undefined,
+        evaluatorModel: evaluatorOverride || undefined,
         validationFeedback: validationFeedback?.length ? validationFeedback : undefined,
       });
     }, 100);
@@ -921,11 +911,25 @@ export default function PipelinePage() {
     [activeStage, stageEvaluatorModelOverrides],
   );
 
+  const currentComposerModel = useMemo(
+    () =>
+      (activeStage && stageComposerModelOverrides[activeStage.name]) ||
+      '',
+    [activeStage, stageComposerModelOverrides],
+  );
+
   const handleModelChange = useCallback(
     (modelId: string) => {
       if (activeStage) setStageModelOverride(activeStage.name, modelId);
     },
     [activeStage, setStageModelOverride],
+  );
+
+  const handleComposerModelChange = useCallback(
+    (modelId: string) => {
+      if (activeStage) setStageComposerModelOverride(activeStage.name, modelId);
+    },
+    [activeStage, setStageComposerModelOverride],
   );
 
   const handleEvaluatorModelChange = useCallback(
@@ -1239,6 +1243,8 @@ export default function PipelinePage() {
             activeStageIndex={activeStageIndex}
             model={currentModel}
             onModelChange={handleModelChange}
+            composerModel={currentComposerModel}
+            onComposerModelChange={handleComposerModelChange}
             evaluatorModel={currentEvaluatorModel}
             onEvaluatorModelChange={handleEvaluatorModelChange}
             templateId={activeTemplateId ?? ''}

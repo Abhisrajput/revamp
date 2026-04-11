@@ -199,6 +199,7 @@ interface PipelineState {
   logs: any[];
   stageModelOverrides: Record<string, string>;
   stageEvaluatorModelOverrides: Record<string, string>;
+  stageComposerModelOverrides: Record<string, string>;
   stagePromptOverrides: Record<string, string>;
   stageValidationPromptOverrides: Record<string, string>;
   activeTemplateId: string | null;
@@ -234,6 +235,7 @@ interface PipelineState {
   addToolCall: (toolCall: any) => void;
   setStageModelOverride: (stageName: string, modelId: string) => void;
   setStageEvaluatorModelOverride: (stageName: string, modelId: string) => void;
+  setStageComposerModelOverride: (stageName: string, modelId: string) => void;
   setStagePromptOverride: (stageName: string, prompt: string) => void;
   clearStagePromptOverride: (stageName: string) => void;
   setStageValidationPromptOverride: (stageName: string, prompt: string) => void;
@@ -293,6 +295,7 @@ export const usePipelineStore = create<PipelineState>()(
       logs: [],
       stageModelOverrides: {},
       stageEvaluatorModelOverrides: {},
+      stageComposerModelOverrides: {},
       stagePromptOverrides: {},
       stageValidationPromptOverrides: {},
       activeTemplateId: null,
@@ -478,7 +481,7 @@ export const usePipelineStore = create<PipelineState>()(
             status: 'pending',
             output: '',
             streamingOutput: '',
-            approvalStatus: stageRequiresApproval(current.name) ? 'pending' : 'not_required',
+            approvalStatus: 'not_required',
             previousValidation: current.validation || current.previousValidation,
             validation: null,
             pendingApprovalSince: null,
@@ -533,6 +536,12 @@ export const usePipelineStore = create<PipelineState>()(
       setStageEvaluatorModelOverride: (stageName, modelId) => {
         set((state) => ({
           stageEvaluatorModelOverrides: { ...state.stageEvaluatorModelOverrides, [stageName]: modelId },
+        }));
+      },
+
+      setStageComposerModelOverride: (stageName, modelId) => {
+        set((state) => ({
+          stageComposerModelOverrides: { ...state.stageComposerModelOverrides, [stageName]: modelId },
         }));
       },
 
@@ -701,6 +710,7 @@ export const usePipelineStore = create<PipelineState>()(
       partialize: (state) => ({
         stageModelOverrides: state.stageModelOverrides,
         stageEvaluatorModelOverrides: state.stageEvaluatorModelOverrides,
+        stageComposerModelOverrides: state.stageComposerModelOverrides,
         stagePromptOverrides: state.stagePromptOverrides,
         stageValidationPromptOverrides: state.stageValidationPromptOverrides,
         activeTemplateId: state.activeTemplateId,
@@ -769,9 +779,10 @@ export function shouldShowApprovalGate(stage: StageState): boolean {
  * Returns a human-readable reason why a stage cannot be executed yet.
  */
 export function getStageBlockReason(stages: StageState[], index: number): string | null {
-  // Check if current stage has pending approval
+  // Check if current stage has pending approval — only block if the stage
+  // actually has output awaiting review, not if it was just reset for rerun.
   const current = stages[index];
-  if (current?.approvalStatus === 'pending') {
+  if (current?.approvalStatus === 'pending' && current.status !== 'pending' && current.output) {
     return `This stage is awaiting approval. Review and approve or reject before re-running.`;
   }
 

@@ -38,6 +38,12 @@ interface ExecuteOptions {
   skipLlmEval?: boolean;
   promptOverride?: string;
   validationFeedback?: Array<{ name: string; passed: boolean; score: number; feedback: string; severity?: string }>;
+  /** Override execution model for this stage */
+  model?: string;
+  /** Override director/composition model for this stage */
+  composerModel?: string;
+  /** Override evaluator/validation model for this stage */
+  evaluatorModel?: string;
 }
 
 interface UseStageExecutionReturn {
@@ -51,6 +57,7 @@ interface UseStageExecutionReturn {
 
 export function useStageExecution(): UseStageExecutionReturn {
   const [isExecuting, setIsExecuting] = useState(false);
+  const isExecutingRef = useRef(false);
   const [currentPhase, setCurrentPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -59,7 +66,10 @@ export function useStageExecution(): UseStageExecutionReturn {
 
   const executeStage = useCallback(
     (pipelineRunId: string, stageName: string, options: ExecuteOptions = {}) => {
-      if (isExecuting) return;
+      // Use ref for synchronous guard — useState is async and can't prevent
+      // double-clicks between the call and the next React render.
+      if (isExecutingRef.current) return;
+      isExecutingRef.current = true;
 
       const controller = new AbortController();
       abortControllerRef.current = controller;
@@ -84,6 +94,9 @@ export function useStageExecution(): UseStageExecutionReturn {
         },
         body: JSON.stringify({
           skip_llm_eval: options.skipLlmEval ?? false,
+          ...(options.model ? { model: options.model } : {}),
+          ...(options.composerModel ? { composer_model: options.composerModel } : {}),
+          ...(options.evaluatorModel ? { evaluator_model: options.evaluatorModel } : {}),
           ...(options.promptOverride ? { prompt_override: options.promptOverride } : {}),
           ...(options.validationFeedback?.length ? { validation_feedback: options.validationFeedback } : {}),
         }),
@@ -130,6 +143,7 @@ export function useStageExecution(): UseStageExecutionReturn {
                     }
                   }
                 }
+                isExecutingRef.current = false;
                 setIsExecuting(false);
                 setCurrentPhase(null);
                 setProgress(100);
@@ -161,7 +175,11 @@ export function useStageExecution(): UseStageExecutionReturn {
           return processChunk();
         })
         .catch((err) => {
-          if (err.name === 'AbortError') return;
+          if (err.name === 'AbortError') {
+            isExecutingRef.current = false;
+            setIsExecuting(false);
+            return;
+          }
 
           const s = store.getState();
           const idx = s.stages.findIndex((st) => st.name === stageName);
@@ -171,11 +189,12 @@ export function useStageExecution(): UseStageExecutionReturn {
             s.addLog({ type: 'error', message: errMsg, timestamp: new Date().toISOString() });
             flashError(stageName, errMsg);
           }
+          isExecutingRef.current = false;
           setIsExecuting(false);
           setCurrentPhase(null);
         });
     },
-    [isExecuting, store],
+    [store],
   );
 
   function handleSSEEvent(event: any, stageName: string, stageIndex: number) {
@@ -244,9 +263,13 @@ export function useStageExecution(): UseStageExecutionReturn {
           }
         }
 
-        // Subtask execution events — update individual bot status
+        // Subtask execution events — update individual bot status + progress bar
         if ((phase === 'subtask_executing' || phase === 'subtask_completed' || phase === 'subtask_failed') && event.data?.data && idx >= 0) {
           const subtaskData = event.data.data as Record<string, unknown>;
+          // Update progress bar from subtask completion events
+          if (typeof subtaskData.progress === 'number') {
+            setProgress(subtaskData.progress);
+          }
           const subtaskType = subtaskData.type as string | undefined;
           if (subtaskType) {
             const stage = s.stages[idx];
@@ -279,6 +302,12 @@ export function useStageExecution(): UseStageExecutionReturn {
         // Log ALL phase events to Terminal + Agent Activity
         const phaseData = event.data?.data as Record<string, unknown> | undefined;
         const phaseMessage = (phaseData?.message as string) ?? phase;
+
+        // Update progress bar from phase events (composing, coverage, validation, etc.)
+        if (typeof phaseData?.progress === 'number') {
+          setProgress(phaseData.progress as number);
+        }
+
         if (phaseMessage && phase !== 'generating') {
           s.addLog({
             type: phase.includes('fail') || phase.includes('error') ? 'error' : 'info',
@@ -287,7 +316,7 @@ export function useStageExecution(): UseStageExecutionReturn {
           });
           // Also feed as agent activity item for the Agent tab
           s.addToolCall({
-            id: `${phase}-${Date.now()}`,
+            id: `${phase}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             toolName: phase,
             status: phase.includes('fail') || phase.includes('error') ? 'failed'
               : phase.includes('complet') || phase.includes('done') ? 'completed'
@@ -304,6 +333,7 @@ export function useStageExecution(): UseStageExecutionReturn {
         setProgress(event.data?.progress ?? event.progress ?? 0);
         break;
 
+      case 'delta':
       case 'text_delta':
       case 'chunk':
         s.appendStreamingText(event.data?.text ?? event.text ?? event.data ?? '');
@@ -460,6 +490,7 @@ export function useStageExecution(): UseStageExecutionReturn {
             }
           }
         }
+        isExecutingRef.current = false;
         setIsExecuting(false);
         setCurrentPhase(null);
         setProgress(100);
@@ -496,6 +527,23 @@ export function useStageExecution(): UseStageExecutionReturn {
         break;
       }
 
+      case 'error': {
+        // Backend sends 'error' events when the pipeline service throws (auth, quota,
+        // context_length, etc.). Without this handler the stage stays stuck in
+        // 'generating' with the elapsed timer running forever.
+        const errMsg = event.data?.message ?? event.data?.detail ?? event.message ?? 'Stage execution error';
+        const detail = event.data?.detail ?? '';
+        if (idx >= 0) {
+          s.setStageStatus(idx, 'failed');
+          s.addLog({ type: 'error', message: detail || errMsg, timestamp: new Date().toISOString() });
+          flashError(stageName, errMsg);
+        }
+        isExecutingRef.current = false;
+        setIsExecuting(false);
+        setCurrentPhase(null);
+        break;
+      }
+
       case 'failed':
       case 'stage_failed': {
         const errMsg = event.data?.error ?? event.error ?? 'Stage failed';
@@ -504,6 +552,7 @@ export function useStageExecution(): UseStageExecutionReturn {
           s.addLog({ type: 'error', message: errMsg, timestamp: new Date().toISOString() });
           flashError(stageName, errMsg);
         }
+        isExecutingRef.current = false;
         setIsExecuting(false);
         setCurrentPhase(null);
         break;

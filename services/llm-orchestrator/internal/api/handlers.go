@@ -38,6 +38,9 @@ type CompletionRequestBody struct {
 	// Per-request credentials (BYOK — Bring Your Own Key per project)
 	Credentials *providers.RequestCredentials `json:"credentials,omitempty"`
 
+	// Advisor tool (Anthropic-only; other providers silently ignore)
+	Advisor *providers.AdvisorConfig `json:"advisor,omitempty"`
+
 	// Metadata for tracking
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
@@ -71,10 +74,11 @@ type CompletionResponseBody struct {
 		CompletionTokens int `json:"completion_tokens"`
 		CachedTokens     int `json:"cached_tokens,omitempty"`
 	} `json:"usage"`
-	ThinkingContent string  `json:"thinking_content,omitempty"`
-	Cost            float64 `json:"cost"`
-	Latency         float64 `json:"latency_ms"`
-	Error           string  `json:"error,omitempty"`
+	ThinkingContent string                `json:"thinking_content,omitempty"`
+	AdvisorUsage    *providers.AdvisorUsage `json:"advisor_usage,omitempty"`
+	Cost            float64                `json:"cost"`
+	Latency         float64                `json:"latency_ms"`
+	Error           string                 `json:"error,omitempty"`
 }
 
 const (
@@ -119,6 +123,24 @@ func (s *Server) handleCompletion(w http.ResponseWriter, r *http.Request) {
 		thinkingBudget = 10_000 // default cap prevents runaway costs
 	}
 
+	// Compute a dynamic timeout scaled to max_tokens and model tier.
+	// Opus/large models get 2x timeout — they're slower but produce higher quality.
+	// Formula: base + 1s per 100 output tokens, capped at 20 min.
+	isSlowModel := strings.Contains(strings.ToLower(reqBody.Model), "opus") ||
+		strings.Contains(strings.ToLower(reqBody.Model), "o1") ||
+		strings.Contains(strings.ToLower(reqBody.Model), "o3")
+	baseTimeout := 2 * time.Minute
+	if isSlowModel {
+		baseTimeout = 5 * time.Minute
+	}
+	dynamicTimeout := baseTimeout + time.Duration(reqBody.MaxTokens/100)*time.Second
+	if dynamicTimeout > 20*time.Minute {
+		dynamicTimeout = 20 * time.Minute
+	}
+	if dynamicTimeout < 2*time.Minute {
+		dynamicTimeout = 2 * time.Minute
+	}
+
 	// Convert to orchestrator format
 	req := &orchestrator.CompletionRequest{
 		CompletionRequest: &providers.CompletionRequest{
@@ -129,10 +151,12 @@ func (s *Server) handleCompletion(w http.ResponseWriter, r *http.Request) {
 			TopP:             reqBody.TopP,
 			Stop:             reqBody.Stop,
 			Stream:           false,
+			Timeout:          dynamicTimeout,
 			ResponseFormat:   convertResponseFormat(reqBody.ResponseFormat),
 			ExtendedThinking: reqBody.ExtendedThinking,
 			ThinkingBudget:   thinkingBudget,
 			Credentials:      reqBody.Credentials,
+			Advisor:          reqBody.Advisor,
 			Metadata:         reqBody.Metadata,
 		},
 		ProjectID: r.Header.Get("X-Project-ID"),
@@ -166,6 +190,7 @@ func (s *Server) handleCompletion(w http.ResponseWriter, r *http.Request) {
 	respBody.Usage.PromptTokens = resp.InputTokens
 	respBody.Usage.CompletionTokens = resp.OutputTokens
 	respBody.Usage.CachedTokens = resp.CacheReadTokens
+	respBody.AdvisorUsage = resp.AdvisorUsage
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(respBody)
@@ -198,6 +223,22 @@ func (s *Server) handleStreamCompletion(w http.ResponseWriter, r *http.Request) 
 		streamThinkingBudget = 10_000
 	}
 
+	// Dynamic timeout for streaming — same formula as non-streaming
+	isSlowStreamModel := strings.Contains(strings.ToLower(reqBody.Model), "opus") ||
+		strings.Contains(strings.ToLower(reqBody.Model), "o1") ||
+		strings.Contains(strings.ToLower(reqBody.Model), "o3")
+	streamBaseTimeout := 2 * time.Minute
+	if isSlowStreamModel {
+		streamBaseTimeout = 5 * time.Minute
+	}
+	streamDynamicTimeout := streamBaseTimeout + time.Duration(reqBody.MaxTokens/100)*time.Second
+	if streamDynamicTimeout > 20*time.Minute {
+		streamDynamicTimeout = 20 * time.Minute
+	}
+	if streamDynamicTimeout < 2*time.Minute {
+		streamDynamicTimeout = 2 * time.Minute
+	}
+
 	req := &orchestrator.CompletionRequest{
 		CompletionRequest: &providers.CompletionRequest{
 			Model:            reqBody.Model,
@@ -207,10 +248,12 @@ func (s *Server) handleStreamCompletion(w http.ResponseWriter, r *http.Request) 
 			TopP:             reqBody.TopP,
 			Stop:             reqBody.Stop,
 			Stream:           true,
+			Timeout:          streamDynamicTimeout,
 			ResponseFormat:   convertResponseFormat(reqBody.ResponseFormat),
 			ExtendedThinking: reqBody.ExtendedThinking,
 			ThinkingBudget:   streamThinkingBudget,
 			Credentials:      reqBody.Credentials,
+			Advisor:          reqBody.Advisor,
 			Metadata:         reqBody.Metadata,
 		},
 		ProjectID: r.Header.Get("X-Project-ID"),
@@ -241,6 +284,13 @@ func (s *Server) handleStreamCompletion(w http.ResponseWriter, r *http.Request) 
 		if chunk.Error != "" {
 			errJSON, _ := json.Marshal(chunk.Error)
 			fmt.Fprintf(w, "event: error\ndata: %s\n\n", string(errJSON))
+			flusher.Flush()
+			continue
+		}
+
+		// Advisor thinking keepalive — tells clients the stream is alive during Opus call
+		if chunk.AdvisorThinking {
+			fmt.Fprintf(w, "event: advisor_thinking\ndata: {}\n\n")
 			flusher.Flush()
 			continue
 		}

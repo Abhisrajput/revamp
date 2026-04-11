@@ -21,25 +21,42 @@ let fetchPromise: Promise<ModelOption[]> | null = null;
 
 /** Readable names for known models */
 const MODEL_LABELS: Record<string, string> = {
-  'us.anthropic.claude-haiku-4-5-20251001-v1:0': 'Claude Haiku 4.5',
-  'us.anthropic.claude-haiku-4-6-20251001-v1:0': 'Claude Haiku 4.6',
-  'us.anthropic.claude-sonnet-4-5-20251001-v1:0': 'Claude Sonnet 4.5',
-  'us.anthropic.claude-sonnet-4-6-20251001-v1:0': 'Claude Sonnet 4.6',
-  'us.anthropic.claude-opus-4-5-20251001-v1:0': 'Claude Opus 4.5',
-  'us.anthropic.claude-opus-4-6-20251001-v1:0': 'Claude Opus 4.6',
-  'us.anthropic.claude-3-5-sonnet-20241022-v2:0': 'Claude 3.5 Sonnet v2',
-  'us.anthropic.claude-3-5-haiku-20241022-v1:0': 'Claude 3.5 Haiku',
-  'us.anthropic.claude-3-7-sonnet-20250219-v1:0': 'Claude 3.7 Sonnet',
+  // Bedrock on-demand IDs
+  'anthropic.claude-opus-4-6-v1': 'Claude Opus 4.6 (Bedrock)',
+  'anthropic.claude-opus-4-6': 'Claude Opus 4.6 (Bedrock)',
+  'anthropic.claude-sonnet-4-6': 'Claude Sonnet 4.6 (Bedrock)',
+  'anthropic.claude-haiku-4-5-20251001-v1:0': 'Claude Haiku 4.5 (Bedrock)',
+  'anthropic.claude-sonnet-4-5-20250929-v1:0': 'Claude Sonnet 4.5 (Bedrock)',
+  'anthropic.claude-opus-4-5-20251101-v1:0': 'Claude Opus 4.5 (Bedrock)',
   'anthropic.claude-3-haiku-20240307-v1:0': 'Claude 3 Haiku',
   'anthropic.claude-3-sonnet-20240229-v1:0': 'Claude 3 Sonnet',
   'anthropic.claude-3-opus-20240229-v1:0': 'Claude 3 Opus',
-  'meta.llama3-70b-instruct-v1:0': 'Llama 3 70B',
-  'meta.llama3-8b-instruct-v1:0': 'Llama 3 8B',
+  // Bedrock cross-region IDs
+  'us.anthropic.claude-haiku-4-5-20251001-v1:0': 'Claude Haiku 4.5 (cross-region)',
+  'us.anthropic.claude-sonnet-4-5-20250929-v1:0': 'Claude Sonnet 4.5 (cross-region)',
+  'us.anthropic.claude-opus-4-6-v1:0': 'Claude Opus 4.6',
+  'us.anthropic.claude-opus-4-6-v1': 'Claude Opus 4.6',
+  'us.anthropic.claude-sonnet-4-6-v1:0': 'Claude Sonnet 4.6',
+  'us.anthropic.claude-sonnet-4-6-v1': 'Claude Sonnet 4.6',
+  'us.anthropic.claude-3-5-sonnet-20241022-v2:0': 'Claude 3.5 Sonnet v2',
+  'us.anthropic.claude-3-5-haiku-20241022-v1:0': 'Claude 3.5 Haiku',
+  'us.anthropic.claude-3-7-sonnet-20250219-v1:0': 'Claude 3.7 Sonnet',
+  // Anthropic direct API
+  'claude-opus-4-6': 'Claude Opus 4.6',
+  'claude-sonnet-4-6': 'Claude Sonnet 4.6',
+  'claude-haiku-4-5-20251001': 'Claude Haiku 4.5',
+  // OpenAI
   'gpt-4o': 'GPT-4o',
   'gpt-4o-mini': 'GPT-4o Mini',
   'gpt-4-turbo': 'GPT-4 Turbo',
+  // Google
+  'gemini-2.5-pro': 'Gemini 2.5 Pro',
+  'gemini-2.5-flash': 'Gemini 2.5 Flash',
   'gemini-2.0-flash': 'Gemini 2.0 Flash',
   'gemini-1.5-pro': 'Gemini 1.5 Pro',
+  // Meta
+  'meta.llama3-70b-instruct-v1:0': 'Llama 3 70B',
+  'meta.llama3-8b-instruct-v1:0': 'Llama 3 8B',
 };
 
 async function fetchAvailableModels(): Promise<ModelOption[]> {
@@ -140,6 +157,8 @@ interface ModelSelectorProps {
   label?: string;
   /** Compact mode hides the label */
   compact?: boolean;
+  /** Additional models from project settings (merged with orchestrator models) */
+  projectModels?: string[];
   className?: string;
 }
 
@@ -148,9 +167,24 @@ export const ModelSelector = memo(function ModelSelector({
   onChange,
   label = 'Model',
   compact = false,
+  projectModels,
   className,
 }: ModelSelectorProps) {
-  const { models, loading } = useAvailableModels();
+  const { models: orchestratorModels, loading } = useAvailableModels();
+
+  // Merge project-configured models that aren't in the orchestrator list
+  const models = (() => {
+    if (!projectModels?.length) return orchestratorModels;
+    const existingIds = new Set(orchestratorModels.map(m => m.id));
+    const extra: ModelOption[] = projectModels
+      .filter(id => id && !existingIds.has(id))
+      .map(id => ({
+        id,
+        label: MODEL_LABELS[id] || id,
+        provider: id.includes('anthropic') ? 'bedrock' : id.includes('gpt') ? 'openai' : id.includes('gemini') ? 'google' : 'unknown',
+      }));
+    return [...orchestratorModels, ...extra];
+  })();
   const selected = models.find((m) => m.id === value);
 
   // Auto-select first model if current value isn't in the list

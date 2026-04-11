@@ -30,10 +30,21 @@ type Config struct {
 	GeminiRegion  string `envconfig:"GCP_REGION" default:"us-central1"`
 
 	// AWS Bedrock
-	AWSRegion          string `envconfig:"AWS_REGION" default:"us-east-1"`
+	AWSRegion          string `envconfig:"AWS_REGION" default:"us-east-2"`
 	AWSAccessKeyID     string `envconfig:"AWS_ACCESS_KEY_ID"`
 	AWSSecretAccessKey string `envconfig:"AWS_SECRET_ACCESS_KEY"`
 	AWSSessionToken    string `envconfig:"AWS_SESSION_TOKEN"`
+
+	// Google Vertex AI
+	VertexAIProjectID          string `envconfig:"VERTEX_AI_PROJECT_ID"`
+	VertexAILocation           string `envconfig:"VERTEX_AI_LOCATION" default:"us-central1"`
+	VertexAIServiceAccountJSON string `envconfig:"VERTEX_AI_SERVICE_ACCOUNT_JSON"` // optional, uses ADC if empty
+
+	// Azure AI Foundry (Azure OpenAI)
+	AzureOpenAIEndpoint    string `envconfig:"AZURE_OPENAI_ENDPOINT"`                                   // https://<resource>.openai.azure.com
+	AzureOpenAIAPIKey      string `envconfig:"AZURE_OPENAI_API_KEY"`
+	AzureOpenAIAPIVersion  string `envconfig:"AZURE_OPENAI_API_VERSION" default:"2024-12-01-preview"`
+	AzureOpenAIDeployments string `envconfig:"AZURE_OPENAI_DEPLOYMENTS"`                                // comma-separated deployment names
 
 	// Ollama (local LLM — no API key needed)
 	OllamaEndpoint string `envconfig:"OLLAMA_ENDPOINT"` // e.g. http://localhost:11434
@@ -89,9 +100,11 @@ func Load() (*Config, error) {
 	// so this is no longer a fatal error.
 	hasCloudProvider := cfg.OpenAIAPIKey != "" || cfg.AnthropicAPIKey != "" || cfg.GeminiAPIKey != ""
 	hasBedrock := cfg.AWSAccessKeyID != ""
+	hasVertexAI := cfg.VertexAIProjectID != ""
+	hasAzure := cfg.AzureOpenAIEndpoint != "" && cfg.AzureOpenAIAPIKey != ""
 	hasOllama := cfg.OllamaEndpoint != ""
 
-	if !hasCloudProvider && !hasBedrock && !hasOllama {
+	if !hasCloudProvider && !hasBedrock && !hasVertexAI && !hasAzure && !hasOllama {
 		fmt.Println("[WARN] No global LLM provider configured. Only BYOK (per-request credentials) will work.")
 	}
 

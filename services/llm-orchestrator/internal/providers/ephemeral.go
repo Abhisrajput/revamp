@@ -2,6 +2,7 @@ package providers
 
 import (
 	"fmt"
+	"strings"
 
 	"go.uber.org/zap"
 )
@@ -18,16 +19,19 @@ func CreateEphemeralProvider(creds *RequestCredentials, logger *zap.Logger) (LLM
 	case "bedrock":
 		region := creds.AWSRegion
 		if region == "" {
-			region = "us-east-1"
+			region = "us-east-2"
 		}
-		// Prefer bearer token auth (Bedrock API key) — never expires, no IAM/STS needed
+		// Prefer bearer token auth
 		if creds.AWSBearerToken != "" {
 			return NewBedrockProviderWithBearerToken(creds.AWSBearerToken, region, logger), nil
 		}
-		if creds.AWSAccessKeyID == "" || creds.AWSSecretKey == "" {
-			return nil, fmt.Errorf("bedrock requires aws_bearer_token OR (aws_access_key_id + aws_secret_access_key)")
+		// Explicit IAM credentials (long-term or STS)
+		if creds.AWSAccessKeyID != "" && creds.AWSSecretKey != "" {
+			return NewBedrockProviderWithCreds(creds.AWSAccessKeyID, creds.AWSSecretKey, creds.AWSSessionToken, region, logger)
 		}
-		return NewBedrockProviderWithCreds(creds.AWSAccessKeyID, creds.AWSSecretKey, creds.AWSSessionToken, region, logger)
+		// No explicit credentials — fall back to AWS default credential chain
+		// (supports SSO profiles, instance roles, env vars, credential files)
+		return NewBedrockProviderWithDefaultChain(region, creds.AWSSSOProfile, logger)
 
 	case "anthropic":
 		if creds.AnthropicAPIKey == "" {
@@ -50,6 +54,49 @@ func CreateEphemeralProvider(creds *RequestCredentials, logger *zap.Logger) (LLM
 			return nil, fmt.Errorf("gemini requires gemini_api_key")
 		}
 		return NewGeminiProvider(creds.GeminiAPIKey, "", logger), nil
+
+	case "vertexai":
+		projectID := creds.VertexAIProjectID
+		if projectID == "" {
+			return nil, fmt.Errorf("vertexai requires vertex_ai_project_id")
+		}
+		location := creds.VertexAILocation
+		if location == "" {
+			location = "us-central1"
+		}
+		if creds.VertexAIServiceAccountJSON != "" {
+			return NewVertexAIProviderWithServiceAccount(projectID, location, creds.VertexAIServiceAccountJSON, logger), nil
+		}
+		if creds.VertexAIAccessToken != "" {
+			return NewVertexAIProviderWithAccessToken(projectID, location, creds.VertexAIAccessToken, logger), nil
+		}
+		return NewVertexAIProvider(projectID, location, logger), nil
+
+	case "azure":
+		endpoint := creds.AzureEndpoint
+		if endpoint == "" {
+			return nil, fmt.Errorf("azure requires azure_endpoint")
+		}
+		apiVersion := creds.AzureAPIVersion
+		if apiVersion == "" {
+			apiVersion = "2024-12-01-preview"
+		}
+		var deployments []string
+		if creds.AzureDeployments != "" {
+			for _, d := range strings.Split(creds.AzureDeployments, ",") {
+				d = strings.TrimSpace(d)
+				if d != "" {
+					deployments = append(deployments, d)
+				}
+			}
+		}
+		if creds.AzureAPIKey != "" {
+			return NewAzureProvider(endpoint, creds.AzureAPIKey, deployments, apiVersion, logger), nil
+		}
+		if creds.AzureADToken != "" {
+			return NewAzureProviderWithADToken(endpoint, creds.AzureADToken, deployments, apiVersion, logger), nil
+		}
+		return nil, fmt.Errorf("azure requires azure_api_key or azure_ad_token")
 
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", creds.Provider)

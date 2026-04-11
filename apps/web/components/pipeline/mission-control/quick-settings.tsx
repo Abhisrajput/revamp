@@ -12,6 +12,9 @@ interface QuickSettingsProps {
   /** Currently selected execution model for this stage */
   model: string;
   onModelChange: (modelId: string) => void;
+  /** Currently selected director/composition model for this stage (higher-tier for quality) */
+  composerModel: string;
+  onComposerModelChange: (modelId: string) => void;
   /** Currently selected evaluator/validation model for this stage */
   evaluatorModel: string;
   onEvaluatorModelChange: (modelId: string) => void;
@@ -24,6 +27,8 @@ interface QuickSettingsProps {
   /** Skip LLM evaluation toggle */
   skipLlmEval: boolean;
   onSkipLlmEvalChange: (skip: boolean) => void;
+  /** Models from project LLM provider settings */
+  projectModels?: string[];
   /** Current stage name for contextual labeling */
   stageName?: string;
   className?: string;
@@ -32,6 +37,8 @@ interface QuickSettingsProps {
 export const QuickSettings = memo(function QuickSettings({
   model,
   onModelChange,
+  composerModel,
+  onComposerModelChange,
   evaluatorModel,
   onEvaluatorModelChange,
   templateId,
@@ -40,6 +47,7 @@ export const QuickSettings = memo(function QuickSettings({
   onDeepAnalysisChange,
   skipLlmEval,
   onSkipLlmEvalChange,
+  projectModels,
   stageName,
   className,
 }: QuickSettingsProps) {
@@ -63,6 +71,15 @@ export const QuickSettings = memo(function QuickSettings({
         value={model}
         onChange={onModelChange}
         label="Execution Model"
+        projectModels={projectModels}
+      />
+
+      {/* ─── Composer Model ─────────────────────────────────── */}
+      <ModelSelector
+        value={composerModel}
+        onChange={onComposerModelChange}
+        label="Director / Composition Model"
+        projectModels={projectModels}
       />
 
       {/* ─── Validation Section ─────────────────────────────── */}
@@ -89,6 +106,7 @@ export const QuickSettings = memo(function QuickSettings({
               value={evaluatorModel}
               onChange={onEvaluatorModelChange}
               label="Evaluator Model"
+              projectModels={projectModels}
             />
 
             {/* Skip LLM Eval Toggle */}

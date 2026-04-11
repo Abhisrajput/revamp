@@ -69,7 +69,7 @@ func NewBedrockProvider(client *bedrockruntime.Client, bedrockClient *bedrock.Cl
 // and the key never expires. Calls go directly to the Bedrock Runtime HTTP API.
 func NewBedrockProviderWithBearerToken(token, region string, logger *zap.Logger) *BedrockProvider {
 	if region == "" {
-		region = "us-east-1"
+		region = "us-east-2"
 	}
 	// Strip any whitespace/newlines that may have been introduced during copy-paste
 	// or storage — the HTTP Authorization header rejects control characters.
@@ -84,6 +84,33 @@ func NewBedrockProviderWithBearerToken(token, region string, logger *zap.Logger)
 // hasBearerToken returns true if this provider is configured for bearer token auth
 func (bp *BedrockProvider) hasBearerToken() bool {
 	return bp.bearerToken != "" && bp.httpClient != nil
+}
+
+// NewBedrockProviderWithDefaultChain creates a Bedrock provider using the AWS SDK default
+// credential chain. Supports SSO profiles, IAM instance roles, env vars, credential files.
+// If ssoProfile is set, uses that specific profile from ~/.aws/config.
+func NewBedrockProviderWithDefaultChain(region, ssoProfile string, logger *zap.Logger) (*BedrockProvider, error) {
+	ctx := context.Background()
+
+	opts := []func(*awsconfig.LoadOptions) error{
+		awsconfig.WithRegion(region),
+	}
+	if ssoProfile != "" {
+		opts = append(opts, awsconfig.WithSharedConfigProfile(ssoProfile))
+	}
+
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load AWS config (default chain, profile=%q): %w", ssoProfile, err)
+	}
+
+	p := NewBedrockProvider(
+		bedrockruntime.NewFromConfig(cfg),
+		bedrock.NewFromConfig(cfg),
+		logger,
+	)
+	p.region = region
+	return p, nil
 }
 
 // NewBedrockProviderWithCreds creates an ephemeral Bedrock provider with explicit credentials (BYOK).

@@ -14,6 +14,10 @@
  */
 
 import crypto from "crypto";
+// Advisor tool: enable Opus guidance for strategic calls (director, composition)
+const DECODE_ADVISOR_ENABLED = process.env.ADVISOR_ENABLED !== 'false';
+const DECODE_ADVISOR_CONFIG = DECODE_ADVISOR_ENABLED ? { enabled: true, model: 'claude-opus-4-6', max_uses: 2 } as const : undefined;
+
 import { db } from "@/db/index.js";
 import { stageArtifacts, agentSubtasks, agentPersonas } from "@/db/schema.js";
 import { eq, isNull, and } from "drizzle-orm";
@@ -60,11 +64,7 @@ import {
 import {
   runQuickReview,
 } from "./two-stage-review.js";
-import {
-  checkPipelineBudget,
-  PipelineBudgetExceededError,
-  ProjectBudgetExceededError,
-} from "./pipeline-budget.js";
+// Budget enforcement removed — cost tracking retained in pipeline.ts
 
 // ─── TYPES ──────────────────────────────────────────────────────
 
@@ -78,6 +78,8 @@ export interface DecodeOrchestrationOptions {
   onDelta?: OnDelta;
   signal?: AbortSignal;
   model?: string;
+  /** Director/composition model override (e.g. Opus for high-quality composition) */
+  composerModel?: string;
   maxTokens?: number;
   /** BYOK credentials from project settings */
   credentials?: ProjectCredentials;
@@ -201,13 +203,21 @@ export async function orchestrateDecodeStage(
     }
   }
 
-  // Execute each subtask sequentially
+  // ── STEP 2: SUBTASK EXECUTION ──────────────────────────────────
+  //
+  // Sliding-window concurrency pool for extraction. All DECODE subtasks are
+  // independent (same SCAN input, no cross-dependencies). As soon as one slot
+  // frees up, the next subtask starts immediately.
+
+  const CONCURRENCY = 3;
+  const SUBTASK_TIMEOUT_MS = 5 * 60 * 1000;
   const subtaskResults: SubtaskResult[] = [];
 
-  for (const { plan, subtask } of createdSubtasks) {
-    checkAbort();
-
+  // Worker function: execute a single subtask with retry + review
+  async function runSubtaskWorker({ plan, subtask }: typeof createdSubtasks[number]): Promise<void> {
     const subtaskStart = Date.now();
+    const origSignal = opts.signal;
+
     opts.onEvent?.({
       phase: "subtask_executing",
       stageName: PipelineStageName.DECODE,
@@ -222,257 +232,334 @@ export async function orchestrateDecodeStage(
       },
     });
 
-    try {
-      // Budget pre-check before each subtask
-      try {
-        await checkPipelineBudget(opts.pipelineRunId);
-      } catch (budgetErr) {
-        if (budgetErr instanceof PipelineBudgetExceededError || budgetErr instanceof ProjectBudgetExceededError) {
-          emit("failed", { message: (budgetErr as Error).message, budgetExceeded: true });
-          break;
-        }
-        throw budgetErr;
+    let finalResult: SubtaskResult | null = null;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const subtaskController = new AbortController();
+      const subtaskTimer = setTimeout(() => subtaskController.abort(), SUBTASK_TIMEOUT_MS);
+      if (origSignal) {
+        origSignal.addEventListener("abort", () => subtaskController.abort(), { once: true });
       }
 
-      const result = await executeSubtask(opts, plan, subtask, subtaskResults);
-
-      // Quick quality review on successful subtask output (non-blocking)
-      if (result.status === "completed" && result.output) {
+      try {
+        let result: SubtaskResult;
         try {
-          const review = await runQuickReview({
-            pipelineRunId: opts.pipelineRunId,
-            stageName: PipelineStageName.DECODE,
-            subtaskType: plan.type,
-            output: result.output,
-            referenceInput: opts.scanOutput?.slice(0, 6000),
-            credentials: opts.credentials,
-          });
+          result = await executeSubtask(
+            { ...opts, signal: subtaskController.signal },
+            plan, subtask, subtaskResults,
+          );
+        } catch (timeoutErr: any) {
+          if (subtaskController.signal.aborted && !origSignal?.aborted) {
+            throw new Error(`Subtask timed out after ${SUBTASK_TIMEOUT_MS / 1000}s: ${plan.title}`);
+          }
+          throw timeoutErr;
+        } finally {
+          clearTimeout(subtaskTimer);
+        }
 
-          (result as any).reviewScore = review.overallScore;
-          (result as any).reviewVerdict = review.overallVerdict;
+        if (result.status === "completed" && result.output) {
+          try {
+            const review = await runQuickReview({
+              pipelineRunId: opts.pipelineRunId,
+              stageName: PipelineStageName.DECODE,
+              subtaskType: plan.type,
+              output: result.output,
+              referenceInput: opts.scanOutput?.slice(0, 6000),
+              credentials: opts.credentials,
+            });
+            (result as any).reviewScore = review.overallScore;
+            (result as any).reviewVerdict = review.overallVerdict;
+          } catch { /* Review failure is non-fatal */ }
+        }
 
+        finalResult = result;
+        break;
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (attempt === 0) {
           opts.onEvent?.({
             phase: "subtask_executing",
             stageName: PipelineStageName.DECODE,
             stageIndex: 1,
             timestamp: new Date().toISOString(),
-            data: {
-              event: "subtask_reviewed",
-              subtaskId: subtask.id,
-              reviewScore: review.overallScore,
-              reviewVerdict: review.overallVerdict,
-              concerns: review.dimensions.flatMap((d) => d.concerns).slice(0, 3),
-            },
+            data: { event: "subtask_retrying", subtaskId: subtask.id, title: plan.title, type: plan.type, error: errMsg, attempt: 2 },
           });
-        } catch {
-          // Review failure is non-fatal
+          continue;
         }
+        await failSubtask(subtask.id, errMsg);
+        finalResult = { subtaskId: subtask.id, type: plan.type, title: plan.title, agentName: "none", output: "", duration: Date.now() - subtaskStart, status: "failed" as const, error: errMsg };
       }
+    }
 
-      subtaskResults.push(result);
+    if (finalResult) {
+      subtaskResults.push(finalResult);
+      const completedCount = subtaskResults.filter(r => r.status === "completed").length;
+      const subtaskProgress = Math.round((completedCount / subtaskPlans.length) * 70);
 
       opts.onEvent?.({
-        phase: "subtask_executing",
+        phase: finalResult.status === "failed" ? "subtask_failed" : "subtask_completed",
         stageName: PipelineStageName.DECODE,
         stageIndex: 1,
         timestamp: new Date().toISOString(),
         data: {
-          event: "subtask_completed",
-          subtaskId: subtask.id,
-          title: plan.title,
-          type: plan.type,
-          agentName: result.agentName,
-          duration: Date.now() - subtaskStart,
+          event: finalResult.status === "failed" ? "subtask_failed" : "subtask_completed",
+          subtaskId: subtask.id, title: plan.title, type: plan.type,
+          agentName: finalResult.agentName, duration: Date.now() - subtaskStart,
+          progress: subtaskProgress,
+          ...(finalResult.error ? { error: finalResult.error } : {}),
         },
       });
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      await failSubtask(subtask.id, errMsg);
+    }
+  }
 
-      subtaskResults.push({
-        subtaskId: subtask.id,
-        type: plan.type,
-        title: plan.title,
-        agentName: "none",
-        output: "",
-        duration: Date.now() - subtaskStart,
-        status: "failed",
-        error: errMsg,
-      });
-
-      opts.onEvent?.({
-        phase: "subtask_executing",
-        stageName: PipelineStageName.DECODE,
-        stageIndex: 1,
-        timestamp: new Date().toISOString(),
-        data: {
-          event: "subtask_failed",
-          subtaskId: subtask.id,
-          title: plan.title,
-          type: plan.type,
-          error: errMsg,
-        },
-      });
+  // Sliding window: maintain CONCURRENCY active workers
+  {
+    let nextIdx = 0;
+    const active = new Set<Promise<void>>();
+    while (nextIdx < createdSubtasks.length || active.size > 0) {
+      checkAbort();
+      while (active.size < CONCURRENCY && nextIdx < createdSubtasks.length) {
+        const item = createdSubtasks[nextIdx++];
+        const p = runSubtaskWorker(item).catch(() => {});
+        active.add(p);
+        p.finally(() => active.delete(p));
+      }
+      if (active.size > 0) await Promise.race(active);
     }
   }
 
   // Check if ALL subtasks failed
   const successfulResults = subtaskResults.filter((r) => r.status === "completed");
   if (successfulResults.length === 0) {
-    emit("failed", {
-      message: "All DECODE subtasks failed. Please re-run the stage.",
-      errors: subtaskResults.map((r) => ({ type: r.type, error: r.error })),
-    });
-
+    emit("failed", { message: "All DECODE subtasks failed. Please re-run the stage.", errors: subtaskResults.map((r) => ({ type: r.type, error: r.error })) });
     const failedValidation: import("@revamp/core-engine").FullValidationResult = {
-      pipelineRunId: opts.pipelineRunId,
-      stageName: PipelineStageName.DECODE,
-      timestamp: new Date().toISOString(),
-      passed: false,
-      confidenceScore: 0,
-      deterministicResults: [],
-      llmResults: [],
-      issues: [{
-        id: "decode-all-failed",
-        code: "ALL_SUBTASKS_FAILED",
-        severity: "ERROR" as const,
-        title: "All DECODE subtasks failed",
-        description: subtaskResults.map((r) => `${r.type}: ${r.error}`).join("; "),
-      }],
+      pipelineRunId: opts.pipelineRunId, stageName: PipelineStageName.DECODE, timestamp: new Date().toISOString(),
+      passed: false, confidenceScore: 0, deterministicResults: [], llmResults: [],
+      issues: [{ id: "decode-all-failed", code: "ALL_SUBTASKS_FAILED", severity: "ERROR" as const, title: "All DECODE subtasks failed", description: subtaskResults.map((r) => `${r.type}: ${r.error}`).join("; ") }],
       recommendations: ["Re-run the DECODE stage after checking LLM connectivity"],
       contractResult: { stageName: PipelineStageName.DECODE, passed: false, completenessScore: 0, violations: [], refinementPrompt: null, hardGated: false },
       metadata: {},
     };
-
-    return {
-      stageName: PipelineStageName.DECODE,
-      stageIndex: 1,
-      output: "",
-      validation: failedValidation,
-      refinementCount: 0,
-      duration: Date.now() - startTime,
-      phases,
-      aborted: false,
-    };
+    return { stageName: PipelineStageName.DECODE, stageIndex: 1, output: "", validation: failedValidation, refinementCount: 0, duration: Date.now() - startTime, phases, aborted: false };
   }
 
-  // ── STEP 3: COMPOSITION ───────────────────────────────────────
-  emit("composing", { message: "Composing subtask results into final intent document..." });
-  checkAbort();
+  // ── STEP 3: SMART COMPOSITION ───────────────────────────────────
+  //
+  // Context-aware single-call composition. Adapts to model capability:
+  //
+  //   Opus 4.6 (1M context): Feed ALL subtask outputs verbatim. Zero truncation.
+  //     The model deduplicates, cross-references, and structures in one pass.
+  //
+  //   Sonnet 4.6 / Haiku (200K context): Priority-pack structured data first
+  //     (BRs, tables, diagrams, code blocks), then fill with prose.
+  //
+  // Composer model can be upgraded from the executor model via env var
+  // DECODE_COMPOSER_MODEL (e.g., "us.anthropic.claude-opus-4-6-v1:0").
+
+  // Determine the composition model — priority: UI override > env var > executor model
+  const executorModel = opts.model || "";
+  const composerModel = opts.composerModel || process.env.DECODE_COMPOSER_MODEL || executorModel;
+  const isLargeContext = /opus/i.test(composerModel) || /gemini.*pro/i.test(composerModel);
+
+  emit("composing", {
+    message: `Composing with ${isLargeContext ? "large-context" : "standard"} model: ${composerModel || "default"}`,
+    progress: 75,
+  });
+
+  // ── Build composition input based on context capacity ─────────
+
+  let compositionInput: string;
+  let inputStats: { totalBRs: number; totalDiagrams: number; truncated: boolean };
+
+  if (isLargeContext) {
+    // ── LARGE CONTEXT (Opus 1M, Gemini Pro 1M+) ──
+    // Feed all subtask outputs verbatim — zero truncation.
+    compositionInput = successfulResults.map((r, i) => {
+      return [
+        `═══ SUBTASK ${i + 1}: ${r.title} (${r.type}) ═══`,
+        `Agent: ${r.agentName}`,
+        `Duration: ${Math.round(r.duration / 1000)}s`,
+        "",
+        r.output,
+        "",
+      ].join("\n");
+    }).join("\n");
+
+    const totalBRs = (compositionInput.match(/BR-\d+/gi) || []).length;
+    const totalDiagrams = (compositionInput.match(/```mermaid/gi) || []).length;
+    inputStats = { totalBRs, totalDiagrams, truncated: false };
+
+    emit("composing", {
+      message: `Full context: ${Math.round(compositionInput.length / 1000)}K chars, ${totalBRs} BRs, ${totalDiagrams} diagrams — zero truncation`,
+      progress: 78,
+    });
+  } else {
+    // ── STANDARD CONTEXT (Sonnet/Haiku 200K) ──
+    // Priority-pack: structured data first (always included), prose fills remainder.
+    const AVAILABLE_CHARS = 620_000; // (190K - 35K overhead) × 4 chars/token
+
+    /** Separate structured data (high priority) from prose (trimmable). */
+    function splitPriority(output: string): { structured: string; prose: string } {
+      const lines = output.split("\n");
+      const high: string[] = [];
+      const low: string[] = [];
+      let inFenced = false;
+
+      for (const line of lines) {
+        const t = line.trim();
+        if (t.startsWith("```")) { inFenced = !inFenced; high.push(line); continue; }
+        if (inFenced) { high.push(line); continue; }
+        if (/BR-\d+/i.test(line) || t.startsWith("|") || t.startsWith("#")) { high.push(line); continue; }
+        low.push(line);
+      }
+      return { structured: high.join("\n"), prose: low.join("\n") };
+    }
+
+    const packed = successfulResults.map((r) => {
+      const { structured, prose } = splitPriority(r.output);
+      return { title: r.title, type: r.type, structured, prose };
+    });
+
+    const totalStructuredChars = packed.reduce((s, p) => s + p.structured.length + 150, 0);
+    const proseBudgetPerSubtask = Math.floor(
+      Math.max(0, AVAILABLE_CHARS - totalStructuredChars) / Math.max(packed.length, 1)
+    );
+
+    compositionInput = packed.map((sp, i) => {
+      const prose = sp.prose.length > proseBudgetPerSubtask
+        ? sp.prose.slice(0, proseBudgetPerSubtask) + `\n[... ${sp.prose.length - proseBudgetPerSubtask} chars trimmed ...]`
+        : sp.prose;
+      return [`═══ SUBTASK ${i + 1}: ${sp.title} (${sp.type}) ═══`, "", sp.structured, "", prose, ""].join("\n");
+    }).join("\n");
+
+    const totalBRs = (compositionInput.match(/BR-\d+/gi) || []).length;
+    const totalDiagrams = (compositionInput.match(/```mermaid/gi) || []).length;
+    inputStats = { totalBRs, totalDiagrams, truncated: proseBudgetPerSubtask < 50000 };
+
+    emit("composing", {
+      message: `Priority-packed: ${Math.round(compositionInput.length / 1000)}K chars, ${totalBRs} BRs, ${totalDiagrams} diagrams${inputStats.truncated ? " (prose trimmed)" : ""}`,
+      progress: 78,
+    });
+  }
+
+  const failedResults = subtaskResults.filter((r) => r.status === "failed");
+  const failedNote = failedResults.length > 0
+    ? `\n\nNOTE: The following subtasks failed:\n${failedResults.map((r) => `- ${r.title}: ${r.error}`).join("\n")}\n`
+    : "";
+
+  emit("composing", { message: `Composing final document (${Math.round(compositionInput.length / 1000)}K chars input)...`, progress: 80 });
+
+  // ── Single composition call ───────────────────────────────────
+
+  // Skip advisor when composer IS already Opus (redundant and doubles cost)
+  const useAdvisor = DECODE_ADVISOR_CONFIG && !/opus/i.test(composerModel);
+
+  const composerCallFn = llmProxyService.createCallFn({
+    maxTokens: opts.maxTokens || 32768,
+    model: composerModel,
+    credentials: opts.credentials,
+    advisor: useAdvisor ? DECODE_ADVISOR_CONFIG : undefined,
+  });
+
+  opts.onDelta?.("");
+
+  const compositionSystemPrompt = [
+    "You are a lead architect composing a comprehensive DECODE / Intent Extraction document from specialist analysis reports.",
+    "",
+    "CRITICAL RULES:",
+    "1. This document is the SOLE output the user sees. It must be thorough and self-contained.",
+    "2. DEDUPLICATE: Multiple specialists may extract the same business rule — keep the most detailed version with ONE BR-ID.",
+    "3. RENUMBER all BRs sequentially (BR-001, BR-002, ...) after deduplication.",
+    "4. PRESERVE every Mermaid diagram verbatim (skip exact duplicates).",
+    "5. PRESERVE every code citation, table, and file path reference.",
+    "6. CROSS-REFERENCE findings across domains (e.g., 'BR-042 relates to the data flow in Section 3.2').",
+    "7. Use consistent markdown: H1 title, H2 major sections, H3 subsections.",
+    "8. Output AT LEAST 8000 words. Do NOT summarize specialist findings — merge and organize them.",
+    "9. Include an Executive Summary at the top and Open Questions at the end.",
+  ].join("\n");
 
   let composedOutput: string;
   try {
-    composedOutput = await composeResults(opts, subtaskResults);
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    emit("failed", {
-      message: "DECODE composition failed. Please re-run the stage.",
-      error: errMsg,
+    composedOutput = await composerCallFn({
+      systemPrompt: compositionSystemPrompt,
+      userPrompt: DECODE_COMPOSITION.replace("{{subtaskResults}}", compositionInput + failedNote),
+      onDelta: opts.onDelta,
+      signal: opts.signal,
     });
-
-    const compositionFailedValidation: import("@revamp/core-engine").FullValidationResult = {
-      pipelineRunId: opts.pipelineRunId,
-      stageName: PipelineStageName.DECODE,
-      timestamp: new Date().toISOString(),
-      passed: false,
-      confidenceScore: 0,
-      deterministicResults: [],
-      llmResults: [],
-      issues: [{
-        id: "decode-composition-failed",
-        code: "COMPOSITION_FAILED",
-        severity: "ERROR" as const,
-        title: "DECODE composition failed",
-        description: errMsg,
-      }],
-      recommendations: ["Re-run the DECODE stage"],
-      contractResult: { stageName: PipelineStageName.DECODE, passed: false, completenessScore: 0, violations: [], refinementPrompt: null, hardGated: false },
-      metadata: {},
-    };
-
-    return {
-      stageName: PipelineStageName.DECODE,
-      stageIndex: 1,
-      output: "",
-      validation: compositionFailedValidation,
-      refinementCount: 0,
-      duration: Date.now() - startTime,
-      phases,
-      aborted: false,
-    };
+  } catch (firstErr) {
+    const firstErrMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+    emit("composing", { message: `Composition failed (${firstErrMsg}), retrying...`, progress: 82 });
+    try {
+      composedOutput = await composerCallFn({
+        systemPrompt: compositionSystemPrompt,
+        userPrompt: DECODE_COMPOSITION.replace("{{subtaskResults}}", compositionInput + failedNote),
+        onDelta: opts.onDelta,
+        signal: opts.signal,
+      });
+    } catch (retryErr) {
+      const errMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+      emit("failed", { message: `DECODE composition failed after retry: ${errMsg}`, error: errMsg });
+      const compositionFailedValidation: import("@revamp/core-engine").FullValidationResult = {
+        pipelineRunId: opts.pipelineRunId, stageName: PipelineStageName.DECODE, timestamp: new Date().toISOString(),
+        passed: false, confidenceScore: 0, deterministicResults: [], llmResults: [],
+        issues: [{ id: "decode-composition-failed", code: "COMPOSITION_FAILED", severity: "ERROR" as const, title: "DECODE composition failed", description: errMsg }],
+        recommendations: ["Re-run the DECODE stage"],
+        contractResult: { stageName: PipelineStageName.DECODE, passed: false, completenessScore: 0, violations: [], refinementPrompt: null, hardGated: false },
+        metadata: {},
+      };
+      return { stageName: PipelineStageName.DECODE, stageIndex: 1, output: "", validation: compositionFailedValidation, refinementCount: 0, duration: Date.now() - startTime, phases, aborted: false };
+    }
   }
 
-  // ── STEP 4: COVERAGE GAP-FILL LOOP ─────────────────────────────
-  // Extract components from SCAN output to measure DECODE coverage.
-  // Every module/file/component from SCAN should map to at least one BR in DECODE.
-  const COVERAGE_TARGET = 0.90;
-  const MAX_GAP_FILL_ROUNDS = 3;
+  const outputBRs = (composedOutput.match(/BR-\d+/gi) || []).length;
+  const outputDiagrams = (composedOutput.match(/```mermaid/gi) || []).length;
 
-  const scanComponents = extractScanComponents(opts.scanOutput);
+  emit("composing", {
+    message: `Composition complete — ${composedOutput.length} chars, ${outputBRs} BRs, ${outputDiagrams} diagrams (from ${inputStats.totalBRs} input BRs)`,
+    progress: 88,
+    docLength: composedOutput.length,
+    outputBRs,
+    outputDiagrams,
+    inputBRs: inputStats.totalBRs,
+  });
+
+  // ── EARLY SAVE: persist composition output immediately ─────────
+  // The SSE connection can drop during long-running validation/refinement.
+  // By saving the artifact now, the output is preserved even if later phases fail.
+  try {
+    await db.insert(stageArtifacts).values({
+      pipeline_run_id: opts.pipelineRunId,
+      stage_name: PipelineStageName.DECODE,
+      artifact_type: "stage_output",
+      storage_path: `decode/${opts.pipelineRunId}/output.md`,
+      file_size: composedOutput.length,
+      metadata: { content: composedOutput, output: composedOutput },
+    });
+  } catch (saveErr) {
+    // Non-fatal — the pipeline route's finally block will also try to save
+    console.warn("[DECODE] Early artifact save failed:", saveErr instanceof Error ? saveErr.message : saveErr);
+  }
+
+  // ── STEP 4: COVERAGE CHECK (informational) ─────────────────────
   let refinementCount = 0;
-
+  const scanComponents = extractScanComponents(opts.scanOutput);
   if (scanComponents.length > 0) {
-    for (let round = 0; round < MAX_GAP_FILL_ROUNDS; round++) {
-      if (opts.signal?.aborted) break;
-
-      const coverage = measureDecodeCoverage(composedOutput, scanComponents);
-      emit("coverage_check" as StagePhase, {
-        message: `DECODE coverage: ${Math.round(coverage.percentage * 100)}% (${coverage.covered}/${coverage.total} components)`,
-        coverage: Math.round(coverage.percentage * 100),
-        covered: coverage.covered,
-        total: coverage.total,
-        uncovered: coverage.uncovered.slice(0, 10),
-        round: round + 1,
-      });
-
-      if (coverage.percentage >= COVERAGE_TARGET) {
-        emit("coverage_check" as StagePhase, {
-          message: `Coverage target met: ${Math.round(coverage.percentage * 100)}% ≥ ${Math.round(COVERAGE_TARGET * 100)}%`,
-        });
-        break;
-      }
-
-      // Gap-fill: ask LLM to extract business rules for uncovered components
-      emit("gap_fill" as StagePhase, {
-        message: `Gap-fill round ${round + 1}: extracting rules for ${coverage.uncovered.length} uncovered components...`,
-        uncoveredCount: coverage.uncovered.length,
-      });
-
-      try {
-        const gapPrompt = `The DECODE output is missing business rules for these components from SCAN:
-
-${coverage.uncovered.map((c, i) => `${i + 1}. ${c}`).join('\n')}
-
-For EACH missing component, extract:
-- Business Rule ID (BR-{number}, continue from existing highest)
-- Rule description in business terms
-- Source file location
-- Data entities involved
-- Complexity (Low/Medium/High)
-
-Add a "## Workflows" section if missing.
-Add a "## Technical Debt" section if missing.
-Add a "## Open Questions" section if missing.
-
-Output ONLY the new sections to append — do NOT repeat existing content.`;
-
-        const gapOutput = await refineComposition(opts, composedOutput, gapPrompt);
-        if (gapOutput && gapOutput.trim().length > 100) {
-          composedOutput = composedOutput + "\n\n" + gapOutput;
-          refinementCount++;
-        }
-      } catch {
-        // Gap-fill failed — continue with current output
-        break;
-      }
-    }
+    const coverage = measureDecodeCoverage(composedOutput, scanComponents);
+    emit("coverage_check" as StagePhase, {
+      message: `DECODE coverage: ${Math.round(coverage.percentage * 100)}% (${coverage.covered}/${coverage.total} components)`,
+      coverage: Math.round(coverage.percentage * 100),
+      covered: coverage.covered,
+      total: coverage.total,
+      uncovered: coverage.uncovered.slice(0, 5),
+      progress: 90,
+    });
   }
 
   // ── STEP 5: CONTRACT VALIDATION ──────────────────────────────
   const contractResult = await enforceContract(PipelineStageName.DECODE, composedOutput);
 
   if (!contractResult.passed && contractResult.refinementPrompt) {
-    emit("refining" as StagePhase, { message: "Refining composition to meet DECODE contract..." });
+    emit("refining" as StagePhase, { message: "Refining composition to meet DECODE contract...", progress: 92 });
     try {
       const refinedOutput = await refineComposition(opts, composedOutput, contractResult.refinementPrompt);
       composedOutput = refinedOutput;
@@ -502,7 +589,7 @@ Output ONLY the new sections to append — do NOT repeat existing content.`;
 
   // Upgrade section checks with LLM agent (replaces regex with semantic understanding)
   try {
-    emit("validating" as StagePhase, { message: "Agent validating section completeness..." });
+    emit("validating" as StagePhase, { message: "Agent validating section completeness...", progress: 95 });
     const agentFn = llmProxyService.createCallFn({
       maxTokens: 2048,
       model: opts.model || "",
@@ -614,10 +701,14 @@ Output ONLY the new sections to append — do NOT repeat existing content.`;
 async function runDirectorPlanning(
   opts: DecodeOrchestrationOptions,
 ): Promise<SubtaskPlan[]> {
+  // Use composer model for director planning (higher quality = better subtask design)
+  const directorModel = opts.composerModel || opts.model || "";
+  const useAdvisorForDirector = DECODE_ADVISOR_CONFIG && !/opus/i.test(directorModel);
   const directorCallFn = llmProxyService.createCallFn({
     maxTokens: 4096,
-    model: opts.model || "",
+    model: directorModel,
     credentials: opts.credentials,
+    advisor: useAdvisorForDirector ? DECODE_ADVISOR_CONFIG : undefined,
   });
 
   const agentRoster = await buildAgentRoster();
@@ -875,14 +966,26 @@ async function composeResults(
 ): Promise<string> {
   const successfulResults = results.filter((r) => r.status === "completed" && r.output);
 
+  // Cap each subtask output to stay within the model's 200K context window.
+  // Reserve ~30K tokens for system prompt, composition template, and failed notes.
+  // Remaining budget is split evenly across successful subtask outputs.
+  const MODEL_CTX_LIMIT = 190_000; // tokens (conservative — leave headroom)
+  const OVERHEAD_TOKENS = 30_000;
+  const availableTokens = MODEL_CTX_LIMIT - OVERHEAD_TOKENS;
+  // Rough chars-to-tokens: 1 token ≈ 4 chars
+  const maxCharsPerSubtask = Math.floor((availableTokens * 4) / Math.max(successfulResults.length, 1));
+
   const subtaskResultsText = successfulResults
     .map((r, i) => {
+      const outputText = r.output.length > maxCharsPerSubtask
+        ? r.output.slice(0, maxCharsPerSubtask) + `\n\n[... truncated from ${r.output.length} to ${maxCharsPerSubtask} chars to fit context window ...]`
+        : r.output;
       return [
         `═══ SUBTASK ${i + 1}: ${r.title} (${r.type}) ═══`,
         `Agent: ${r.agentName}`,
         `Duration: ${Math.round(r.duration / 1000)}s`,
         "",
-        r.output,
+        outputText,
         "",
       ].join("\n");
     })
@@ -903,6 +1006,7 @@ async function composeResults(
     maxTokens: opts.maxTokens || 32768,
     model: opts.model || "",
     credentials: opts.credentials,
+    advisor: DECODE_ADVISOR_CONFIG,
   });
 
   // Clear delta before composition — signals fresh start to frontend

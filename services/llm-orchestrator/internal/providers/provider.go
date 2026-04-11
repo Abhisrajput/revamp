@@ -73,6 +73,24 @@ type RichMessage struct {
 	TextContent string `json:"text_content,omitempty"`
 }
 
+// AdvisorConfig enables the Anthropic server-side advisor tool (beta: advisor-tool-2026-03-01).
+// When Enabled, the Anthropic provider sends a raw HTTP request with the advisor tool definition.
+// Non-Anthropic providers (Bedrock, OpenAI, Gemini) silently ignore this config.
+type AdvisorConfig struct {
+	Enabled bool   `json:"enabled"`
+	Model   string `json:"model,omitempty"`    // Advisor model; default "claude-opus-4-6"
+	MaxUses int    `json:"max_uses,omitempty"` // Max advisor calls per request; default 3
+}
+
+// AdvisorUsage tracks token consumption from the advisor (Opus) within a single request.
+// Extracted from the Anthropic response's usage.iterations[] array.
+type AdvisorUsage struct {
+	AdvisorInputTokens  int    `json:"advisor_input_tokens"`
+	AdvisorOutputTokens int    `json:"advisor_output_tokens"`
+	AdvisorCalls        int    `json:"advisor_calls"`
+	AdvisorModel        string `json:"advisor_model"`
+}
+
 // CompletionRequest represents an LLM completion request
 type CompletionRequest struct {
 	Model       string     `json:"model"`
@@ -103,6 +121,9 @@ type CompletionRequest struct {
 	// using these credentials instead of the global env config.
 	Credentials *RequestCredentials `json:"credentials,omitempty"`
 
+	// Advisor tool (Anthropic-only server-side feature)
+	Advisor *AdvisorConfig `json:"advisor,omitempty"`
+
 	// Metadata
 	ProjectID string                 `json:"project_id"`
 	UserID    string                 `json:"user_id"`
@@ -112,16 +133,30 @@ type CompletionRequest struct {
 // RequestCredentials carries per-request provider credentials.
 // Only the fields relevant to the provider type need to be set.
 type RequestCredentials struct {
-	Provider         string `json:"provider"`                    // "bedrock", "anthropic", "openai", "gemini"
+	Provider         string `json:"provider"` // "bedrock", "anthropic", "openai", "gemini", "vertexai", "azure"
 	AWSAccessKeyID   string `json:"aws_access_key_id,omitempty"`
 	AWSSecretKey     string `json:"aws_secret_access_key,omitempty"`
 	AWSSessionToken  string `json:"aws_session_token,omitempty"`
 	AWSRegion        string `json:"aws_region,omitempty"`
-	AWSBearerToken   string `json:"aws_bearer_token,omitempty"` // Bedrock API key (never expires)
+	AWSBearerToken   string `json:"aws_bearer_token,omitempty"` // Bedrock API key (presigned, may expire)
+	AWSSSOProfile    string `json:"aws_sso_profile,omitempty"`  // SSO profile name from ~/.aws/config
 	AnthropicAPIKey  string `json:"anthropic_api_key,omitempty"`
 	OpenAIAPIKey     string `json:"openai_api_key,omitempty"`
 	OpenAIEndpoint   string `json:"openai_endpoint,omitempty"` // for Azure OpenAI
 	GeminiAPIKey     string `json:"gemini_api_key,omitempty"`
+
+	// Google Vertex AI
+	VertexAIProjectID          string `json:"vertex_ai_project_id,omitempty"`
+	VertexAILocation           string `json:"vertex_ai_location,omitempty"`
+	VertexAIServiceAccountJSON string `json:"vertex_ai_service_account_json,omitempty"`
+	VertexAIAccessToken        string `json:"vertex_ai_access_token,omitempty"`
+
+	// Azure AI Foundry (Azure OpenAI)
+	AzureEndpoint    string `json:"azure_endpoint,omitempty"`
+	AzureAPIKey      string `json:"azure_api_key,omitempty"`
+	AzureADToken     string `json:"azure_ad_token,omitempty"`
+	AzureAPIVersion  string `json:"azure_api_version,omitempty"`
+	AzureDeployments string `json:"azure_deployments,omitempty"` // comma-separated deployment names
 }
 
 // CompletionResponse represents an LLM completion response
@@ -148,6 +183,9 @@ type CompletionResponse struct {
 	ThinkingContent string `json:"thinking_content,omitempty"` // reasoning trace
 	ThinkingTokens  int    `json:"thinking_tokens,omitempty"`
 
+	// Advisor usage (Anthropic-only — from usage.iterations[])
+	AdvisorUsage *AdvisorUsage `json:"advisor_usage,omitempty"`
+
 	Cost    float64 `json:"cost"`
 	Latency time.Duration
 	Error   string `json:"error,omitempty"`
@@ -155,11 +193,12 @@ type CompletionResponse struct {
 
 // StreamChunk represents a chunk of streaming data
 type StreamChunk struct {
-	ID           string `json:"id"`
-	Index        int    `json:"index"`
-	Delta        string `json:"delta"`
-	FinishReason string `json:"finish_reason"`
-	Error        string `json:"error,omitempty"`
+	ID              string `json:"id"`
+	Index           int    `json:"index"`
+	Delta           string `json:"delta"`
+	FinishReason    string `json:"finish_reason"`
+	Error           string `json:"error,omitempty"`
+	AdvisorThinking bool   `json:"advisor_thinking,omitempty"` // keepalive during advisor pause
 }
 
 // LLMProvider defines the interface for LLM providers
