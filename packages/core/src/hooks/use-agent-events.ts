@@ -1,10 +1,8 @@
 
 
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { useAuthStore } from '../stores/auth-store';
-import { getApiClient } from '../api/types';
-
-function getBaseUrl() { return (getApiClient() as any).getBaseUrl?.() || 'http://localhost:8787'; }
+import { useState, useEffect, useRef } from 'react';
+import { getWSManager } from '../api/ws';
+import type { WSEvent } from '../api/ws';
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -32,9 +30,7 @@ export interface AgentEvent {
 }
 
 export interface UseAgentEventsOptions {
-  /** Max events to keep in memory (default: 50) */
   maxEvents?: number;
-  /** Filter events to this agent ID */
   agentId?: string;
 }
 
@@ -42,7 +38,6 @@ export interface UseAgentEventsReturn {
   events: AgentEvent[];
   lastEvent: AgentEvent | null;
   isConnected: boolean;
-  /** Alias for isConnected */
   connected: boolean;
 }
 
@@ -52,10 +47,6 @@ export function useAgentEvents(
   agentIdOrOptions?: string | UseAgentEventsOptions,
   options?: UseAgentEventsOptions,
 ): UseAgentEventsReturn {
-  // Overloaded: can be called as:
-  //   useAgentEvents(agentId)
-  //   useAgentEvents({ maxEvents, agentId })
-  //   useAgentEvents(agentId, { maxEvents })
   let agentId: string | undefined;
   let opts: UseAgentEventsOptions = {};
 
@@ -72,71 +63,41 @@ export function useAgentEvents(
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [lastEvent, setLastEvent] = useState<AgentEvent | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-
-  const esRef = useRef<EventSource | null>(null);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
-
-  const connect = useCallback(() => {
-    if (!mountedRef.current) return;
-
-    const token = useAuthStore.getState().token;
-    const path = agentId
-      ? `/agents/${agentId}/events`
-      : '/agents/events';
-    const url = `${getBaseUrl()}${path}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
-
-    const es = new EventSource(url);
-    esRef.current = es;
-
-    es.onopen = () => {
-      if (mountedRef.current) setIsConnected(true);
-    };
-
-    es.onmessage = (event) => {
-      if (!mountedRef.current) return;
-      try {
-        const raw = JSON.parse(event.data);
-        const agentEvent: AgentEvent = {
-          id: raw.id ?? crypto.randomUUID(),
-          agentId: raw.agentId ?? raw.agent_id ?? '',
-          agentName: raw.agentName ?? raw.agent_name ?? 'Agent',
-          eventType: raw.eventType ?? raw.event_type ?? 'agent.message',
-          data: raw.data ?? {},
-          timestamp: raw.timestamp ?? new Date().toISOString(),
-        };
-        setEvents((prev: AgentEvent[]) => [agentEvent, ...prev].slice(0, maxEvents));
-        setLastEvent(agentEvent);
-      } catch {
-        // non-JSON message — ignore
-      }
-    };
-
-    es.onerror = () => {
-      if (!mountedRef.current) return;
-      setIsConnected(false);
-      es.close();
-      // Reconnect after 5 seconds
-      reconnectTimerRef.current = setTimeout(() => {
-        if (mountedRef.current) connect();
-      }, 5000);
-    };
-  }, [agentId, maxEvents]);
 
   useEffect(() => {
     mountedRef.current = true;
-    connect();
+
+    const topic = agentId ? `agent:${agentId}` : 'agent:events';
+
+    const unsubscribe = getWSManager().subscribe(topic, (wsEvent: WSEvent) => {
+      if (!mountedRef.current) return;
+
+      const raw = wsEvent.data as Record<string, unknown>;
+      const agentEvent: AgentEvent = {
+        id: (raw.id as string) ?? crypto.randomUUID(),
+        agentId: (raw.agentId as string) ?? (raw.agent_id as string) ?? '',
+        agentName: (raw.agentName as string) ?? (raw.agent_name as string) ?? 'Agent',
+        eventType: (wsEvent.event as AgentEventType) ?? (raw.eventType as AgentEventType) ?? 'agent.message',
+        data: (raw.data as Record<string, unknown>) ?? raw,
+        timestamp: (raw.timestamp as string) ?? new Date().toISOString(),
+      };
+
+      setEvents((prev) => [agentEvent, ...prev].slice(0, maxEvents));
+      setLastEvent(agentEvent);
+    });
+
+    const unsubConn = getWSManager().onConnectionChange((connected) => {
+      if (mountedRef.current) setIsConnected(connected);
+    });
+    setIsConnected(getWSManager().isConnected());
 
     return () => {
       mountedRef.current = false;
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      if (esRef.current) {
-        esRef.current.onmessage = null;
-        esRef.current.onerror = null;
-        esRef.current.close();
-      }
+      unsubscribe();
+      unsubConn();
     };
-  }, [connect]);
+  }, [agentId, maxEvents]);
 
   return { events, lastEvent, isConnected, connected: isConnected };
 }
