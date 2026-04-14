@@ -5,6 +5,7 @@ import { useAuthStore } from '../stores/auth-store';
 import { stageRequiresApproval } from '../types/stage';
 import { getApiClient } from '../api/types';
 import { getNotifier } from '../api/notifications';
+import { getWSManager } from '../api/ws';
 
 /** Flash an error via platform notification adapter */
 function flashError(stageName: string, message: string) {
@@ -76,9 +77,51 @@ export function useStageExecution(): UseStageExecutionReturn {
 
       const authToken = useAuthStore.getState().token;
 
+      // Subscribe to pipeline events via WebSocket BEFORE starting execution
+      const topic = `pipeline:${pipelineRunId}`;
+      let unsubscribed = false;
+
+      const unsubscribe = getWSManager().subscribe(topic, (wsEvent) => {
+        if (unsubscribed) return;
+
+        // Map WS event to the format handleSSEEvent expects
+        const event = { type: wsEvent.event, data: wsEvent.data };
+
+        if (wsEvent.event === 'delta' || wsEvent.event === 'text_delta') {
+          store.getState().appendStreamingText((wsEvent.data as any)?.text ?? '');
+        } else if (wsEvent.event === 'complete' || wsEvent.event === 'stage_completed') {
+          handleSSEEvent({ type: 'completed', data: wsEvent.data }, stageName, stageIndex);
+          cleanup();
+        } else if (wsEvent.event === 'error') {
+          const msg = (wsEvent.data as any)?.message ?? 'Stage execution failed';
+          const aborted = (wsEvent.data as any)?.aborted;
+          if (aborted) {
+            cleanup();
+            return;
+          }
+          if (stageIndex >= 0) {
+            store.getState().setStageStatus(stageIndex, 'failed');
+            activityStore.getState().addLog({ type: 'error', message: msg, timestamp: new Date().toISOString() });
+            flashError(stageName, msg);
+          }
+          cleanup();
+        } else {
+          handleSSEEvent(event, stageName, stageIndex);
+        }
+      });
+
+      function cleanup() {
+        unsubscribed = true;
+        unsubscribe();
+        isExecutingRef.current = false;
+        setIsExecuting(false);
+        setCurrentPhase(null);
+      }
+
+      // HTTP POST to start execution (no streaming response expected)
       fetch(`${getBaseUrl()}/pipeline/${pipelineRunId}/stage/${stageName}`, {
         method: 'POST',
-        credentials: 'include', // Send HttpOnly cookie for auth
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
@@ -93,127 +136,26 @@ export function useStageExecution(): UseStageExecutionReturn {
           ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
         }),
         signal: controller.signal,
-      })
-        .then((res) => {
-          if (!res.ok) {
-            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-          }
-          if (!res.body) throw new Error('No response body');
-
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-
-          function processChunk(): Promise<void> {
-            return reader.read().then(({ done, value }) => {
-              if (done) {
-                // Finalize — only mark completed if there's actual output
-                const s = store.getState();
-                const idx = s.stages.findIndex((st) => st.name === stageName);
-                if (idx >= 0) {
-                  const stage = s.stages[idx];
-                  const output = s.streamingText;
-                  const hasRealOutput = output && output.trim().length > 20;
-                  if (stage.status === 'generating' || stage.status === 'validating') {
-                    if (hasRealOutput) {
-                      s.setStageOutput(idx, output);
-                      s.setStageStatus(idx, 'completed');
-                      flashSuccess(stageName, `Output generated (${output.length} chars)`);
-                    } else {
-                      // Stream ended but no LLM output — set partial output if any artifacts exist
-                      const hasArtifacts = stage.artifacts.length > 0;
-                      if (hasArtifacts) {
-                        // Partial success: clone/setup worked but LLM analysis failed
-                        const partialMsg = `## ${stageName} — Partial Result\n\nCodebase setup completed successfully, but the AI analysis did not produce output.\n\n**What worked:** Codebase cloned, file structure detected\n**What failed:** LLM analysis — the model may be unavailable or the request timed out.\n\n> Re-run the stage to retry the AI analysis.`;
-                        s.setStageOutput(idx, partialMsg);
-                        s.setStageStatus(idx, 'failed');
-                        flashError(stageName, 'Codebase cloned but AI analysis failed. Re-run to retry.');
-                      } else {
-                        s.setStageStatus(idx, 'failed');
-                        flashError(stageName, 'No output generated. The LLM may have failed — try re-running.');
-                      }
-                    }
-                  }
-                }
-                isExecutingRef.current = false;
-                setIsExecuting(false);
-                setCurrentPhase(null);
-                setProgress(100);
-                return;
-              }
-
-              buffer += decoder.decode(value, { stream: true });
-              const lines = buffer.split('\n');
-              buffer = lines.pop() ?? '';
-
-              for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
-                const raw = line.slice(6).trim();
-                if (!raw || raw === '[DONE]') continue;
-
-                try {
-                  const event = JSON.parse(raw);
-                  handleSSEEvent(event, stageName, stageIndex);
-                } catch {
-                  // raw text chunk — append directly
-                  store.getState().appendStreamingText(raw);
-                }
-              }
-
-              return processChunk();
-            });
-          }
-
-          return processChunk();
-        })
-        .catch(async (err) => {
-          if (err.name === 'AbortError') {
-            isExecutingRef.current = false;
-            setIsExecuting(false);
-            return;
-          }
-
-          // On stream failure, check if the stage is still running on the backend.
-          // A network glitch may drop the SSE connection while the backend continues.
-          // Poll status once before declaring failure — avoids false "failed" state.
-          try {
-            const statusRes = await fetch(`${getBaseUrl()}/pipeline/${pipelineRunId}/status`, {
-              credentials: 'include',
-              headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-            });
-            if (statusRes.ok) {
-              const status = await statusRes.json();
-              const sp = status?.stage_progress?.[stageName];
-              if (sp?.status === 'in_progress' || sp?.status === 'completed' || sp?.status === 'awaiting_approval') {
-                // Backend is still running or already completed — don't mark as failed
-                activityStore.getState().addLog({
-                  type: 'warn',
-                  message: `SSE connection lost but backend reports stage is ${sp.status}. Refresh to see results.`,
-                  timestamp: new Date().toISOString(),
-                });
-                flashError(stageName, 'Connection lost — stage may still be running. Refresh to check status.');
-                isExecutingRef.current = false;
-                setIsExecuting(false);
-                setCurrentPhase(null);
-                return;
-              }
-            }
-          } catch {
-            // Status check failed too — fall through to failure
-          }
-
-          const s = store.getState();
-          const idx = s.stages.findIndex((st) => st.name === stageName);
-          if (idx >= 0) {
-            s.setStageStatus(idx, 'failed');
-            const errMsg = err.message ?? 'Stage execution failed';
-            activityStore.getState().addLog({ type: 'error', message: errMsg, timestamp: new Date().toISOString() });
-            flashError(stageName, errMsg);
-          }
-          isExecutingRef.current = false;
-          setIsExecuting(false);
-          setCurrentPhase(null);
-        });
+      }).then(async (res) => {
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error((body as any).error || `HTTP ${res.status}`);
+        }
+        // Server accepted — events will arrive via WebSocket
+        // Don't cleanup here — wait for 'complete' or 'error' WS event
+      }).catch((err) => {
+        if (err.name === 'AbortError') {
+          cleanup();
+          return;
+        }
+        const msg = err.message ?? 'Stage execution failed';
+        if (stageIndex >= 0) {
+          store.getState().setStageStatus(stageIndex, 'failed');
+          activityStore.getState().addLog({ type: 'error', message: msg, timestamp: new Date().toISOString() });
+          flashError(stageName, msg);
+        }
+        cleanup();
+      });
     },
     [store],
   );
