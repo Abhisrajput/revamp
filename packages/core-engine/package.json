@@ -46,6 +46,7 @@
     "@google-cloud/vertexai": "^1.11.0",
     "@google/generative-ai": "^0.24.1",
     "@revamp/shared-types": "workspace:*",
+    "cockatiel": "^3.2.1",
     "openai": "^6.34.0",
     "zod": "^3.22.0"
   },
