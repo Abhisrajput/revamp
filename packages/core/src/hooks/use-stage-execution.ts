@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { usePipelineStore } from '../stores/pipeline-store';
 import { usePipelineActivityStore } from '../stores/pipeline-activity-store';
 import { useAuthStore } from '../stores/auth-store';
@@ -6,6 +6,7 @@ import { stageRequiresApproval } from '../types/stage';
 import { getApiClient } from '../api/types';
 import { getNotifier } from '../api/notifications';
 import { getWSManager } from '../api/ws';
+import { getSessionStorage } from '../api/storage';
 
 /** Flash an error via platform notification adapter */
 function flashError(stageName: string, message: string) {
@@ -98,15 +99,118 @@ interface UseStageExecutionReturn {
   output: string;
 }
 
+const EXECUTING_KEY = 'revamp:executing_stage';
+
+/** Persist running stage info to sessionStorage so we can reconnect after refresh */
+function saveExecutingState(pipelineRunId: string, stageName: string, stageIndex: number) {
+  try {
+    getSessionStorage().setItem(EXECUTING_KEY, JSON.stringify({ pipelineRunId, stageName, stageIndex, startedAt: Date.now() }));
+  } catch { /* non-fatal */ }
+}
+
+function clearExecutingState() {
+  try {
+    getSessionStorage().removeItem(EXECUTING_KEY);
+  } catch { /* non-fatal */ }
+}
+
+function loadExecutingState(): { pipelineRunId: string; stageName: string; stageIndex: number; startedAt: number } | null {
+  try {
+    const raw = getSessionStorage().getItem(EXECUTING_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Expire after 35 minutes (stage timeout is 30 min + buffer)
+    if (Date.now() - parsed.startedAt > 35 * 60 * 1000) {
+      getSessionStorage().removeItem(EXECUTING_KEY);
+      return null;
+    }
+    return parsed;
+  } catch { return null; }
+}
+
 export function useStageExecution(): UseStageExecutionReturn {
   const [isExecuting, setIsExecuting] = useState(false);
   const isExecutingRef = useRef(false);
   const [currentPhase, setCurrentPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const unsubRef = useRef<(() => void) | null>(null);
 
   const store = usePipelineStore;
   const activityStore = usePipelineActivityStore;
+
+  // ─── Reconnect after page refresh ─────────────────────────────
+  // If a stage was running when the page refreshed, re-subscribe to
+  // the WebSocket topic so we pick up events from the still-running backend.
+  useEffect(() => {
+    const saved = loadExecutingState();
+    if (!saved) return;
+
+    // Verify the stage is still running in the store (synced from DB via polling)
+    const stages = store.getState().stages;
+    const idx = stages.findIndex((s) => s.name === saved.stageName);
+    if (idx < 0) return;
+
+    const stageStatus = stages[idx].status;
+    if (stageStatus !== 'generating' && stageStatus !== 'validating') {
+      // Stage already finished while we were away — clean up
+      clearExecutingState();
+      return;
+    }
+
+    // Stage is still running — reconnect
+    isExecutingRef.current = true;
+    setIsExecuting(true);
+    setCurrentPhase('reconnecting');
+
+    activityStore.getState().addLog({
+      type: 'info',
+      message: `Reconnecting to ${saved.stageName} execution...`,
+      timestamp: new Date().toISOString(),
+    });
+
+    const topic = `pipeline:${saved.pipelineRunId}`;
+
+    const unsub = getWSManager().subscribe(topic, (wsEvent) => {
+      const event = { type: wsEvent.event, data: wsEvent.data };
+
+      if (wsEvent.event === 'delta' || wsEvent.event === 'text_delta') {
+        store.getState().appendStreamingText((wsEvent.data as any)?.text ?? '');
+      } else if (wsEvent.event === 'complete' || wsEvent.event === 'stage_completed') {
+        handleSSEEvent({ type: 'completed', data: wsEvent.data }, saved.stageName, saved.stageIndex);
+        doCleanup();
+      } else if (wsEvent.event === 'error') {
+        const rawMsg = (wsEvent.data as any)?.message ?? 'Stage execution failed';
+        const aborted = (wsEvent.data as any)?.aborted;
+        if (!aborted) {
+          const userMsg = classifyStageError(rawMsg);
+          store.getState().setStageStatus(saved.stageIndex, 'failed');
+          activityStore.getState().addLog({ type: 'error', message: rawMsg, timestamp: new Date().toISOString() });
+          flashError(saved.stageName, userMsg);
+        }
+        doCleanup();
+      } else {
+        handleSSEEvent(event, saved.stageName, saved.stageIndex);
+      }
+    });
+
+    unsubRef.current = unsub;
+
+    function doCleanup() {
+      unsub();
+      unsubRef.current = null;
+      isExecutingRef.current = false;
+      setIsExecuting(false);
+      setCurrentPhase(null);
+      clearExecutingState();
+    }
+
+    return () => {
+      // Component unmount — don't clear executing state (stage may still be running)
+      unsub();
+      unsubRef.current = null;
+    };
+  }, []); // Run once on mount
 
   const executeStage = useCallback(
     (pipelineRunId: string, stageName: string, options: ExecuteOptions = {}) => {
@@ -127,6 +231,9 @@ export function useStageExecution(): UseStageExecutionReturn {
         store.getState().setStageStatus(stageIndex, 'generating');
         store.getState().clearStreamingText();
       }
+
+      // Persist to sessionStorage so we can reconnect after page refresh
+      saveExecutingState(pipelineRunId, stageName, stageIndex);
 
       const authToken = useAuthStore.getState().token;
 
@@ -170,6 +277,7 @@ export function useStageExecution(): UseStageExecutionReturn {
         isExecutingRef.current = false;
         setIsExecuting(false);
         setCurrentPhase(null);
+        clearExecutingState();
       }
 
       // HTTP POST to start execution (no streaming response expected)
