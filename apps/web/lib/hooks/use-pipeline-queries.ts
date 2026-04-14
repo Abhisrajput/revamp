@@ -3,110 +3,19 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
 
-// ─── Types ──────────────────────────────────────────────────────
+// Types and query keys from @revamp/core (platform-independent)
+import { pipelineKeys } from '@revamp/core';
+import type {
+  PipelineStatus,
+  StageProgressEntry,
+  ApprovalGate,
+  SubtaskEntry,
+  ValidationResult,
+} from '@revamp/core';
 
-/** Backend stage_progress entry */
-export interface StageProgressEntry {
-  status: string;
-  progress?: number;
-  confidenceScore?: number;
-  startedAt?: string;
-  updatedAt?: string;
-}
-
-/** Backend approval gate */
-export interface ApprovalGate {
-  id: string;
-  stage_name: string;
-  status: string;
-  required_role: string;
-  approved_by?: string;
-  approval_comment?: string;
-  approved_at?: string;
-}
-
-/** Subtask from the backend */
-export interface SubtaskEntry {
-  id: string;
-  title: string;
-  priority?: string;
-  status: string;
-  cost_cents?: number;
-  type?: string;
-  agent_name?: string;
-  duration_ms?: number;
-  error?: string;
-}
-
-/** Full pipeline status from GET /pipeline/:id/status */
-export interface PipelineStatus {
-  id: string;
-  status: string;
-  current_stage: string;
-  stage_progress: Record<string, StageProgressEntry>;
-  current_stage_subtasks?: SubtaskEntry[];
-  current_stage_progress?: {
-    total: number;
-    completed: number;
-    running: number;
-    failed: number;
-    pending: number;
-    rounds: number;
-  };
-  error_message?: string;
-  started_at?: string;
-  completed_at?: string;
-  artifacts?: Array<{ id: string; stage_name: string; artifact_type: string; created_at: string }>;
-  approval_gates?: ApprovalGate[];
-}
-
-/** Parsed validation result from artifact metadata */
-export interface ValidationResult {
-  passed: boolean;
-  confidenceScore: number;
-  deterministicResults: Array<{
-    name: string;
-    status: string;
-    score: number;
-    message: string;
-    weight?: number;
-  }>;
-  llmResults: Array<{
-    dimension: string;
-    score: number;
-    weight: number;
-    reasoning: string;
-  }>;
-  issues: Array<{
-    id: string;
-    code: string;
-    severity: string;
-    title: string;
-    description: string;
-  }>;
-  recommendations: string[];
-  contractViolations: Array<{
-    type: string;
-    severity: string;
-    description: string;
-    section?: string;
-  }>;
-}
-
-// ─── Query Key Factories ────────────────────────────────────────
-// Hierarchical keys enable targeted invalidation:
-//   invalidate ['pipeline-status', runId] → refetches status
-//   invalidate ['stage-output', runId, 'SCAN'] → refetches one output
-//   invalidate ['stage-output', runId] → refetches all outputs
-
-export const pipelineKeys = {
-  run: (projectId: string) => ['pipeline-run', projectId] as const,
-  status: (runId: string) => ['pipeline-status', runId] as const,
-  outputs: (runId: string) => ['stage-outputs', runId] as const,
-  output: (runId: string, stage: string) => ['stage-output', runId, stage] as const,
-  validation: (runId: string, stage: string) => ['stage-validation', runId, stage] as const,
-  allValidations: (runId: string) => ['stage-validations', runId] as const,
-};
+// Re-export for consumers that import from this file
+export { pipelineKeys };
+export type { PipelineStatus, StageProgressEntry, ApprovalGate, SubtaskEntry, ValidationResult };
 
 // ─── Hooks ──────────────────────────────────────────────────────
 
