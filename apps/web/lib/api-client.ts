@@ -1,5 +1,4 @@
 import axios from 'axios';
-import { useAuthStore } from '@revamp/core';
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787';
 
@@ -11,15 +10,19 @@ export const apiClient = axios.create({
   withCredentials: true,
 });
 
-// Attach Bearer token as fallback for SSE fetch (cookies are primary auth)
+// Attach Bearer token as fallback for SSE fetch (cookies are primary auth).
+// Lazy-import useAuthStore to avoid triggering @revamp/core barrel import
+// during SSR (which would create all stores before storage adapters are registered).
 apiClient.interceptors.request.use((config) => {
+  if (typeof window === 'undefined') return config;
   try {
+    const { useAuthStore } = require('@revamp/core');
     const token = useAuthStore.getState().token;
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
   } catch {
-    // Store not available during SSR — cookie handles auth
+    // Store not available — cookie handles auth
   }
   return config;
 });

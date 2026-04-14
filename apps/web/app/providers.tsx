@@ -3,36 +3,29 @@
 import { ThemeProvider } from 'next-themes';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
-import { setApiClient, setSessionStorage, setPersistStorage, setNotificationAdapter } from '@revamp/core';
+// Import directly from specific files — NOT from @revamp/core barrel.
+// The barrel triggers Zustand store creation (auth, pipeline, config, activity)
+// at import time, which crashes during SSR because storage adapters aren't registered yet.
+import { setApiClient } from '@revamp/core/api/types';
+import { setSessionStorage, setPersistStorage } from '@revamp/core/api/storage';
+import { setNotificationAdapter } from '@revamp/core/api/notifications';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 
-// ─── Platform Bridge (Multica pattern) ──────────────────────────
-// @revamp/core defines interfaces, apps/web provides implementations.
+// ─── Platform Bridge ──────────────────────────────────────────────
 
-// All platform bridge registrations must be client-side only.
-// SSR renders the shell; client hydration initializes the adapters.
+// API client registered unconditionally (axios works on server + client)
+setApiClient(apiClient);
+
+// Storage + notifications are browser-only
 if (typeof window !== 'undefined') {
-  // Storage adapters first (stores depend on these during creation)
   setSessionStorage(window.sessionStorage);
   setPersistStorage(window.localStorage);
-  // API client
-  setApiClient(apiClient);
-}
 
-// Notification adapter: sonner toasts
-// Registered lazily to avoid require() issues during SSR
-if (typeof window !== 'undefined') {
   setNotificationAdapter({
-    success: (title, message) => {
-      toast.success(title, { description: message, duration: 5000 });
-    },
-    error: (title, message) => {
-      toast.error(title, { description: message, duration: 8000 });
-    },
-    info: (title, message) => {
-      toast.info(title, { description: message, duration: 3000 });
-    },
+    success: (title, message) => toast.success(title, { description: message, duration: 5000 }),
+    error: (title, message) => toast.error(title, { description: message, duration: 8000 }),
+    info: (title, message) => toast.info(title, { description: message, duration: 3000 }),
   });
 }
 

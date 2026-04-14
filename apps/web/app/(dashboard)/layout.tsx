@@ -31,8 +31,19 @@ export default function DashboardLayout({
     }
   }, [hydrated, isAuthenticated, isPublicRoute, router]);
 
+  // Wait for real hydration from browser localStorage (not the in-memory SSR fallback)
+  const isBrowser = typeof window !== 'undefined';
+  if (!isBrowser || !hydrated) {
+    // SSR or pre-hydration: show loading shell, don't redirect
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary-600 border-t-transparent" />
+      </div>
+    );
+  }
+
   // Hide content if hydration finished and user is not authenticated (except public routes)
-  if (hydrated && !isAuthenticated && !isPublicRoute) {
+  if (!isAuthenticated && !isPublicRoute) {
     return null;
   }
 
