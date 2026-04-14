@@ -28,7 +28,7 @@ import { canExecuteStage, getStageBlockReason } from '@revamp/core';
 import { PIPELINE_STAGE_ORDER } from '@revamp/shared-types';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
 import { useAuthStore } from '@revamp/core';
-import { useStageExecution } from '@/lib/hooks/use-stage-execution';
+import { useStageExecution } from '@revamp/core';
 import { usePipelineShortcuts } from '@revamp/core';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';

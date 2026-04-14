@@ -12,6 +12,10 @@ export type { ApiClient, ApiResponse, RequestConfig } from './api/types';
 export { setSessionStorage, setPersistStorage, getSessionStorage, getPersistStorage } from './api/storage';
 export type { StorageAdapter } from './api/storage';
 
+// Notifications
+export { setNotificationAdapter, getNotifier } from './api/notifications';
+export type { NotificationAdapter } from './api/notifications';
+
 // Query Keys
 export { pipelineKeys, projectKeys, agentKeys } from './hooks/pipeline-keys';
 
@@ -56,6 +60,9 @@ export type { MergedStageState, PipelineData } from './hooks/use-pipeline-data';
 
 // Stage Panel Hook
 export { useStagePanel } from './hooks/use-stage-panel';
+
+// Stage Execution Hook (SSE streaming)
+export { useStageExecution } from './hooks/use-stage-execution';
 
 // Stores (platform-independent — uses injected storage adapters)
 export { useAuthStore, useAuthHydrated } from './stores/auth-store';

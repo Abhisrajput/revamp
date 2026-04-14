@@ -36,3 +36,6 @@ apiClient.interceptors.response.use(
     return Promise.reject(error);
   },
 );
+
+// Extend with getBaseUrl for SSE/fetch endpoints
+(apiClient as any).getBaseUrl = () => BASE_URL;

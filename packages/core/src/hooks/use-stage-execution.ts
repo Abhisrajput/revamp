@@ -1,40 +1,25 @@
-'use client';
-
 import { useState, useCallback, useRef } from 'react';
-import { toast } from 'sonner';
-import { usePipelineStore } from '@revamp/core';
-import { usePipelineActivityStore } from '@revamp/core';
-import { stageRequiresApproval } from '@revamp/core';
-import { useAuthStore } from '@revamp/core';
-import { useNotificationStore } from '@/lib/stores/notification-store';
+import { usePipelineStore } from '../stores/pipeline-store';
+import { usePipelineActivityStore } from '../stores/pipeline-activity-store';
+import { useAuthStore } from '../stores/auth-store';
+import { stageRequiresApproval } from '../types/stage';
+import { getApiClient } from '../api/types';
+import { getNotifier } from '../api/notifications';
 
-/** Flash an error to toast + notification bell */
+/** Flash an error via platform notification adapter */
 function flashError(stageName: string, message: string) {
-  toast.error(`${stageName} failed`, { description: message, duration: 8000 });
-  try {
-    useNotificationStore.getState().addNotification({
-      type: 'stage_failed',
-      title: `${stageName} failed`,
-      message,
-      metadata: { stage: stageName },
-    });
-  } catch { /* non-fatal */ }
+  getNotifier().error(`${stageName} failed`, message, { stage: stageName });
 }
 
-/** Flash a success to toast + notification bell */
+/** Flash a success via platform notification adapter */
 function flashSuccess(stageName: string, message: string) {
-  toast.success(`${stageName} completed`, { description: message, duration: 5000 });
-  try {
-    useNotificationStore.getState().addNotification({
-      type: 'stage_completed',
-      title: `${stageName} completed`,
-      message,
-      metadata: { stage: stageName },
-    });
-  } catch { /* non-fatal */ }
+  getNotifier().success(`${stageName} completed`, message, { stage: stageName });
 }
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787';
+function getBaseUrl(): string {
+  const client = getApiClient();
+  return (client as any).getBaseUrl?.() || 'http://localhost:8787';
+}
 
 interface ExecuteOptions {
   skipLlmEval?: boolean;
@@ -91,7 +76,7 @@ export function useStageExecution(): UseStageExecutionReturn {
 
       const authToken = useAuthStore.getState().token;
 
-      fetch(`${BASE_URL}/pipeline/${pipelineRunId}/stage/${stageName}`, {
+      fetch(`${getBaseUrl()}/pipeline/${pipelineRunId}/stage/${stageName}`, {
         method: 'POST',
         credentials: 'include', // Send HttpOnly cookie for auth
         headers: {
@@ -192,7 +177,7 @@ export function useStageExecution(): UseStageExecutionReturn {
           // A network glitch may drop the SSE connection while the backend continues.
           // Poll status once before declaring failure — avoids false "failed" state.
           try {
-            const statusRes = await fetch(`${BASE_URL}/pipeline/${pipelineRunId}/status`, {
+            const statusRes = await fetch(`${getBaseUrl()}/pipeline/${pipelineRunId}/status`, {
               credentials: 'include',
               headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
             });
@@ -508,14 +493,7 @@ export function useStageExecution(): UseStageExecutionReturn {
             // Trigger approval gate if stage requires approval
             if (stageRequiresApproval(stageName)) {
               s.setPendingApproval(idx);
-              try {
-                useNotificationStore.getState().addNotification({
-                  type: 'approval_required',
-                  title: `${stageName} needs approval`,
-                  message: 'Review the output and approve to advance the pipeline.',
-                  metadata: { stage: stageName },
-                });
-              } catch { /* non-fatal */ }
+              getNotifier().info(`${stageName} needs approval`, 'Review the output and approve to advance the pipeline.');
             }
           } else {
             const stage = s.stages[idx];
@@ -543,12 +521,12 @@ export function useStageExecution(): UseStageExecutionReturn {
           const headers: Record<string, string> = {};
           if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
 
-          fetch(`${BASE_URL}/pipeline/${pipeId}/modernized-files`, { headers })
+          fetch(`${getBaseUrl()}/pipeline/${pipeId}/modernized-files`, { headers })
             .then((r) => r.json())
             .then((data) => {
               const files = data?.files || [];
               for (const file of files) {
-                fetch(`${BASE_URL}/pipeline/${pipeId}/modernized-files/${file.id}`, { headers })
+                fetch(`${getBaseUrl()}/pipeline/${pipeId}/modernized-files/${file.id}`, { headers })
                   .then((r) => r.json())
                   .then((detail) => {
                     if (detail?.content) {
