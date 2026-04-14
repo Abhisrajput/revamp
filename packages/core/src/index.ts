@@ -16,6 +16,10 @@ export type { StorageAdapter } from './api/storage';
 export { setNotificationAdapter, getNotifier } from './api/notifications';
 export type { NotificationAdapter } from './api/notifications';
 
+// WebSocket
+export { setWSManager, getWSManager } from './api/ws';
+export type { WSManager, WSEvent } from './api/ws';
+
 // Query Keys
 export { pipelineKeys, projectKeys, agentKeys } from './hooks/pipeline-keys';
 
