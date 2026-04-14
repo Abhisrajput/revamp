@@ -12,7 +12,7 @@
  *   POST   /pipeline/:id/reject/:stage  → Reject gate
  *   GET    /pipeline/:id/validation/:stage → Get validation results
  *   POST   /pipeline/:id/refine          → Refine a section of stage output
- *   POST   /pipeline/:id/chat            → Interactive chat for Evolve stage (SSE)
+ *   POST   /pipeline/:id/chat            → Interactive chat for Evolve stage (events via WebSocket)
  */
 
 import { FastifyInstance } from "fastify";
@@ -1522,8 +1522,8 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
   /**
    * POST /pipeline/:pipelineRunId/chat — Interactive chat for Evolve stage
    *
-   * Streams LLM response via SSE for real-time chat in the Evolve panel.
-   * Includes pipeline context (prior stage outputs) for informed responses.
+   * Sends a message and streams the LLM response via WebSocket.
+   * Subscribe to topic 'chat:<runId>:EVOLVE' before calling this endpoint.
    */
   fastify.post<{
     Params: { pipelineRunId: string };
@@ -1535,10 +1535,10 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         params: PipelineRunParamsSchema,
         body: ChatMessageSchema,
         tags: ["Pipeline"],
-        summary: "Interactive chat for Evolve stage (SSE streaming response)",
-        description: "Streams LLM response via Server-Sent Events (text/event-stream) for real-time chat. Events: delta, complete, error.",
+        summary: "Interactive chat for Evolve stage (events via WebSocket)",
+        description: "Sends a message. Response streamed via WebSocket topic 'chat:<runId>:EVOLVE'. Subscribe before calling.",
         response: {
-          200: { type: "string", description: "SSE stream (text/event-stream)" },
+          200: { type: "object", properties: { success: { type: "boolean" }, content: { type: "string" } }, additionalProperties: true },
           ...errorResponse,
         },
       }),
@@ -1556,35 +1556,9 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ error: "Pipeline run not found" });
       }
 
-      // SSE response
-      const origin = request.headers.origin || process.env.CORS_ORIGIN || "http://localhost:3001";
-      request.raw.socket.setTimeout(0);
-      request.raw.socket.setKeepAlive(true, 30_000);
-
-      reply.raw.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-        "Access-Control-Allow-Origin": origin,
-        "Access-Control-Allow-Credentials": "true",
-      });
-
-      let chatClosed = false;
-      const sendChatSSE = (event: string, data: unknown) => {
-        if (chatClosed) return;
-        try {
-          reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-        } catch { chatClosed = true; }
-      };
-
-      const chatKeepalive = setInterval(() => {
-        if (chatClosed) { clearInterval(chatKeepalive); return; }
-        try { reply.raw.write(": keepalive\n\n"); } catch { chatClosed = true; }
-      }, 15_000);
-
+      const topic = `chat:${pipelineRunId}:EVOLVE`;
       const controller = new AbortController();
-      request.raw.on("close", () => { chatClosed = true; clearInterval(chatKeepalive); controller.abort(); });
+      request.raw.on("close", () => { controller.abort(); });
 
       try {
         const content = await pipelineService.chat(
@@ -1592,22 +1566,20 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           validation.data.message,
           validation.data.history,
           (deltaText: string) => {
-            sendChatSSE("delta", { text: deltaText });
+            publish(topic, "delta", { text: deltaText });
           },
           controller.signal,
         );
 
-        sendChatSSE("complete", { content });
+        publish(topic, "complete", { content });
+        return reply.send({ success: true, content });
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') {
-          // Client disconnected
-        } else {
-          const message = err instanceof Error ? err.message : "Chat failed";
-          sendChatSSE("error", { message });
+          return reply.status(499).send({ error: "Client disconnected" });
         }
-      } finally {
-        clearInterval(chatKeepalive);
-        reply.raw.end();
+        const message = err instanceof Error ? err.message : "Chat failed";
+        publish(topic, "error", { message });
+        return reply.status(500).send({ error: message });
       }
     },
   );
