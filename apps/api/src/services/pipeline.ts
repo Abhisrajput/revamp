@@ -42,6 +42,16 @@ import {
 import { finalizeStageResult } from "./pipeline-finalize.js";
 import { resolveProjectCredentials } from "./pipeline-credentials.js";
 import {
+  advanceStage as advanceStageOp,
+  approveGate as approveGateOp,
+  rejectGate as rejectGateOp,
+  resetRunStatus as resetRunStatusOp,
+  failStage as failStageOp,
+  addArtifact as addArtifactOp,
+  refineSection as refineSectionOp,
+  chat as chatOp,
+} from "./pipeline-operations.js";
+import {
   type StageConfig,
   PIPELINE_STAGES,
   getStageConfig,
@@ -1409,297 +1419,15 @@ export class PipelineService {
     return updateStageProgress(pipelineRunId, stageName, status, progress, options);
   }
 
-  /**
-   * Advance pipeline to the next stage.
-   */
-  async advanceStage(pipelineRunId: string): Promise<void> {
-    const run = await getPipelineRun(pipelineRunId);
-    if (!run) throw new NotFoundError("Pipeline run not found");
-    if (run.status !== "running") throw new ValidationError(`Cannot advance pipeline in ${run.status} state`);
-
-    const currentStage = run.current_stage as PipelineStageName;
-    const nextStage = getNextStage(currentStage);
-
-    await db.transaction(async (tx) => {
-      if (!nextStage) {
-        await tx.update(pipelineRuns).set({
-          status: "completed",
-          completed_at: new Date(),
-          updated_at: new Date(),
-        }).where(eq(pipelineRuns.id, pipelineRunId));
-        return;
-      }
-
-      await updateStageProgress(pipelineRunId, currentStage, "approved", 100, { conn: tx });
-      await updateStageProgress(pipelineRunId, nextStage, "in_progress", 0, { conn: tx });
-
-      await tx.update(pipelineRuns).set({
-        current_stage: nextStage,
-        updated_at: new Date(),
-      }).where(eq(pipelineRuns.id, pipelineRunId));
-    });
-  }
-
-  /**
-   * Approve an approval gate and advance the pipeline.
-   */
-  async approveGate(
-    pipelineRunId: string,
-    stageName: PipelineStageName,
-    approvedBy: string,
-    comment?: string,
-    /** Admin force-approve: bypass confidence threshold check */
-    force?: boolean,
-  ): Promise<void> {
-    await db.transaction(async (tx) => {
-      const gate = await tx.query.approvalGates.findFirst({
-        where: and(
-          eq(approvalGates.pipeline_run_id, pipelineRunId),
-          eq(approvalGates.stage_name, stageName),
-        ),
-      });
-
-      if (!gate) throw new NotFoundError("Approval gate not found");
-      if (gate.status !== "pending") throw new ValidationError(`Gate already ${gate.status}`);
-
-      // Confidence threshold check — block approval if validation score is below threshold
-      const run = await tx.query.pipelineRuns.findFirst({
-        where: eq(pipelineRuns.id, pipelineRunId),
-        columns: { project_id: true, stage_progress: true },
-      });
-      if (run) {
-        const project = await tx.query.projects.findFirst({
-          where: eq(projects.id, run.project_id),
-          columns: { settings: true },
-        });
-        const threshold = (project?.settings as any)?.confidenceThreshold ?? 75;
-        const stageProgress = (run.stage_progress as Record<string, any>) || {};
-        let stageScore = stageProgress[stageName]?.confidenceScore;
-
-        if (typeof stageScore !== 'number' || stageScore === 0) {
-          const valArtifact = await tx.query.stageArtifacts.findFirst({
-            where: and(
-              eq(stageArtifacts.pipeline_run_id, pipelineRunId),
-              eq(stageArtifacts.stage_name, stageName),
-              eq(stageArtifacts.artifact_type, "validation_result"),
-            ),
-          });
-          if (valArtifact?.metadata) {
-            stageScore = (valArtifact.metadata as any).confidenceScore ?? stageScore;
-          }
-        }
-
-        if (typeof stageScore === 'number' && stageScore > 0 && stageScore < threshold && !force) {
-          throw new ValidationError(
-            `Cannot approve: confidence score ${stageScore}% is below the threshold of ${threshold}%. Re-run the stage to improve the score.`
-          );
-        }
-      }
-
-      await tx.update(approvalGates).set({
-        status: "approved",
-        approved_by: approvedBy,
-        approval_comment: comment,
-        approved_at: new Date(),
-      }).where(
-        and(
-          eq(approvalGates.pipeline_run_id, pipelineRunId),
-          eq(approvalGates.stage_name, stageName),
-        ),
-      );
-
-      await updateStageProgress(pipelineRunId, stageName, "approved", 100, { conn: tx });
-
-      const nextStage = getNextStage(stageName);
-      if (nextStage) {
-        await tx.update(pipelineRuns).set({
-          current_stage: nextStage,
-        }).where(eq(pipelineRuns.id, pipelineRunId));
-      } else {
-        await tx.update(pipelineRuns).set({
-          status: "completed",
-          completed_at: new Date(),
-        }).where(eq(pipelineRuns.id, pipelineRunId));
-      }
-    });
-  }
-
-  /**
-   * Reject an approval gate.
-   */
-  async rejectGate(
-    pipelineRunId: string,
-    stageName: PipelineStageName,
-    rejectedBy: string,
-    reason: string,
-  ): Promise<void> {
-    await db.transaction(async (tx) => {
-      await tx.update(approvalGates).set({
-        status: "rejected",
-        approved_by: rejectedBy,
-        approval_comment: reason,
-        approved_at: new Date(),
-      }).where(
-        and(
-          eq(approvalGates.pipeline_run_id, pipelineRunId),
-          eq(approvalGates.stage_name, stageName),
-        ),
-      );
-
-      await updateStageProgress(pipelineRunId, stageName, "rejected", 0, { conn: tx });
-    });
-  }
-
-  /**
-   * Fail a stage and stop the pipeline.
-   */
-  async resetRunStatus(pipelineRunId: string): Promise<void> {
-    await db.update(pipelineRuns).set({
-      status: "running",
-      error_message: null,
-      completed_at: null,
-      updated_at: new Date(),
-    }).where(eq(pipelineRuns.id, pipelineRunId));
-  }
-
-  async failStage(pipelineRunId: string, errorMessage: string): Promise<void> {
-    await db.update(pipelineRuns).set({
-      status: "failed",
-      error_message: errorMessage,
-      completed_at: new Date(),
-      updated_at: new Date(),
-    }).where(eq(pipelineRuns.id, pipelineRunId));
-  }
-
-  /**
-   * Add an artifact to a stage.
-   */
-  async addArtifact(
-    pipelineRunId: string,
-    stageName: string,
-    artifactType: string,
-    storagePath: string,
-    metadata?: Record<string, unknown>,
-    fileSize?: number,
-  ): Promise<void> {
-    await db.insert(stageArtifacts).values({
-      id: crypto.randomUUID(),
-      pipeline_run_id: pipelineRunId,
-      stage_name: stageName,
-      artifact_type: artifactType,
-      storage_path: storagePath,
-      file_size: fileSize,
-      metadata: metadata || {},
-    });
-  }
-
-  /**
-   * Update project-level metrics after a stage completes.
-   *
-   * Aggregates files_processed, lines_analyzed, total_tokens, and total_cost
-   * from the pipeline run into the project's metrics JSONB column.
-   *
-   * Ported from legacy-bridge metrics tracking during agent runs.
-   * Now in pipeline-repository.ts — standalone function.
-   */
-
-  /**
-   * Refine a section of stage output using LLM.
-   */
-  async refineSection(
-    pipelineRunId: string,
-    stageName: string,
-    sectionTitle: string,
-    sectionContent: string,
-    userFeedback: string,
-    fullText: string,
-  ): Promise<string> {
-    const systemPrompt = `You are an expert technical writer helping refine a section of a modernization analysis document.
-You will receive a section from a stage output along with user feedback on how to improve it.
-Return ONLY the refined markdown content for that section — no explanations, no meta-commentary.
-Preserve the markdown formatting, heading level, and structure.
-Make the improvements the user requested while keeping the content accurate and professional.`;
-
-    const userPrompt = `## Section to Refine
-**Title:** ${sectionTitle}
-
-**Current Content:**
-${sectionContent}
-
----
-
-## User Feedback
-${userFeedback}
-
----
-
-## Full Document Context (for reference only — do not reproduce the entire document)
-${fullText.slice(0, 4000)}
-
----
-
-Please provide the refined version of the "${sectionTitle}" section only.`;
-
-    const callFn = llmProxyService.createCallFn({ maxTokens: 4096 });
-    const refined = await callFn({
-      systemPrompt,
-      userPrompt,
-      cacheablePrefix: undefined,
-      onDelta: undefined,
-      signal: undefined,
-    });
-
-    return refined;
-  }
-
-  /**
-   * Interactive chat for the Evolve stage.
-   * Streams LLM response with pipeline context.
-   */
-  async chat(
-    pipelineRunId: string,
-    message: string,
-    history: Array<{ role: string; content: string }>,
-    onDelta?: (text: string) => void,
-    signal?: AbortSignal,
-  ): Promise<string> {
-    const run = await getPipelineRun(pipelineRunId);
-    if (!run) throw new NotFoundError("Pipeline run not found");
-
-    // Load prior stage outputs using tiered context (L0/L1/L2)
-    const order = getStageOrder();
-    const { outputs: priorOutputs } = await loadPriorStageOutputs(
-      pipelineRunId,
-      order[order.length - 1] as PipelineStageName, // Load all prior stages
-    );
-
-    const contextSummary = priorOutputs
-      .map((o) => `### ${o.stageName}\n${o.output}`)
-      .join('\n\n---\n\n');
-
-    const systemPrompt = `You are an AI modernization advisor helping with the ongoing evolution of a legacy-to-modern migration project.
-You have access to the full pipeline context from all completed stages.
-Provide actionable, specific guidance. Reference the actual codebase, architecture decisions, and BDD specs from the pipeline outputs when relevant.
-Be concise but thorough.
-
-## Pipeline Context (completed stages):
-${contextSummary}`;
-
-    const userPrompt = history.length > 0
-      ? `Previous conversation:\n${history.map((m) => `${m.role}: ${m.content}`).join('\n')}\n\nUser: ${message}`
-      : message;
-
-    const callFn = llmProxyService.createCallFn({ maxTokens: 4096 });
-    const response = await callFn({
-      systemPrompt,
-      userPrompt,
-      cacheablePrefix: contextSummary,
-      onDelta,
-      signal,
-    });
-
-    return response;
-  }
+  // ─── Operations delegated to pipeline-operations.ts ────────────
+  advanceStage = advanceStageOp;
+  approveGate = approveGateOp;
+  rejectGate = rejectGateOp;
+  resetRunStatus = resetRunStatusOp;
+  failStage = failStageOp;
+  addArtifact = addArtifactOp;
+  refineSection = refineSectionOp;
+  chat = chatOp;
 }
 
 export const pipelineService = new PipelineService();
