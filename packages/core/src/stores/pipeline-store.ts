@@ -45,37 +45,66 @@ interface PipelineStoreState {
   updateScanSubtask: (index: number, subtaskId: string, updates: Partial<ScanSubtaskState>) => void;
 }
 
-// ─── Session persistence for pipeline identity ─────────────────────
-// Persists currentPipelineRunId + currentProjectId to sessionStorage so
-// initPipeline is NOT called on page refresh when the pipeline hasn't changed.
-// This prevents createDefaultStages() from nuking startedAt, completedAt,
-// pendingApprovalSince — which caused all timers to flash/reset.
+// ─── Session persistence for pipeline state ─────────────────────────
+// Persists the full pipeline state (identity + stages) to sessionStorage
+// so timers, approval status, subtasks, and progress survive page refresh.
 
 import { getSessionStorage } from '../api/storage';
 
-const PIPELINE_ID_KEY = 'revamp:pipeline-identity';
+const PIPELINE_STATE_KEY = 'revamp:pipeline-state';
 
-function savePipelineIdentity(projectId: string, runId: string) {
-  try { getSessionStorage().setItem(PIPELINE_ID_KEY, JSON.stringify({ projectId, runId })); } catch {}
+function savePipelineState(state: {
+  projectId: string | null;
+  runId: string | null;
+  stages: StageState[];
+  activeStageIndex: number;
+}) {
+  try {
+    getSessionStorage().setItem(PIPELINE_STATE_KEY, JSON.stringify(state));
+  } catch { /* quota exceeded — non-fatal */ }
 }
 
-function loadPipelineIdentity(): { projectId: string; runId: string } | null {
+function loadPipelineState(): {
+  projectId: string | null;
+  runId: string | null;
+  stages: StageState[];
+  activeStageIndex: number;
+} | null {
   try {
-    const raw = getSessionStorage().getItem(PIPELINE_ID_KEY);
-    return raw ? JSON.parse(raw) : null;
+    const raw = getSessionStorage().getItem(PIPELINE_STATE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Validate shape
+    if (!parsed.stages || !Array.isArray(parsed.stages)) return null;
+    return parsed;
   } catch { return null; }
+}
+
+// Debounce saves — at most every 2 seconds
+let stateTimer: ReturnType<typeof setTimeout> | null = null;
+function debouncedSaveState() {
+  if (stateTimer) clearTimeout(stateTimer);
+  stateTimer = setTimeout(() => {
+    const s = usePipelineStore.getState();
+    savePipelineState({
+      projectId: s.currentProjectId,
+      runId: s.currentPipelineRunId,
+      stages: s.stages,
+      activeStageIndex: s.activeStageIndex,
+    });
+  }, 2000);
 }
 
 // ─── Store ─────────────────────────────────────────────────────────
 
-const savedIdentity = loadPipelineIdentity();
+const savedState = loadPipelineState();
 
 export const usePipelineStore = create<PipelineStoreState>()(
   (set, get) => ({
-    stages: createDefaultStages(),
-    activeStageIndex: 0,
-    currentPipelineRunId: savedIdentity?.runId ?? null,
-    currentProjectId: savedIdentity?.projectId ?? null,
+    stages: savedState?.stages ?? createDefaultStages(),
+    activeStageIndex: savedState?.activeStageIndex ?? 0,
+    currentPipelineRunId: savedState?.runId ?? null,
+    currentProjectId: savedState?.projectId ?? null,
     streamingText: '',
     isGenerating: false,
 
@@ -93,7 +122,7 @@ export const usePipelineStore = create<PipelineStoreState>()(
         streamingText: '',
         isGenerating: false,
       });
-      savePipelineIdentity(projectId, pipelineRunId);
+      savePipelineState({ projectId, runId: pipelineRunId, stages: createDefaultStages(), activeStageIndex: 0 });
     },
 
     setActiveStage: (index) => set({ activeStageIndex: index }),
@@ -312,4 +341,7 @@ export const usePipelineStore = create<PipelineStoreState>()(
     },
   }),
 );
+
+// Auto-save state to sessionStorage on every change (debounced)
+usePipelineStore.subscribe(debouncedSaveState);
 
