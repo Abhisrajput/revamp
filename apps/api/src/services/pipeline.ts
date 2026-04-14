@@ -16,6 +16,7 @@
 
 import { db, type DbConnection } from "@/db/index.js";
 import { pipelineRuns, approvalGates, stageArtifacts, llmUsage, projects } from "@/db/schema.js";
+import { NotFoundError, ForbiddenError, ValidationError } from "@/errors.js";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { PipelineStageName } from "@revamp/shared-types/pipeline";
 import {
@@ -153,7 +154,7 @@ export function isStageDisabled(
 export class PipelineService {
   getStageConfig(stage: PipelineStageName): StageConfig {
     const config = PIPELINE_STAGES.find((s) => s.name === stage);
-    if (!config) throw new Error(`Unknown stage: ${stage}`);
+    if (!config) throw new ValidationError(`Unknown stage: ${stage}`);
     return config;
   }
 
@@ -190,8 +191,8 @@ export class PipelineService {
     initiatedBy: string,
     options?: { budgetCents?: number },
   ): Promise<string> {
-    // Return most recent active run (prevents duplicate runs on page refresh)
-    // Only returns running/pending — completed/cancelled runs should not be reused
+    // Return most recent active or completed run (prevents duplicate runs on page refresh).
+    // Priority: running/pending first, then completed (so the UI shows results).
     const existingRun = await db.query.pipelineRuns.findFirst({
       where: and(
         eq(pipelineRuns.project_id, projectId),
@@ -204,12 +205,26 @@ export class PipelineService {
       return existingRun.id;
     }
 
+    // If no active run, return the most recent completed run
+    // so the UI can display previous results instead of creating an empty run.
+    const completedRun = await db.query.pipelineRuns.findFirst({
+      where: and(
+        eq(pipelineRuns.project_id, projectId),
+        inArray(pipelineRuns.status, ["completed"]),
+      ),
+      orderBy: (table, { desc }) => [desc(table.started_at)],
+    });
+
+    if (completedRun) {
+      return completedRun.id;
+    }
+
     const runId = crypto.randomUUID();
     const stageProgress: Record<string, unknown> = {};
 
     for (const stage of PIPELINE_STAGES) {
       stageProgress[stage.name] = {
-        status: stage.index === 0 ? "in_progress" : "pending",
+        status: "pending",
         progress: 0,
       };
     }
@@ -224,6 +239,34 @@ export class PipelineService {
       budget_cents: options?.budgetCents ?? null,
       started_at: new Date(),
     });
+
+    // Housekeeping: keep only the last 5 runs per project, delete older ones.
+    // This prevents unbounded data growth from repeated pipeline runs.
+    try {
+      const allRuns = await db.query.pipelineRuns.findMany({
+        where: eq(pipelineRuns.project_id, projectId),
+        orderBy: (table, { desc }) => [desc(table.created_at)],
+        columns: { id: true },
+      });
+      if (allRuns.length > 5) {
+        const idsToDelete = allRuns.slice(5).map(r => r.id);
+        // Delete related data first, then the runs themselves.
+        // Uses raw SQL for tables that may or may not exist yet (safe with IF EXISTS).
+        for (const oldId of idsToDelete) {
+          await db.execute(sql`DELETE FROM stage_artifacts WHERE pipeline_run_id = ${oldId}`);
+          await db.execute(sql`DELETE FROM approval_gates WHERE pipeline_run_id = ${oldId}`);
+          await db.execute(sql`DELETE FROM llm_usage WHERE pipeline_run_id = ${oldId}`);
+          await db.execute(sql`DELETE FROM stage_runs WHERE pipeline_run_id = ${oldId}`);
+          await db.execute(sql`DELETE FROM stage_execution_logs WHERE pipeline_run_id = ${oldId}`);
+          await db.execute(sql`DELETE FROM agent_subtasks WHERE pipeline_run_id = ${oldId}`);
+          await db.execute(sql`DELETE FROM pipeline_runs WHERE id = ${oldId}`);
+        }
+        console.log(`[Pipeline] Cleaned up ${idsToDelete.length} old runs for project ${projectId}`);
+      }
+    } catch (cleanupErr) {
+      // Non-fatal — don't block run creation
+      console.warn('[Pipeline] Run cleanup failed:', cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
+    }
 
     return runId;
   }
@@ -253,6 +296,8 @@ export class PipelineService {
       composerModel?: string;
       /** Override evaluator model */
       evaluatorModel?: string;
+      /** Max output tokens (scales depth for larger codebases) */
+      maxTokens?: number;
       /** Override stage prompt for this execution (re-run with edited prompt) */
       promptOverride?: string;
       /** Validation feedback from previous run — appended to prompt context */
@@ -260,8 +305,8 @@ export class PipelineService {
     },
   ): Promise<StageRunResult> {
     const run = await this.getPipelineRun(pipelineRunId);
-    if (!run) throw new Error("Pipeline run not found");
-    if (!run.project) throw new Error("Project not found for pipeline run");
+    if (!run) throw new NotFoundError("Pipeline run not found");
+    if (!run.project) throw new NotFoundError("Project not found for pipeline run");
 
     const stageConfig = this.getStageConfig(stageName);
 
@@ -317,6 +362,40 @@ export class PipelineService {
     projectContext.stagePrompts = rawStagePrompts;
     projectContext.validationPrompts = rawValidationPrompts;
 
+    // For stages 2-8: reload SCAN's file analysis ground truth from stored artifact
+    // so downstream stages have verified versions, component counts, and migration stats.
+    if (stageName !== PipelineStageName.SCAN) {
+      try {
+        const scanArtifact = await db.query.stageArtifacts.findFirst({
+          where: and(
+            eq(stageArtifacts.pipeline_run_id, pipelineRunId),
+            eq(stageArtifacts.stage_name, 'SCAN'),
+            eq(stageArtifacts.artifact_type, 'cloned_codebase'),
+          ),
+        });
+        if (scanArtifact?.metadata) {
+          const meta = scanArtifact.metadata as Record<string, unknown>;
+          projectContext.fileAnalysis = {
+            totalFiles: (meta.totalFiles as number) || 0,
+            totalLines: (meta.totalLines as number) || 0,
+            detectedLanguages: (meta.detectedLanguages as string[]) || [],
+            frameworkVersions: (meta.frameworkVersions as any[]) || [],
+            componentCounts: (meta.componentCounts as any[]) || [],
+            migrationStats: (meta.migrationStats as any) || undefined,
+            largestFiles: (meta.largestFiles as any[]) || [],
+            filesByExtension: (meta.filesByExtension as Record<string, number>) || {},
+            linesByExtension: (meta.linesByExtension as Record<string, number>) || {},
+            directoryTree: '',
+            keyFiles: [],
+            codeSnippets: [],
+          };
+          if (scanArtifact.storage_path) {
+            projectContext.codebasePath = scanArtifact.storage_path;
+          }
+        }
+      } catch { /* non-fatal — stages still work without ground truth */ }
+    }
+
     // For SCAN stage — run real file analysis on the codebase
     if (stageName === PipelineStageName.SCAN) {
       const sourceType = proj.source_type;
@@ -366,6 +445,13 @@ export class PipelineService {
                   totalFiles: fileAnalysis.totalFiles,
                   totalLines: fileAnalysis.totalLines,
                   detectedLanguages: fileAnalysis.detectedLanguages,
+                  // Ground truth data for downstream stages
+                  frameworkVersions: fileAnalysis.frameworkVersions || [],
+                  componentCounts: fileAnalysis.componentCounts || [],
+                  migrationStats: fileAnalysis.migrationStats || null,
+                  largestFiles: fileAnalysis.largestFiles?.slice(0, 15) || [],
+                  filesByExtension: fileAnalysis.filesByExtension || {},
+                  linesByExtension: fileAnalysis.linesByExtension || {},
                 },
               });
             } catch (artifactErr: any) {
@@ -395,7 +481,7 @@ export class PipelineService {
 
           // ─── BREE Engine Integration (SCAN stage) ─────────────
           // Run BREE static analysis on the codebase for ground-truth
-          // language detection, requirements extraction, and deep analysis.
+          // language detection, complexity analysis, and component discovery.
           try {
             const { isBreeOnline, breeFullContext, formatBreeContextForPrompt } = await import('./bree-client.js');
             if (await isBreeOnline()) {
@@ -411,7 +497,9 @@ export class PipelineService {
                 ? { path: fileAnalysis.codebasePath }
                 : { files: (fileAnalysis.codeSnippets || []).map((s: any) => ({ path: s.path, content: s.content })) };
 
+              console.log(`[Pipeline] BREE input: ${fileAnalysis.codebasePath ? `path=${fileAnalysis.codebasePath}` : `${(fileAnalysis.codeSnippets || []).length} code snippets`}`);
               const breeCtx = await breeFullContext(breeInput);
+              console.log(`[Pipeline] BREE result: online=${breeCtx.online}, requirements=${breeCtx.requirements?.documents?.length || 0}, scan=${breeCtx.scanResult ? 'yes' : 'no'}, graph=${breeCtx.graphAnalysis ? 'yes' : 'no'}`);
 
               // Store BREE analysis as a stage artifact for downstream stages
               if (breeCtx.requirements || breeCtx.graphAnalysis) {
@@ -541,7 +629,11 @@ export class PipelineService {
     // Load prompt override: prefer per-request override (re-run with edited prompt),
     // then fall back to project-level override (set via Settings page).
     const stagePrompts = (run.project as any).stage_prompts as Record<string, string> | null;
-    let promptOverride = options?.promptOverride || stagePrompts?.[stageName] || undefined;
+    // Support both stage-name keys (new) and numeric-index keys (prompt-generator uses numeric)
+    let promptOverride = options?.promptOverride
+      || stagePrompts?.[stageName]
+      || stagePrompts?.[String(stageConfig.index)]
+      || undefined;
 
     // Append validation feedback from previous run to the prompt so the LLM can address issues
     if (options?.validationFeedback && options.validationFeedback.length > 0) {
@@ -561,9 +653,9 @@ export class PipelineService {
       || process.env.LLM_DEFAULT_MODEL
       || agentCtx?.preferredModel
       || "";
-    // Read maxTokens from project settings (set via Settings page), fallback to 32768
+    // Read maxTokens: per-request override > project settings > default 32768
     const projectSettings = (run.project as any).settings as Record<string, unknown> | null;
-    const configuredMaxTokens = (projectSettings?.maxTokens as number) || 32768;
+    const configuredMaxTokens = options?.maxTokens || (projectSettings?.maxTokens as number) || 32768;
 
     // BYOK: extract per-project LLM provider credentials.
     // The frontend saves providers under camelCase key "llmProviders" with credentials
@@ -684,11 +776,17 @@ export class PipelineService {
       max_uses: stageAdvisor.max_uses,
     } : undefined;
 
+    // For generic stages (BLUEPRINT through EVOLVE), the composer model
+    // is used as the main generation model for higher quality output.
+    // For orchestrated stages (SCAN, DECODE, FORGE), the composer model
+    // is passed separately to the orchestrator.
+    const effectiveModel = options?.composerModel || modelName;
+    const skipAdvisor = /opus/i.test(effectiveModel); // Don't double-pay if already Opus
     let llmCallFn: LLMCallFn = llmProxyService.createCallFn({
       maxTokens: configuredMaxTokens,
-      model: modelName,
+      model: effectiveModel,
       credentials: projectCredentials,
-      advisor: advisorConfig,
+      advisor: skipAdvisor ? undefined : advisorConfig,
     });
     const llmEvalFn = options?.skipLlmEval
       ? undefined
@@ -783,13 +881,15 @@ export class PipelineService {
       const scanResult = await orchestrateScanStage({
         pipelineRunId,
         projectContext,
-        fileAnalysis: projectContext.fileAnalysis as any, // FileAnalysis → FileAnalysisResult compatible
+        fileAnalysis: projectContext.fileAnalysis as any,
         priorOutputs,
         feedback,
         onEvent: options?.onEvent,
         onDelta: options?.onDelta,
         signal: options?.signal,
         model: modelName,
+        composerModel: options?.composerModel || modelName,
+        maxTokens: options?.maxTokens,
         credentials: projectCredentials,
       });
 
@@ -863,13 +963,29 @@ export class PipelineService {
         });
         emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: scanResult.duration, confidenceScore: scanScore });
 
-        // Auto-populate tailored prompts for stages 2-8 based on SCAN + BREE output
+        // Auto-populate tailored prompts for stages 2-8 based on SCAN + BREE output.
+        // These prompts reference specific components, patterns, and risks found in SCAN,
+        // making subsequent stages contextual to this codebase instead of generic.
         try {
           const { generateAndSaveProjectPrompts } = await import("./prompt-generator.js");
           const { stagesPopulated } = await generateAndSaveProjectPrompts(run.project.id, pipelineRunId);
-          console.log(`[Pipeline] Auto-generated tailored prompts for ${stagesPopulated} stages`);
+          console.log(`[Pipeline] Auto-generated tailored prompts for ${stagesPopulated} stages based on SCAN findings`);
+          options?.onEvent?.({
+            phase: 'phase' as any,
+            stageName,
+            stageIndex: stageConfig.index,
+            timestamp: new Date().toISOString(),
+            data: { phase: 'prompts_generated', message: `Generated tailored prompts for ${stagesPopulated} stages based on SCAN findings`, stagesPopulated },
+          });
         } catch (err: unknown) {
           console.warn("[Pipeline] Prompt auto-generation failed (non-fatal):", err instanceof Error ? err.message : err);
+          options?.onEvent?.({
+            phase: 'phase' as any,
+            stageName,
+            stageIndex: stageConfig.index,
+            timestamp: new Date().toISOString(),
+            data: { phase: 'prompts_generation_failed', message: `Prompt generation failed: ${err instanceof Error ? err.message : 'unknown error'}`, warning: true },
+          });
         }
       } else {
         await this.updateStageProgress(pipelineRunId, stageName, "failed", 0);
@@ -886,7 +1002,7 @@ export class PipelineService {
     if (stageName === PipelineStageName.DECODE) {
       const scanOutput = await loadScanOutput(pipelineRunId);
       if (!scanOutput) {
-        throw new Error("Cannot execute DECODE: Stage 1 (SCAN) output not found. Please run and approve SCAN first.");
+        throw new ValidationError("Cannot execute DECODE: Stage 1 (SCAN) output not found. Please run and approve SCAN first.");
       }
 
       // ─── BREE Engine Integration (DECODE stage) ─────────────
@@ -1167,8 +1283,8 @@ export class PipelineService {
 
       // Build chunk-specific prompt template
       const stagePrompts = (run.project as any).stage_prompts as Record<string, string> || {};
-      const stageIdx = stageConfig.index;
-      const basePrompt = stagePrompts[String(stageIdx)] || promptOverride || '';
+      // Support both stage-name keys (new) and numeric-index keys (legacy DB data)
+      const basePrompt = stagePrompts[stageName] || stagePrompts[String(stageConfig.index)] || promptOverride || '';
 
       const priorContext = priorOutputs.map(p => `## ${p.stageName} Output (excerpt):\n${p.output.slice(0, 8000)}`).join('\n\n');
 
@@ -1543,10 +1659,30 @@ export class PipelineService {
     // Update stage progress based on validation results
     const validationPassed = result.validation?.passed ?? true;
     const confidenceScore = result.validation?.confidenceScore ?? 100;
+    const contractHardGated = result.validation?.contractResult?.hardGated === true;
     const APPROVAL_THRESHOLD = 60; // Only create approval gate if score >= 60%
 
-    if (validationPassed && confidenceScore >= APPROVAL_THRESHOLD) {
-      // ── Validation passed — complete stage and create approval gate ──
+    // Contract hard-gate: if structural requirements are critically missing,
+    // block the stage regardless of LLM confidence score.
+    if (contractHardGated) {
+      const violations = result.validation?.contractResult?.violations?.length ?? 0;
+      console.warn(`[Pipeline] ${stageName} hard-gated by contract: ${violations} violations`);
+    }
+
+    // Every stage that produces output gets an approval gate — even with low confidence.
+    // The confidence score tells the reviewer "this needs extra scrutiny" but the output
+    // still exists and might be useful. Only contract hard-gates block completely.
+    if (contractHardGated) {
+      // Hard-gated: critical structural requirements missing. Stage FAILS, no approval gate.
+      await this.updateStageProgress(pipelineRunId, stageName, "failed", Math.round(confidenceScore));
+      emitValidationFailed({
+        pipelineRunId, projectId: run.project.id, stageName,
+        violations: result.validation?.issues?.length || 0,
+        hardGated: true,
+      });
+    } else {
+      // Stage completed — create approval gate regardless of confidence score.
+      // Low confidence = reviewer must scrutinize. High confidence = routine approval.
       const currentConfig = this.getStageConfig(stageName);
       const nextStage = this.getNextStage(stageName);
 
@@ -1584,20 +1720,6 @@ export class PipelineService {
           data: { finalStage: stageName },
         });
       }
-    } else {
-      // ── Validation failed or below threshold — needs re-run, NO approval gate ──
-      await this.updateStageProgress(
-        pipelineRunId, stageName, "failed",
-        Math.round(confidenceScore),
-      );
-
-      emitValidationFailed({
-        pipelineRunId,
-        projectId: run.project.id,
-        stageName,
-        violations: result.validation?.issues?.length || 0,
-        hardGated: confidenceScore < APPROVAL_THRESHOLD,
-      });
     }
 
     return result;
@@ -1827,8 +1949,8 @@ export class PipelineService {
    */
   async advanceStage(pipelineRunId: string): Promise<void> {
     const run = await this.getPipelineRun(pipelineRunId);
-    if (!run) throw new Error("Pipeline run not found");
-    if (run.status !== "running") throw new Error(`Cannot advance pipeline in ${run.status} state`);
+    if (!run) throw new NotFoundError("Pipeline run not found");
+    if (run.status !== "running") throw new ValidationError(`Cannot advance pipeline in ${run.status} state`);
 
     const currentStage = run.current_stage as PipelineStageName;
     const nextStage = this.getNextStage(currentStage);
@@ -1861,6 +1983,8 @@ export class PipelineService {
     stageName: PipelineStageName,
     approvedBy: string,
     comment?: string,
+    /** Admin force-approve: bypass confidence threshold check */
+    force?: boolean,
   ): Promise<void> {
     await db.transaction(async (tx) => {
       const gate = await tx.query.approvalGates.findFirst({
@@ -1870,8 +1994,8 @@ export class PipelineService {
         ),
       });
 
-      if (!gate) throw new Error("Approval gate not found");
-      if (gate.status !== "pending") throw new Error(`Gate already ${gate.status}`);
+      if (!gate) throw new NotFoundError("Approval gate not found");
+      if (gate.status !== "pending") throw new ValidationError(`Gate already ${gate.status}`);
 
       // Confidence threshold check — block approval if validation score is below threshold
       const run = await tx.query.pipelineRuns.findFirst({
@@ -1900,8 +2024,8 @@ export class PipelineService {
           }
         }
 
-        if (typeof stageScore === 'number' && stageScore > 0 && stageScore < threshold) {
-          throw new Error(
+        if (typeof stageScore === 'number' && stageScore > 0 && stageScore < threshold && !force) {
+          throw new ValidationError(
             `Cannot approve: confidence score ${stageScore}% is below the threshold of ${threshold}%. Re-run the stage to improve the score.`
           );
         }
@@ -2127,7 +2251,7 @@ Please provide the refined version of the "${sectionTitle}" section only.`;
     signal?: AbortSignal,
   ): Promise<string> {
     const run = await this.getPipelineRun(pipelineRunId);
-    if (!run) throw new Error("Pipeline run not found");
+    if (!run) throw new NotFoundError("Pipeline run not found");
 
     // Load prior stage outputs using tiered context (L0/L1/L2)
     const order = getStageOrder();

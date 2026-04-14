@@ -6,7 +6,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
-import { usePipelineStore, canExecuteStage } from '@/lib/stores/pipeline-store';
+import { useStagePanel } from '@/lib/hooks/use-stage-panel';
 import { DynamicStageTabs } from './dynamic-stage-tabs';
 import { getStageTabConfig } from './stage-tab-configs';
 import type { StagePanelProps } from './types';
@@ -19,11 +19,7 @@ export default function ShadowRunPanel({
   isExecuting,
   onRefineRequest,
 }: StagePanelProps) {
-  const logs = usePipelineStore((s) => s.logs);
-  const stages = usePipelineStore((s) => s.stages);
-  const isRunning = stage.status === 'generating' || stage.status === 'validating';
-  const hasOutput = !!(stage.output || streamingText);
-  const canExecute = (stage.status === 'pending' || stage.status === 'failed') && !isExecuting && canExecuteStage(stages, stageIndex);
+  const { logs, isRunning, hasOutput, canRun: canExecute } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">

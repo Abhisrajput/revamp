@@ -15,7 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { apiClient } from '@/lib/api-client';
 import { LLMProviderSettings, type LLMProvider, type StageLLMConfig } from '@/components/settings/llm-provider-settings';
 import { StageContractsEditor } from '@/components/settings/stage-contracts-editor';
-import { STAGE_NAMES, STAGE_LABELS } from '@/lib/stores/pipeline-store';
+import { STAGE_NAMES, STAGE_LABELS } from '@/lib/stores/pipeline-types';
 import Link from 'next/link';
 
 // ─── Constants ────────────────────────────────────────────────
@@ -430,6 +430,7 @@ export default function ProjectSettingsPage() {
           {activeTab === 'llm' && (
             <>
               <LLMProviderSettings
+                projectId={projectId}
                 providers={llmProviders}
                 stageConfigs={stageLlmConfigs}
                 onProvidersChange={setLlmProviders}

@@ -3,7 +3,7 @@
 import { memo, useMemo, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import { CheckCircle, Loader2, Lock, AlertCircle } from 'lucide-react';
-import type { StageState } from '@/lib/stores/pipeline-store';
+import type { StageState } from '@/lib/stores/pipeline-types';
 
 interface StageStepperProps {
   stages: StageState[];

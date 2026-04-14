@@ -354,6 +354,11 @@ export class LLMProxyService {
       }
 
       stream.on("data", (chunk: Buffer) => {
+        // Safety belt: if abort signal fired, stop processing and destroy stream
+        if (signal?.aborted) {
+          stream.destroy();
+          return;
+        }
         buffer += chunk.toString();
         const lines = buffer.split("\n");
         buffer = lines.pop() || ""; // keep incomplete line

@@ -92,7 +92,7 @@ function buildBehavioralEquivalencePrompt(ctx: ReviewContext): string {
     parts.push(
       "### Source Material (Reference)",
       "```",
-      ctx.referenceInput.slice(0, 8000),
+      ctx.referenceInput.slice(0, 24000),
       "```",
       "",
     );
@@ -102,7 +102,7 @@ function buildBehavioralEquivalencePrompt(ctx: ReviewContext): string {
     parts.push(
       "### Behavioral Specifications",
       "```",
-      ctx.specs.slice(0, 4000),
+      ctx.specs.slice(0, 12000),
       "```",
       "",
     );
@@ -111,7 +111,7 @@ function buildBehavioralEquivalencePrompt(ctx: ReviewContext): string {
   parts.push(
     "### Output to Review",
     "```",
-    ctx.output.slice(0, 12000),
+    ctx.output.slice(0, 48000),
     "```",
     "",
     "### Required Response Format (JSON)",
@@ -155,7 +155,7 @@ function buildQualityReviewPrompt(ctx: ReviewContext): string {
     "",
     "### Output to Review",
     "```",
-    ctx.output.slice(0, 12000),
+    ctx.output.slice(0, 48000),
     "```",
     "",
     "### Required Response Format (JSON)",

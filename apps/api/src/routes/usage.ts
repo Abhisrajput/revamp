@@ -17,6 +17,7 @@ import { eq, and, sql, desc, gte, inArray } from "drizzle-orm";
 import { getModelPricing, calculateCost, MODEL_PRICING, getAvailableModels } from "@revamp/core-engine";
 import { llmProxyService } from "@/services/llm-proxy.js";
 import { PIPELINE_STAGE_ORDER } from "@revamp/shared-types";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 
 // ─── SCHEMAS ────────────────────────────────────────────────────
 
@@ -35,7 +36,19 @@ export async function usageRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { projectId: string }; Querystring: z.infer<typeof DateRangeSchema> }>(
     "/usage/project/:projectId",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Usage"],
+        summary: "Get token usage for a specific project",
+        params: z.object({ projectId: z.string().uuid() }),
+        querystring: DateRangeSchema,
+        response: {
+          200: { type: "object", properties: { project_id: { type: "string" }, total_requests: { type: "number" }, total_tokens: { type: "number" }, total_cost_usd: { type: "number" }, by_model: { type: "array" }, recent_requests: { type: "array" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
 
@@ -103,7 +116,18 @@ export async function usageRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { projectId: string } }>(
     "/usage/project/:projectId/stages",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Usage"],
+        summary: "Get usage breakdown by pipeline stage",
+        params: z.object({ projectId: z.string().uuid() }),
+        response: {
+          200: { type: "object", properties: { project_id: { type: "string" }, stages: { type: "array" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
 
@@ -176,7 +200,17 @@ export async function usageRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { projectId: string } }>(
     "/usage/project/:projectId/models",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Usage"],
+        summary: "Get usage breakdown by model",
+        params: z.object({ projectId: z.string().uuid() }),
+        response: {
+          200: { type: "object", properties: { project_id: { type: "string" }, models: { type: "array" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
 
@@ -231,7 +265,16 @@ export async function usageRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     "/usage/summary",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Usage"],
+        summary: "Get org-wide usage summary with daily breakdown",
+        response: {
+          200: { type: "object", properties: { total_requests: { type: "number" }, total_tokens: { type: "number" }, total_cost_usd: { type: "number" }, project_count: { type: "number" }, by_project: { type: "array" }, by_model: { type: "array" }, daily_usage: { type: "array" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const orgId = request.user.organization_id;
 
@@ -335,7 +378,16 @@ export async function usageRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     "/usage/models",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Usage"],
+        summary: "List available models with pricing information",
+        response: {
+          200: { type: "object", properties: { models: { type: "array" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (_request, reply) => {
       try {
         const orchestratorModels = await llmProxyService.listModels();

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { ChevronRight, Play, CheckCircle, XCircle, Clock } from 'lucide-react';
+import { PIPELINE_STAGE_ORDER, STAGE_DISPLAY_LABELS } from '@revamp/shared-types';
 
 interface PipelineRun {
   id: string;
@@ -16,12 +17,11 @@ interface PipelineRun {
   project?: { id: string; name: string };
 }
 
-const STAGE_ORDER = ['SCAN', 'DECODE', 'BLUEPRINT', 'SPEC_LOCK', 'ARCHITECT', 'FORGE', 'SHADOW_RUN', 'EVOLVE'];
+const STAGE_ORDER = PIPELINE_STAGE_ORDER;
 const STAGE_LABELS: Record<string, string> = {
-  SCAN: 'Setup & Configuration', DECODE: 'Intent Extraction',
-  BLUEPRINT: 'Business Capability Mining', SPEC_LOCK: 'Behavior Lock-in',
-  ARCHITECT: 'Modernization Approach', FORGE: 'Co-Create',
-  SHADOW_RUN: 'Parallel Run & Cutover', EVOLVE: 'Continuous Modernization',
+  ...STAGE_DISPLAY_LABELS,
+  SCAN: 'Setup & Configuration', BLUEPRINT: 'Business Capability Mining',
+  FORGE: 'Co-Create', SHADOW_RUN: 'Parallel Run & Cutover',
 };
 
 interface LivePipelineFeedProps {
@@ -48,7 +48,7 @@ export const LivePipelineFeed = memo(function LivePipelineFeed({ runs }: LivePip
 
       <div className="divide-y divide-slate-100 dark:divide-slate-700/30">
         {runs.slice(0, 8).map((run, i) => {
-          const stageIdx = STAGE_ORDER.indexOf(run.current_stage || 'SCAN');
+          const stageIdx = (STAGE_ORDER as readonly string[]).indexOf(run.current_stage || 'SCAN');
           const stagesComplete = Math.max(0, stageIdx);
           const isActive = run.status === 'running';
           const isFailed = run.status === 'failed';

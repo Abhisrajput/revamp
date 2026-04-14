@@ -8,6 +8,7 @@
  */
 
 import { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { db } from "@/db/index.js";
 import {
   projects,
@@ -23,6 +24,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { resolve, join, relative } from "path";
 import { execSync } from "child_process";
 import { PIPELINE_STAGE_ORDER } from "@revamp/shared-types";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 
 // ─── CONSTANTS ──────────────────────────────────────────────────
 
@@ -45,7 +47,19 @@ export async function exportRoutes(fastify: FastifyInstance) {
     Querystring: { format?: string };
   }>(
     "/export/project/:projectId/report",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Export"],
+        summary: "Generate full project report (JSON or Markdown)",
+        params: z.object({ projectId: z.string().uuid() }),
+        querystring: z.object({ format: z.enum(["json", "markdown"]).optional() }),
+        response: {
+          200: { type: "object", properties: { generated_at: { type: "string" }, project: { type: "object" }, pipeline: { type: "object" }, modernized_files: { type: "object" }, usage: { type: "object" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
       const format = (request.query as { format?: string }).format || "json";
@@ -174,7 +188,19 @@ export async function exportRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { projectId: string } }>(
     "/export/project/:projectId/code",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Export"],
+        summary: "Download modernized codebase as ZIP or JSON archive",
+        params: z.object({ projectId: z.string().uuid() }),
+        response: {
+          200: { type: "string", description: "ZIP or JSON file download" },
+          404: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" }, message: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
 
@@ -248,7 +274,18 @@ export async function exportRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { projectId: string } }>(
     "/export/project/:projectId/summary",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Export"],
+        summary: "Get a quick project summary with pipeline and cost stats",
+        params: z.object({ projectId: z.string().uuid() }),
+        response: {
+          200: { type: "object", properties: { project_id: { type: "string" }, name: { type: "string" }, status: { type: "string" }, current_stage: { type: "string" }, pipeline_runs: { type: "number" }, modernized_files: { type: "number" }, total_tokens: { type: "number" }, total_cost_usd: { type: "number" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
 

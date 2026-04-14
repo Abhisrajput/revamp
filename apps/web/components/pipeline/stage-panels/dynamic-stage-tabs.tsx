@@ -108,8 +108,8 @@ function computeStats(content: string): TabStats {
   return {
     subHeadings: (content.match(/^#{3,4}\s/gm) || []).length,
     tableRows: Math.max(0, (content.match(/^\|[^-|]/gm) || []).length - 1), // exclude header row
-    codeBlocks: (content.match(/^```(?!mermaid)/gm) || []).length,
-    mermaidDiagrams: (content.match(/^```mermaid/gm) || []).length,
+    codeBlocks: (content.match(/^\s*```(?!mermaid)/gm) || []).length,
+    mermaidDiagrams: (content.match(/^\s*```mermaid/gm) || []).length,
     listItems: (content.match(/^[-*]\s/gm) || []).length,
   };
 }
@@ -154,7 +154,7 @@ interface NamedDiagram {
 
 function extractDiagrams(content: string): NamedDiagram[] {
   const diagrams: NamedDiagram[] = [];
-  const regex = /```mermaid\s*\n([\s\S]*?)```/g;
+  const regex = /\s*```mermaid\s*\n([\s\S]*?)\s*```/g;
   let match;
   while ((match = regex.exec(content)) !== null) {
     const before = content.slice(0, match.index);
@@ -215,7 +215,7 @@ function DiagramSection({ content, heading }: { content: string; heading: string
 
       {/* Non-diagram content (tables, text, etc.) below */}
       {(() => {
-        const textOnly = content.replace(/```mermaid[\s\S]*?```/g, '').trim();
+        const textOnly = content.replace(/\s*```mermaid[\s\S]*?```/g, '').trim();
         if (!textOnly) return null;
         return (
           <div className="border-t border-slate-200 dark:border-slate-700 pt-3">

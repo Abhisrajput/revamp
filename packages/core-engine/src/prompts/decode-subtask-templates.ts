@@ -73,7 +73,7 @@ Output ONLY valid JSON:
 
 // ─── BUSINESS RULES EXTRACTION ────────────────────────────────
 
-export const DECODE_BUSINESS_RULES = `You are a Senior Business Analyst and Reverse Engineer specializing in legacy system analysis. Your task is to extract every business-critical rule from this codebase.
+const DECODE_BUSINESS_RULES = `You are a Senior Business Analyst and Reverse Engineer specializing in legacy system analysis. Your task is to extract every business-critical rule from this codebase.
 
 ## CODEBASE CONTEXT
 {{codebaseContext}}
@@ -123,7 +123,7 @@ CRITICAL: Every finding MUST cite actual file paths, function names, and include
 
 // ─── DATA FLOW ANALYSIS ──────────────────────────────────────
 
-export const DECODE_DATA_FLOW = `You are a Data Architect analyzing data flows in a legacy codebase for modernization.
+const DECODE_DATA_FLOW = `You are a Data Architect analyzing data flows in a legacy codebase for modernization.
 
 ## CODEBASE CONTEXT
 {{codebaseContext}}
@@ -181,7 +181,7 @@ Reference specific file paths, function names, and include code snippets for eve
 
 // ─── WORKFLOW EXTRACTION ──────────────────────────────────────
 
-export const DECODE_WORKFLOW_EXTRACTION = `You are a Process Analyst extracting business workflows from a legacy codebase.
+const DECODE_WORKFLOW_EXTRACTION = `You are a Process Analyst extracting business workflows from a legacy codebase.
 
 ## CODEBASE CONTEXT
 {{codebaseContext}}
@@ -239,7 +239,7 @@ Reference specific file paths, controller/handler functions, and include code sn
 
 // ─── DOMAIN ENTITY MODELING ──────────────────────────────────
 
-export const DECODE_DOMAIN_ENTITIES = `You are a Domain Modeling specialist extracting entity models from a legacy codebase.
+const DECODE_DOMAIN_ENTITIES = `You are a Domain Modeling specialist extracting entity models from a legacy codebase.
 
 ## CODEBASE CONTEXT
 {{codebaseContext}}
@@ -296,7 +296,7 @@ Reference specific model/entity files with paths and include attribute definitio
 
 // ─── INTEGRATION MAPPING ──────────────────────────────────────
 
-export const DECODE_INTEGRATION_MAPPING = `You are an Integration Architect mapping all external integration points in a legacy codebase.
+const DECODE_INTEGRATION_MAPPING = `You are an Integration Architect mapping all external integration points in a legacy codebase.
 
 ## CODEBASE CONTEXT
 {{codebaseContext}}
@@ -357,7 +357,7 @@ Reference specific configuration files, client classes, and integration code wit
 
 // ─── CONSTRAINTS & TECHNICAL DEBT ─────────────────────────────
 
-export const DECODE_CONSTRAINTS_DEBT = `You are a Technical Debt Auditor analyzing constraints and debt in a legacy codebase for modernization planning.
+const DECODE_CONSTRAINTS_DEBT = `You are a Technical Debt Auditor analyzing constraints and debt in a legacy codebase for modernization planning.
 
 ## CODEBASE CONTEXT
 {{codebaseContext}}
@@ -427,19 +427,21 @@ export const DECODE_COMPOSITION = `You are the lead architect composing a compre
 
 ## COMPOSITION RULES
 
+CRITICAL: Do NOT organize by file type (.twig, .vue, .css, .xml, .yml, .conf, etc.). File-type inventory is a SCAN concern.
+DECODE organizes by BUSINESS INTENT: rules, workflows, data flows, entities, integrations.
+If you produce sections like "## Twig Templates" or "## CSV Data Files", you have FAILED the composition.
+
 1. Merge ALL specialist findings into a SINGLE coherent migration-ready requirements document
-2. Use consistent markdown heading structure:
-   - H1: Document title ("# STAGE 2: DECODE — Intent Extraction & Migration Requirements")
-   - H2: Major sections
-   - H3: Subsections
-3. Resolve any contradictions between specialist reports (note where they disagree)
+2. Use EXACTLY the H2 section structure from the REQUIRED SECTIONS list — no other H2 sections allowed
+3. Use H3 for subsections within the required H2 sections
+4. Resolve any contradictions between specialist reports (note where they disagree)
 4. Ensure EVERY Mermaid diagram from specialist reports is included verbatim
 5. Cross-reference findings across sections (e.g., business rules that relate to data flows)
 6. Add an executive summary at the top and a prioritized open questions section at the end
 
-## REQUIRED SECTIONS
+## REQUIRED SECTIONS (ALL mandatory — do NOT skip any)
 
-The final document MUST include all of these H2 sections:
+The final document MUST include ALL of these as H2 sections. Missing ANY section is a validation failure:
 
 - **Executive Summary** — High-level overview of what the legacy system does and key modernization concerns
 - **Business Rules** (with Rule ID inventory table and code citations)
@@ -447,22 +449,23 @@ The final document MUST include all of these H2 sections:
 - **Data Flows** (with ER diagram and data flow diagram)
 - **Domain Entities** (with entity inventory and relationship diagram)
 - **Integration Points** (with integration architecture diagram)
-- **Constraints & Assumptions** (compliance, technology lock-ins)
-- **Technical Debt** (consolidated inventory table)
-- **Open Questions** (items needing SME clarification before modernization)
+- **Constraints & Assumptions** — Technology lock-ins (language versions, database engines, OS dependencies), licensing constraints (GPL, AGPL, proprietary), compliance flags (PCI, HIPAA, SOX, GDPR), SLAs, and deployment assumptions. Even if few constraints exist, document what you find.
+- **Technical Debt** — Consolidated inventory table of: dead code, duplicated logic, hardcoded values, deprecated dependencies, god classes, missing tests, known bugs. Must be a standalone section, not embedded in Executive Summary.
+- **Open Questions** — Specific ambiguities that need SME (Subject Matter Expert) clarification before modernization can proceed. List concrete questions with context. Every codebase has unknowns — if you found none, you didn't look hard enough.
 - **Migration Readiness Assessment** (summary of blockers, risks, and recommended next steps)
 
-## CRITICAL: PRESERVE DETAIL
+## CRITICAL: ALL SECTIONS FIRST, THEN DETAIL
 
-- Do NOT summarize specialist findings into brief bullets — include the FULL analysis
-- Include ALL tables, ALL Mermaid diagrams, ALL code references from the specialist reports
-- Every business rule must have its Rule ID, source file, and code snippet preserved
-- Reference specific file paths and line numbers throughout
-- The final document should be AT LEAST as detailed as the combined specialist reports
-- If a specialist provided a table, include that table
-- If a specialist provided a Mermaid diagram, include that diagram verbatim
+- You MUST produce ALL 10 H2 sections listed above. Skipping sections = validation failure.
+- Strategy: If output space is limited, make Business Rules and Workflows more concise (top-level table only) to leave room for the bottom 5 sections.
+- Include tables, Mermaid diagrams, and code references from specialists — but do NOT over-expand a single section at the expense of missing others.
+- Every business rule must have its Rule ID and source file. Detailed code snippets are optional if space is tight.
+- Business Rules should contain ONLY genuine domain rules (transactions, accounts, budgets, auth). Do NOT include config files, build tools, CI/CD, SCSS compilation, or documentation as business rules.
+- Use verified ground truth for version numbers and counts. Do NOT paraphrase (e.g. write "PHP >=8.5" not "PHP 8.2+").
 
-Produce the complete, merged migration requirements document.`;
+Word budget guide: Executive Summary ~400w, Business Rules ~4000w, Workflows ~1500w, Data Flows ~1000w, Domain Entities ~800w, Integration Points ~600w, Constraints ~400w, Technical Debt ~600w, Open Questions ~400w, Migration Readiness ~300w.
+
+Produce the complete migration requirements document with ALL 10 sections.`;
 
 // ─── SUBTASK TEMPLATE MAP ──────────────────────────────────────
 

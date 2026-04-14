@@ -24,54 +24,60 @@ export const promptTemplates: Record<PipelineStageName, PromptTemplate> = {
       'teamSize',
       'mainTechnologies',
     ],
-    template: `You are performing Stage 1 (SCAN) of an 8-stage modernization pipeline. Your job is to INVENTORY what exists — not to plan fixes or propose modernization strategies.
+    template: `You are a Senior Application Assessor performing Stage 1 (SCAN) of an 8-stage modernization pipeline. Your job is to INVENTORY what exists — comprehensively and accurately. Every missing component is a functionality gap in the modernized system.
 
-**Codebase Description:**
-{{codebaseDescription}}
-
+**Codebase Description:** {{codebaseDescription}}
 **Repository:** {{repositoryUrl}}
 **Deployment:** {{deploymentInfo}}
 **Team Size:** {{teamSize}}
 **Main Technologies:** {{mainTechnologies}}
 
-Produce a clean, readable analysis document with these sections:
+Produce a detailed, structured assessment covering ALL of the following sections. Be EXHAUSTIVE — catalog every module, service, integration, and risk.
 
-## Executive Summary
-3-5 sentences: what this system is, its current state, and the top concerns.
+## 1. Executive Summary (200-400 words)
+System identity, core purpose, technology summary, top 5 modernization concerns with severity, licensing.
 
-## Codebase Overview
-Summary table: total files, LOC, languages, active vs. inactive status.
+## 2. Codebase Inventory
+Complete metrics table: total files, LOC, primary language + version, secondary languages, framework, dependency count, test files, migrations, config files.
 
-## Architecture
-- System type (monolith, client-server, etc.)
-- Component inventory table (name, path, type, LOC, status, description)
-- ONE Mermaid diagram showing component relationships
+## 3. Architecture Deep-Dive
+- System type with evidence (monolith/microservices/modular)
+- COMPLETE component inventory table: EVERY controller, service, model, middleware, job, event, listener
+  | Component | Path | Type | LOC | Dependencies | Complexity |
+- Describe architecture layers and component relationships (text description, NOT Mermaid)
+- Describe data flow through the system
+- ALL entry points: HTTP routes, CLI commands, scheduled jobs, queue consumers
 
-## Technology Stack
-- Languages table (language, version, LOC, %, status)
-- Frameworks & libraries table
-- Build/deployment tooling table
-- Version risk summary (current vs. EOL)
+## 4. Technology Stack
+| Technology | Version | Category | Status | Risk Level | Evidence |
+Cover: languages, frameworks, ORMs, template engines, build tools, testing, CI/CD, monitoring, caching, queues, search.
 
-## Security Posture
-- Auth & session management summary
-- Top security findings table (severity, location, category)
-- Compliance flags table
+## 5. Data Layer
+- ALL storage systems with connection config locations
+- Entity-Relationship summary (text table, NOT Mermaid)
+- Schema inventory: tables, columns, indexes, foreign keys, migrations
 
-## Key Risks & Blockers
-Top 8-12 risks from the analysis, in a prioritized table.
+## 6. Integration Points
+| Integration | Type | Protocol | Direction | Config Location | Status |
+EVERY external API, webhook, queue, shared DB, email, payment, auth provider.
 
-## Readiness for Stage 2
-Brief assessment of what the next stage (Intent Extraction) should focus on.
+## 7. Legacy Patterns & Technical Debt
+Active vs dead code, design patterns, anti-patterns with file:line, deprecated deps, migration blockers, code duplication.
 
-IMPORTANT — DO NOT include:
-- Modernization plans, timelines, or cost estimates (that's Stage 5)
-- Code refactoring suggestions (that's Stage 6)
-- BDD/test scenarios (that's Stage 4)
-- Business capability mapping (that's Stage 3)
-- Remediation steps or "how to fix" instructions
+## 8. Security Posture
+Authentication method + implementation, authorization model, ALL security findings table with file:line, compliance flags, secrets management.
 
-Use TABLES instead of long prose. Target 2000-4000 words. Cite file paths for every finding.`,
+## 9. Key Risks & Blockers
+| Risk | Severity | Category | Source | Evidence (file:line) | Migration Impact |
+
+## 10. Component Dependency Graph
+
+## 11. Readiness for Stage 2 (DECODE)
+Score: Ready/Conditional/Not Ready. Prerequisites, focus areas, open questions.
+
+IMPORTANT — DO NOT include: modernization plans (Stage 5), code fixes (Stage 6), BDD specs (Stage 4), capability mapping (Stage 3).
+
+Use TABLES for all structured data. Do NOT include Mermaid diagrams (diagrams are generated in later stages). Target 4000-12000 words. EVERY finding must cite file:line.`,
 
     examples: [
       'Java-based e-commerce monolith with Spring Boot, deployed on AWS',

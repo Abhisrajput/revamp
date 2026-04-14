@@ -25,6 +25,7 @@ import {
 import Link from 'next/link';
 import { apiClient } from '@/lib/api-client';
 import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import { usePipelineActivityStore } from '@/lib/stores/pipeline-activity-store';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { STAGE_DISPLAY_LABELS } from '@revamp/shared-types';
 
@@ -553,7 +554,7 @@ function cardFormatTokens(count: number): string {
 function TokenUsageSummaryCard({ projectId }: { projectId: string }) {
   const currentProjectId = usePipelineStore((s) => s.currentProjectId);
   const isGenerating = usePipelineStore((s) => s.isGenerating);
-  const runUsage = usePipelineStore((s) => s.runUsage);
+  const runUsage = usePipelineActivityStore((s) => s.runUsage);
 
   // Historical aggregate from API
   const { data: usage } = useQuery<ProjectUsageData>({
@@ -604,7 +605,7 @@ function TokenUsageSummaryCard({ projectId }: { projectId: string }) {
 function CostSummaryCard({ projectId }: { projectId: string }) {
   const currentProjectId = usePipelineStore((s) => s.currentProjectId);
   const isGenerating = usePipelineStore((s) => s.isGenerating);
-  const runUsage = usePipelineStore((s) => s.runUsage);
+  const runUsage = usePipelineActivityStore((s) => s.runUsage);
 
   const { data: usage } = useQuery<ProjectUsageData>({
     queryKey: ['usage', 'project', projectId],
@@ -688,10 +689,10 @@ function liveProviderMeta(model: string): { name: string; color: string } {
 function LiveTokenTracker({ projectId }: { projectId: string }) {
   const currentProjectId = usePipelineStore((s) => s.currentProjectId);
   const isGenerating = usePipelineStore((s) => s.isGenerating);
-  const runUsage = usePipelineStore((s) => s.runUsage);
-  const runUsageByModel = usePipelineStore((s) => s.runUsageByModel);
-  const runUsageByStage = usePipelineStore((s) => s.runUsageByStage);
-  const lastUsageEventAt = usePipelineStore((s) => s.lastUsageEventAt);
+  const runUsage = usePipelineActivityStore((s) => s.runUsage);
+  const runUsageByModel = usePipelineActivityStore((s) => s.runUsageByModel);
+  const runUsageByStage = usePipelineActivityStore((s) => s.runUsageByStage);
+  const lastUsageEventAt = usePipelineActivityStore((s) => s.lastUsageEventAt);
   const stages = usePipelineStore((s) => s.stages);
   const activeStageIndex = usePipelineStore((s) => s.activeStageIndex);
 

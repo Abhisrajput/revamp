@@ -29,6 +29,7 @@ import { db } from "@/db/index.js";
 import { llmUsage, projects } from "@/db/schema.js";
 import { eq } from "drizzle-orm";
 import { PIPELINE_STAGE_ORDER } from "@revamp/shared-types";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 import {
   listPersonas,
   getPersona,
@@ -190,7 +191,19 @@ export async function agentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Body: z.infer<typeof ExecuteAgentSchema> }>(
     "/agents/execute",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "Simple one-shot agent execution (legacy)",
+        body: ExecuteAgentSchema,
+        response: {
+          200: { type: "object", properties: { agent_type: { type: "string" }, output: { type: "string" }, model: { type: "string" }, tokens: { type: "object" } } },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" }, message: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = ExecuteAgentSchema.safeParse(request.body);
       if (!validation.success) {
@@ -280,7 +293,19 @@ export async function agentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Body: z.infer<typeof RunAgentSchema> }>(
     "/agents/run",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "Full agent loop with tool execution (SSE streaming)",
+        body: RunAgentSchema,
+        response: {
+          200: { type: "string", description: "SSE event stream" },
+          400: { type: "object", properties: { error: { type: "string" }, details: { type: "array" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = RunAgentSchema.safeParse(request.body);
       if (!validation.success) {
@@ -534,7 +559,20 @@ export async function agentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Body: z.infer<typeof WorkspaceSchema> }>(
     "/agents/workspace",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "Initialize workspace for a project (git clone, upload, or empty)",
+        body: WorkspaceSchema,
+        response: {
+          201: { type: "object", properties: { project_id: { type: "string" }, workspace_path: { type: "string" }, source_type: { type: "string" }, file_count: { type: "number" }, message: { type: "string" } } },
+          400: { type: "object", properties: { error: { type: "string" }, details: { type: "array" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = WorkspaceSchema.safeParse(request.body);
       if (!validation.success) {
@@ -655,7 +693,18 @@ export async function agentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Querystring: z.infer<typeof ToolsQuerySchema> }>(
     "/agents/tools",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "List available tools for a pipeline stage",
+        querystring: ToolsQuerySchema,
+        response: {
+          200: { type: "object", properties: { stage_index: { type: "number" }, stage_name: { type: "string" }, write_enabled: { type: "boolean" }, tool_count: { type: "number" }, tools: { type: "array" } } },
+          400: { type: "object", properties: { error: { type: "string" }, details: { type: "array" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = ToolsQuerySchema.safeParse(request.query);
       if (!validation.success) {
@@ -687,7 +736,15 @@ export async function agentRoutes(fastify: FastifyInstance) {
   /**
    * GET /agents/health — Agent system health check
    */
-  fastify.get("/agents/health", async (_request, reply) => {
+  fastify.get("/agents/health", {
+    schema: buildRouteSchema({
+      tags: ["Agents"],
+      summary: "Agent system health check",
+      response: {
+        200: { type: "object", properties: { status: { type: "string" }, agents: { type: "array" }, sandbox: { type: "object" }, max_iterations: { type: "number" } } },
+      },
+    }),
+  }, async (_request, reply) => {
     const allTools = getAllTools();
     const workspaceExists = existsSync(WORKSPACE_BASE);
 
@@ -709,7 +766,21 @@ export async function agentRoutes(fastify: FastifyInstance) {
   /** GET /agents — list all agent personas */
   fastify.get<{ Querystring: { department?: string; role?: string; status?: string } }>(
     "/agents",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "List all agent personas with optional filters",
+        querystring: z.object({
+          department: z.string().optional(),
+          role: z.string().optional(),
+          status: z.string().optional(),
+        }),
+        response: {
+          200: { type: "array", items: { type: "object" } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const personas = await listPersonas({
         department: request.query.department,
@@ -723,7 +794,16 @@ export async function agentRoutes(fastify: FastifyInstance) {
   /** GET /agents/dashboard — summary stats across all agents */
   fastify.get(
     "/agents/dashboard",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "Get dashboard summary stats across all agents",
+        response: {
+          200: { type: "object", properties: { total: { type: "number" }, by_department: { type: "object" }, by_status: { type: "object" }, agents: { type: "array" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (_request, reply) => {
       const personas = await listPersonas({});
       const byDept: Record<string, number> = {};
@@ -744,7 +824,16 @@ export async function agentRoutes(fastify: FastifyInstance) {
   /** GET /agents/tree — hierarchy tree */
   fastify.get(
     "/agents/tree",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "Get agent hierarchy tree",
+        response: {
+          200: { type: "array", items: { type: "object" } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (_request, reply) => {
       const personas = await listPersonas({});
       return reply.send(personas);
@@ -754,7 +843,18 @@ export async function agentRoutes(fastify: FastifyInstance) {
   /** GET /agents/:id — single agent persona */
   fastify.get<{ Params: { id: string } }>(
     "/agents/:id",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "Get a single agent persona by ID",
+        params: z.object({ id: z.string() }),
+        response: {
+          200: { type: "object" },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const persona = await getPersona(request.params.id);
       if (!persona) return reply.status(404).send({ error: "Agent not found" });
@@ -765,7 +865,18 @@ export async function agentRoutes(fastify: FastifyInstance) {
   /** PATCH /agents/:id — update agent persona */
   fastify.patch<{ Params: { id: string }; Body: Record<string, unknown> }>(
     "/agents/:id",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "Update an agent persona",
+        params: z.object({ id: z.string() }),
+        response: {
+          200: { type: "object" },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const persona = await updatePersona(request.params.id, request.body as any);
       if (!persona) return reply.status(404).send({ error: "Agent not found" });
@@ -776,7 +887,18 @@ export async function agentRoutes(fastify: FastifyInstance) {
   /** DELETE /agents/:id — soft-delete agent persona */
   fastify.delete<{ Params: { id: string } }>(
     "/agents/:id",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "Soft-delete an agent persona",
+        params: z.object({ id: z.string() }),
+        response: {
+          204: { type: "null", description: "No content" },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       await softDeletePersona(request.params.id);
       return reply.status(204).send();
@@ -786,7 +908,18 @@ export async function agentRoutes(fastify: FastifyInstance) {
   /** GET /agents/:id/budget — agent budget summary */
   fastify.get<{ Params: { id: string } }>(
     "/agents/:id/budget",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "Get agent budget summary (monthly spend, remaining, thresholds)",
+        params: z.object({ id: z.string() }),
+        response: {
+          200: { type: "object", properties: { agent_id: { type: "string" }, monthly_budget_cents: { type: "number" }, spent_monthly_cents: { type: "number" }, remaining_cents: { type: "number" }, hard_stop_enabled: { type: "boolean" }, warning_threshold: { type: "number" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const persona = await getPersona(request.params.id);
       if (!persona) return reply.status(404).send({ error: "Agent not found" });
@@ -804,7 +937,18 @@ export async function agentRoutes(fastify: FastifyInstance) {
   /** POST /agents/:id/resume — resume a paused agent */
   fastify.post<{ Params: { id: string } }>(
     "/agents/:id/resume",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "Resume a paused agent",
+        params: z.object({ id: z.string() }),
+        response: {
+          200: { type: "object" },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const persona = await updatePersona(request.params.id, { status: "idle", pause_reason: null } as any);
       if (!persona) return reply.status(404).send({ error: "Agent not found" });
@@ -818,6 +962,17 @@ export async function agentRoutes(fastify: FastifyInstance) {
   // events emitted by agent-department.ts flow to SSE clients in real time.
   fastify.get<{ Querystring: { token?: string } }>(
     "/agents/events",
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "Real-time agent event stream (SSE)",
+        querystring: z.object({ token: z.string().optional() }),
+        response: {
+          200: { type: "string", description: "SSE event stream" },
+          401: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+    },
     async (request, reply) => {
       const token = request.query.token;
       if (!token) return reply.status(401).send({ error: "Unauthorized" });
@@ -857,6 +1012,18 @@ export async function agentRoutes(fastify: FastifyInstance) {
 
   fastify.get<{ Querystring: { token?: string }; Params: { id: string } }>(
     "/agents/:id/events",
+    {
+      schema: buildRouteSchema({
+        tags: ["Agents"],
+        summary: "Real-time event stream for a specific agent (SSE)",
+        params: z.object({ id: z.string() }),
+        querystring: z.object({ token: z.string().optional() }),
+        response: {
+          200: { type: "string", description: "SSE event stream" },
+          401: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+    },
     async (request, reply) => {
       const token = request.query.token;
       if (!token) return reply.status(401).send({ error: "Unauthorized" });

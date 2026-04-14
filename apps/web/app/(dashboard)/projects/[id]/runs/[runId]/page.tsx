@@ -7,6 +7,7 @@ import { ArrowLeft, Clock, CheckCircle, XCircle, Play, RotateCcw, FileText, Cpu 
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { apiClient } from '@/lib/api-client';
+import { PIPELINE_STAGE_ORDER, STAGE_DISPLAY_LABELS } from '@revamp/shared-types';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -31,12 +32,11 @@ interface HistoryEntry {
   timestamp: string;
 }
 
-const STAGE_ORDER = ['SCAN', 'DECODE', 'BLUEPRINT', 'SPEC_LOCK', 'ARCHITECT', 'FORGE', 'SHADOW_RUN', 'EVOLVE'];
+const STAGE_ORDER = PIPELINE_STAGE_ORDER;
 const STAGE_LABELS: Record<string, string> = {
-  SCAN: 'Setup & Configuration', DECODE: 'Intent Extraction',
-  BLUEPRINT: 'Business Capability Mining', SPEC_LOCK: 'Behavior Lock-in',
-  ARCHITECT: 'Modernization Approach', FORGE: 'Co-Create',
-  SHADOW_RUN: 'Parallel Run & Cutover', EVOLVE: 'Continuous Modernization',
+  ...STAGE_DISPLAY_LABELS,
+  SCAN: 'Setup & Configuration', BLUEPRINT: 'Business Capability Mining',
+  FORGE: 'Co-Create', SHADOW_RUN: 'Parallel Run & Cutover',
 };
 
 // ─── Page ───────────────────────────────────────────────────────

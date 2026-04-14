@@ -1,5 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { NotFoundError, ForbiddenError, ValidationError } from "@/errors.js";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 import { db } from "@/db/index.js";
 import {
   projects,
@@ -82,17 +84,39 @@ const ApplyTemplateSchema = z.object({
   template_id: z.string().min(1),
 });
 
+// ─── Common JSON Schema shapes for responses ─────────────────────────────
+
+const ErrorResponse = { type: "object" as const, properties: { error: { type: "string" } } };
+const MessageResponse = { type: "object" as const, properties: { message: { type: "string" } } };
+const ProjectIdParams = z.object({ projectId: z.string().uuid() });
+const ProjectIdAndDocIdParams = z.object({ projectId: z.string().uuid(), docId: z.string().uuid() });
+const ProjectIdAndUserIdParams = z.object({ projectId: z.string().uuid(), userId: z.string().uuid() });
+const ProjectIdAndStageIndexParams = z.object({ projectId: z.string().uuid(), stageIndex: z.string() });
+const ProjectIdAndStageNameParams = z.object({ projectId: z.string().uuid(), stageName: z.string() });
+const ProjectIdAndProviderIdParams = z.object({ projectId: z.string().uuid(), providerId: z.string() });
+
 // ─── Routes ────────────────────────────────────────────────────────────────
 
 export async function projectRoutes(fastify: FastifyInstance) {
   // ── Create project ─────────────────────────────────────────────────────
   fastify.post<{ Body: z.infer<typeof CreateProjectSchema> }>(
     "/projects",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        body: CreateProjectSchema,
+        tags: ["Projects"],
+        summary: "Create a new project",
+        response: {
+          201: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, status: { type: "string" } } },
+          400: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = CreateProjectSchema.safeParse(request.body);
       if (!validation.success) {
-        return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+        throw new ValidationError("Invalid input", validation.error.errors);
       }
 
       const data = validation.data;
@@ -168,7 +192,16 @@ export async function projectRoutes(fastify: FastifyInstance) {
   // Returns projects where user is an explicit member OR shares the organization.
   // This handles users without an organization (empty org_id in JWT) who created
   // projects — they can still see them via the project_members table.
-  fastify.get("/projects", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  fastify.get("/projects", {
+    schema: buildRouteSchema({
+      tags: ["Projects"],
+      summary: "List projects for the authenticated user",
+      response: {
+        200: { type: "array", items: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, status: { type: "string" } } } },
+      },
+    }),
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
     const orgId = request.user.organization_id;
 
     // Get projects by explicit membership (always works, even with empty org_id)
@@ -212,7 +245,19 @@ export async function projectRoutes(fastify: FastifyInstance) {
   // ── Get project ────────────────────────────────────────────────────────
   fastify.get<{ Params: { projectId: string } }>(
     "/projects/:projectId",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        tags: ["Projects"],
+        summary: "Get a project by ID",
+        response: {
+          200: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, status: { type: "string" }, current_stage: { type: "string" } } },
+          403: ErrorResponse,
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
 
@@ -229,12 +274,12 @@ export async function projectRoutes(fastify: FastifyInstance) {
       });
 
       if (!project) {
-        return reply.status(404).send({ error: "Project not found" });
+        throw new NotFoundError("Project not found");
       }
 
       const isMember = project.members.some((m) => m.user_id === request.user.sub);
       if (!isMember && project.visibility === "private" && request.user.role !== 'admin') {
-        return reply.status(403).send({ error: "Access denied" });
+        throw new ForbiddenError("Access denied");
       }
 
       return reply.send(project);
@@ -244,12 +289,26 @@ export async function projectRoutes(fastify: FastifyInstance) {
   // ── Update project ─────────────────────────────────────────────────────
   fastify.patch<{ Params: { projectId: string }; Body: z.infer<typeof UpdateProjectSchema> }>(
     "/projects/:projectId",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        body: UpdateProjectSchema,
+        tags: ["Projects"],
+        summary: "Update a project",
+        response: {
+          200: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, status: { type: "string" } } },
+          400: ErrorResponse,
+          403: ErrorResponse,
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
       const validation = UpdateProjectSchema.safeParse(request.body);
       if (!validation.success) {
-        return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+        throw new ValidationError("Invalid input", validation.error.errors);
       }
 
       const project = await db.query.projects.findFirst({
@@ -257,7 +316,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
       });
 
       if (!project) {
-        return reply.status(404).send({ error: "Project not found" });
+        throw new NotFoundError("Project not found");
       }
 
       // Admins can update any project; otherwise check membership
@@ -270,7 +329,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
         });
 
         if (!member || !["owner", "editor"].includes(member.role)) {
-          return reply.status(403).send({ error: "Access denied" });
+          throw new ForbiddenError("Access denied");
         }
       }
 
@@ -312,7 +371,18 @@ export async function projectRoutes(fastify: FastifyInstance) {
   // ── Delete project ─────────────────────────────────────────────────────
   fastify.delete<{ Params: { projectId: string } }>(
     "/projects/:projectId",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        tags: ["Projects"],
+        summary: "Delete a project and all associated data",
+        response: {
+          200: MessageResponse,
+          403: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
 
@@ -324,7 +394,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
       });
 
       if (!member || member.role !== "owner") {
-        return reply.status(403).send({ error: "Only owners can delete projects" });
+        throw new ForbiddenError("Only owners can delete projects");
       }
 
       // Cascade delete all project-owned data in dependency order.
@@ -368,24 +438,37 @@ export async function projectRoutes(fastify: FastifyInstance) {
   // ── Apply prompt template ──────────────────────────────────────────────
   fastify.post<{ Params: { projectId: string }; Body: z.infer<typeof ApplyTemplateSchema> }>(
     "/projects/:projectId/apply-template",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        body: ApplyTemplateSchema,
+        tags: ["Projects"],
+        summary: "Apply a prompt template to a project",
+        response: {
+          200: { type: "object", properties: { message: { type: "string" }, template: { type: "object", properties: { id: { type: "string" }, name: { type: "string" } } } } },
+          400: ErrorResponse,
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
       const validation = ApplyTemplateSchema.safeParse(request.body);
       if (!validation.success) {
-        return reply.status(400).send({ error: "Invalid input" });
+        throw new ValidationError("Invalid input");
       }
 
       const template = getPresetTemplateById(validation.data.template_id);
       if (!template) {
-        return reply.status(404).send({ error: "Template not found" });
+        throw new NotFoundError("Template not found");
       }
 
       const project = await db.query.projects.findFirst({
         where: eq(projects.id, projectId),
       });
       if (!project) {
-        return reply.status(404).send({ error: "Project not found" });
+        throw new NotFoundError("Project not found");
       }
 
       // Merge template prompts with defaults
@@ -410,7 +493,16 @@ export async function projectRoutes(fastify: FastifyInstance) {
   // ── List preset templates ──────────────────────────────────────────────
   fastify.get(
     "/prompt-templates",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Projects"],
+        summary: "List available prompt templates",
+        response: {
+          200: { type: "array", items: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, description: { type: "string" } } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (_request, reply) => {
       const templates = getPresetTemplates();
       return reply.send(templates);
@@ -422,7 +514,18 @@ export async function projectRoutes(fastify: FastifyInstance) {
   // List documents for a project
   fastify.get<{ Params: { projectId: string } }>(
     "/projects/:projectId/documents",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        tags: ["Projects", "Documents"],
+        summary: "List supporting documents for a project",
+        response: {
+          200: { type: "array", items: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, file_type: { type: "string" }, file_size: { type: "number" } } } },
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
 
@@ -435,12 +538,31 @@ export async function projectRoutes(fastify: FastifyInstance) {
   );
 
   // Upload document metadata (actual file goes to S3 via presigned URL)
+  const UploadDocumentBodySchema = z.object({
+    name: z.string().min(1),
+    file_type: z.string().min(1),
+    storage_key: z.string().min(1),
+    file_size: z.number(),
+  });
+
   fastify.post<{
     Params: { projectId: string };
     Body: { name: string; file_type: string; storage_key: string; file_size: number };
   }>(
     "/projects/:projectId/documents",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        body: UploadDocumentBodySchema,
+        tags: ["Projects", "Documents"],
+        summary: "Upload document metadata for a project",
+        response: {
+          201: { type: "object", properties: { id: { type: "string" } } },
+          400: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
       const { name, file_type, storage_key, file_size } = request.body;
@@ -463,7 +585,17 @@ export async function projectRoutes(fastify: FastifyInstance) {
   // Delete a supporting document
   fastify.delete<{ Params: { projectId: string; docId: string } }>(
     "/projects/:projectId/documents/:docId",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdAndDocIdParams,
+        tags: ["Projects", "Documents"],
+        summary: "Delete a supporting document",
+        response: {
+          200: MessageResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId, docId } = request.params;
 
@@ -484,7 +616,20 @@ export async function projectRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Params: { projectId: string }; Body: z.infer<typeof AddMemberSchema> }>(
     "/projects/:projectId/members",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        body: AddMemberSchema,
+        tags: ["Projects", "Members"],
+        summary: "Add a member to a project",
+        response: {
+          201: MessageResponse,
+          403: ErrorResponse,
+          409: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
       const { user_id, role } = request.body;
@@ -497,7 +642,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
       });
 
       if (!member || member.role !== "owner") {
-        return reply.status(403).send({ error: "Only owners can add members" });
+        throw new ForbiddenError("Only owners can add members");
       }
 
       const existing = await db.query.projectMembers.findFirst({
@@ -521,7 +666,18 @@ export async function projectRoutes(fastify: FastifyInstance) {
 
   fastify.delete<{ Params: { projectId: string; userId: string } }>(
     "/projects/:projectId/members/:userId",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdAndUserIdParams,
+        tags: ["Projects", "Members"],
+        summary: "Remove a member from a project",
+        response: {
+          200: MessageResponse,
+          403: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { projectId, userId } = request.params;
 
@@ -533,7 +689,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
       });
 
       if (!member || member.role !== "owner") {
-        return reply.status(403).send({ error: "Only owners can remove members" });
+        throw new ForbiddenError("Only owners can remove members");
       }
 
       await db
@@ -547,12 +703,29 @@ export async function projectRoutes(fastify: FastifyInstance) {
   );
 
   // ── Update stage prompts ───────────────────────────────────────────────
+  const UpdatePromptBodySchema = z.object({
+    prompt: z.string().min(1),
+    type: z.enum(["stage", "validation"]).optional(),
+  });
+
   fastify.put<{
     Params: { projectId: string; stageIndex: string };
     Body: { prompt: string; type?: "stage" | "validation" };
   }>(
     "/projects/:projectId/prompts/:stageIndex",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdAndStageIndexParams,
+        body: UpdatePromptBodySchema,
+        tags: ["Projects", "Prompts"],
+        summary: "Update a stage or validation prompt for a project",
+        response: {
+          200: { type: "object", properties: { message: { type: "string" }, stage_prompts: { type: "object" }, validation_prompts: { type: "object" } } },
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId, stageIndex } = request.params;
       const { prompt, type = "stage" } = request.body;
@@ -561,7 +734,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
         where: eq(projects.id, projectId),
       });
       if (!project) {
-        return reply.status(404).send({ error: "Project not found" });
+        throw new NotFoundError("Project not found");
       }
 
       const field = type === "validation" ? "validation_prompts" : "stage_prompts";
@@ -585,13 +758,24 @@ export async function projectRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { projectId: string } }>(
     "/projects/:projectId/contracts",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        tags: ["Projects", "Contracts"],
+        summary: "Get all stage validation contracts for a project",
+        response: {
+          200: { type: "object", properties: { contracts: { type: "array", items: { type: "object", properties: { stageName: { type: "string" }, minTotalWords: { type: "number" }, maxRefinementPasses: { type: "number" }, hardGate: { type: "boolean" } } } } } },
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const project = await db.query.projects.findFirst({
         where: eq(projects.id, request.params.projectId),
         columns: { settings: true },
       });
-      if (!project) return reply.status(404).send({ error: "Project not found" });
+      if (!project) throw new NotFoundError("Project not found");
 
       const { stageContracts } = await import("@revamp/core-engine");
       const overrides = ((project.settings as any)?.validationContracts as Record<string, any>) || {};
@@ -617,6 +801,19 @@ export async function projectRoutes(fastify: FastifyInstance) {
   /**
    * PUT /projects/:projectId/contracts/:stageName — Update contract for a specific stage
    */
+  const UpdateContractBodySchema = z.object({
+    minTotalWords: z.number().optional(),
+    maxRefinementPasses: z.number().optional(),
+    hardGate: z.boolean().optional(),
+    requiredSections: z.array(z.object({
+      heading: z.string(),
+      aliases: z.array(z.string()).optional(),
+      required: z.boolean(),
+      minWordCount: z.number().optional(),
+      mustContain: z.array(z.string()).optional(),
+    })).optional(),
+  });
+
   fastify.put<{
     Params: { projectId: string; stageName: string };
     Body: {
@@ -633,7 +830,19 @@ export async function projectRoutes(fastify: FastifyInstance) {
     };
   }>(
     "/projects/:projectId/contracts/:stageName",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdAndStageNameParams,
+        body: UpdateContractBodySchema,
+        tags: ["Projects", "Contracts"],
+        summary: "Update a stage validation contract",
+        response: {
+          200: { type: "object", properties: { message: { type: "string" }, contract: { type: "object" } } },
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId, stageName } = request.params;
 
@@ -641,7 +850,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
         where: eq(projects.id, projectId),
         columns: { settings: true },
       });
-      if (!project) return reply.status(404).send({ error: "Project not found" });
+      if (!project) throw new NotFoundError("Project not found");
 
       const settings = (project.settings as Record<string, any>) || {};
       const contracts = settings.validationContracts || {};
@@ -661,7 +870,18 @@ export async function projectRoutes(fastify: FastifyInstance) {
    */
   fastify.delete<{ Params: { projectId: string; stageName: string } }>(
     "/projects/:projectId/contracts/:stageName",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdAndStageNameParams,
+        tags: ["Projects", "Contracts"],
+        summary: "Reset a stage validation contract to defaults",
+        response: {
+          200: MessageResponse,
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId, stageName } = request.params;
 
@@ -669,7 +889,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
         where: eq(projects.id, projectId),
         columns: { settings: true },
       });
-      if (!project) return reply.status(404).send({ error: "Project not found" });
+      if (!project) throw new NotFoundError("Project not found");
 
       const settings = (project.settings as Record<string, any>) || {};
       const contracts = settings.validationContracts || {};
@@ -696,19 +916,33 @@ export async function projectRoutes(fastify: FastifyInstance) {
     Body: z.infer<typeof StageModelConfigSchema>;
   }>(
     "/projects/:projectId/stage-models",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        body: StageModelConfigSchema,
+        tags: ["Projects", "Models"],
+        summary: "Update per-stage LLM model configuration",
+        response: {
+          200: { type: "object", properties: { message: { type: "string" }, stage_models: { type: "object" } } },
+          400: ErrorResponse,
+          403: ErrorResponse,
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
       const validation = StageModelConfigSchema.safeParse(request.body);
       if (!validation.success) {
-        return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+        throw new ValidationError("Invalid input", validation.error.errors);
       }
 
       const project = await db.query.projects.findFirst({
         where: eq(projects.id, projectId),
       });
       if (!project) {
-        return reply.status(404).send({ error: "Project not found" });
+        throw new NotFoundError("Project not found");
       }
 
       // Check membership
@@ -719,7 +953,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
         ),
       });
       if (!member || !["owner", "editor"].includes(member.role)) {
-        return reply.status(403).send({ error: "Access denied" });
+        throw new ForbiddenError("Access denied");
       }
 
       // Merge stage_models into project settings
@@ -747,14 +981,25 @@ export async function projectRoutes(fastify: FastifyInstance) {
   // GET per-stage model config
   fastify.get<{ Params: { projectId: string } }>(
     "/projects/:projectId/stage-models",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        tags: ["Projects", "Models"],
+        summary: "Get per-stage LLM model configuration",
+        response: {
+          200: { type: "object", properties: { stage_models: { type: "object" } } },
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
       const project = await db.query.projects.findFirst({
         where: eq(projects.id, projectId),
       });
       if (!project) {
-        return reply.status(404).send({ error: "Project not found" });
+        throw new NotFoundError("Project not found");
       }
 
       const settings = (project.settings as Record<string, unknown>) || {};
@@ -769,7 +1014,17 @@ export async function projectRoutes(fastify: FastifyInstance) {
 
   fastify.get<{ Params: { projectId: string } }>(
     "/projects/:projectId/budget",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        tags: ["Projects", "Budget"],
+        summary: "Get real-time project budget status",
+        response: {
+          200: { type: "object", properties: { configured: { type: "boolean" }, message: { type: "string" }, total_budget: { type: "number" }, total_spent: { type: "number" }, remaining: { type: "number" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { getProjectBudgetStatus } = await import("@/services/pipeline-budget.js");
       const status = await getProjectBudgetStatus(request.params.projectId);
@@ -796,7 +1051,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
     aws_access_key_id: z.string().optional().default(""),
     aws_secret_access_key: z.string().optional().default(""),
     aws_session_token: z.string().optional().default(""),
-    aws_region: z.string().optional().default("us-east-1"),
+    aws_region: z.string().optional().default("us-east-2"),
     // Model config
     available_models: z.array(z.string()).optional().default([]),
     is_default: z.boolean().optional().default(false),
@@ -808,19 +1063,32 @@ export async function projectRoutes(fastify: FastifyInstance) {
     Body: z.infer<typeof LLMProviderSchema>;
   }>(
     "/projects/:projectId/llm-providers",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        body: LLMProviderSchema,
+        tags: ["Projects", "BYOK"],
+        summary: "Add or update a BYOK LLM provider for a project",
+        response: {
+          201: { type: "object", properties: { message: { type: "string" }, provider: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, provider_type: { type: "string" } } } } },
+          400: ErrorResponse,
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
       const validation = LLMProviderSchema.safeParse(request.body);
       if (!validation.success) {
-        return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+        throw new ValidationError("Invalid input", validation.error.errors);
       }
 
       const project = await db.query.projects.findFirst({
         where: eq(projects.id, projectId),
       });
       if (!project) {
-        return reply.status(404).send({ error: "Project not found" });
+        throw new NotFoundError("Project not found");
       }
 
       const settings = (project.settings as Record<string, unknown>) || {};
@@ -868,14 +1136,25 @@ export async function projectRoutes(fastify: FastifyInstance) {
   // List LLM providers for a project (credentials masked)
   fastify.get<{ Params: { projectId: string } }>(
     "/projects/:projectId/llm-providers",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        tags: ["Projects", "BYOK"],
+        summary: "List BYOK LLM providers for a project (credentials masked)",
+        response: {
+          200: { type: "array", items: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, provider_type: { type: "string" }, is_default: { type: "boolean" } } } },
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
       const project = await db.query.projects.findFirst({
         where: eq(projects.id, projectId),
       });
       if (!project) {
-        return reply.status(404).send({ error: "Project not found" });
+        throw new NotFoundError("Project not found");
       }
 
       const settings = (project.settings as Record<string, unknown>) || {};
@@ -897,14 +1176,25 @@ export async function projectRoutes(fastify: FastifyInstance) {
   // Delete an LLM provider from a project
   fastify.delete<{ Params: { projectId: string; providerId: string } }>(
     "/projects/:projectId/llm-providers/:providerId",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdAndProviderIdParams,
+        tags: ["Projects", "BYOK"],
+        summary: "Delete a BYOK LLM provider from a project",
+        response: {
+          200: MessageResponse,
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const { projectId, providerId } = request.params;
       const project = await db.query.projects.findFirst({
         where: eq(projects.id, projectId),
       });
       if (!project) {
-        return reply.status(404).send({ error: "Project not found" });
+        throw new NotFoundError("Project not found");
       }
 
       const settings = (project.settings as Record<string, unknown>) || {};
@@ -912,7 +1202,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
       const filtered = providers.filter((p: any) => p.id !== providerId);
 
       if (filtered.length === providers.length) {
-        return reply.status(404).send({ error: "Provider not found" });
+        throw new NotFoundError("Provider not found");
       }
 
       await db
@@ -933,11 +1223,23 @@ export async function projectRoutes(fastify: FastifyInstance) {
     Body: z.infer<typeof LLMProviderSchema>;
   }>(
     "/projects/:projectId/llm-providers/test",
-    { onRequest: [fastify.authenticate, fastify.requireProjectAccess] },
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        body: LLMProviderSchema,
+        tags: ["Projects", "BYOK"],
+        summary: "Test connection to a BYOK LLM provider",
+        response: {
+          200: { type: "object", properties: { success: { type: "boolean" }, message: { type: "string" } } },
+          400: { type: "object", properties: { success: { type: "boolean" }, message: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
     async (request, reply) => {
       const validation = LLMProviderSchema.safeParse(request.body);
       if (!validation.success) {
-        return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
+        throw new ValidationError("Invalid input", validation.error.errors);
       }
 
       const provider = validation.data;
@@ -950,7 +1252,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
           credentials.aws_access_key_id = provider.aws_access_key_id;
           credentials.aws_secret_access_key = provider.aws_secret_access_key;
           if (provider.aws_session_token) credentials.aws_session_token = provider.aws_session_token;
-          credentials.aws_region = provider.aws_region || "us-east-1";
+          credentials.aws_region = provider.aws_region || "us-east-2";
         } else if (provider.provider_type === "anthropic") {
           credentials.provider = "anthropic";
           credentials.anthropic_api_key = provider.api_key;
@@ -971,6 +1273,100 @@ export async function projectRoutes(fastify: FastifyInstance) {
         return reply.send({ success: true, message: "Connection successful", providers: health.providers });
       } catch (err: any) {
         return reply.status(400).send({ success: false, message: `Connection failed: ${err.message}` });
+      }
+    }
+  );
+
+  // Fetch available models from an LLM provider
+  fastify.post<{
+    Params: { projectId: string };
+    Body: { provider_type: string; api_key?: string; base_url?: string; aws_region?: string; aws_sso_profile?: string; bearer_token?: string };
+  }>(
+    "/projects/:projectId/llm-providers/fetch-models",
+    {
+      schema: buildRouteSchema({
+        params: ProjectIdParams,
+        tags: ["Projects", "BYOK"],
+        summary: "Fetch available models from an LLM provider",
+        response: {
+          200: { type: "object", properties: { models: { type: "array", items: { type: "string" } } }, additionalProperties: true },
+          400: { type: "object", properties: { error: { type: "string" } }, additionalProperties: true },
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requireProjectAccess],
+    },
+    async (request, reply) => {
+      const { provider_type, api_key, base_url, aws_region, aws_sso_profile, bearer_token } = request.body || {};
+
+      try {
+        if (provider_type === "bedrock") {
+          // Fetch from AWS Bedrock — use the Go orchestrator's model discovery
+          const { llmProxyService } = await import("@/services/llm-proxy.js");
+          const allModels = await llmProxyService.listModels();
+          // Filter to Bedrock/Anthropic models
+          const bedrockModels = allModels
+            .map((m: any) => typeof m === 'string' ? m : m.id || m.model_id || '')
+            .filter((id: string) => id.includes('anthropic') || id.includes('claude'))
+            .sort();
+          return reply.send({ models: bedrockModels, source: "orchestrator" });
+        }
+
+        if (provider_type === "anthropic" && api_key) {
+          // Fetch from Anthropic API
+          const res = await fetch("https://api.anthropic.com/v1/models", {
+            headers: {
+              "x-api-key": api_key,
+              "anthropic-version": "2023-06-01",
+            },
+          });
+          if (!res.ok) throw new Error(`Anthropic API error: ${res.status}`);
+          const data = await res.json();
+          const models = (data.data || []).map((m: any) => m.id).sort();
+          return reply.send({ models, source: "anthropic-api" });
+        }
+
+        if (provider_type === "openai" && api_key) {
+          const endpoint = base_url || "https://api.openai.com/v1";
+          const res = await fetch(`${endpoint}/models`, {
+            headers: { "Authorization": `Bearer ${api_key}` },
+          });
+          if (!res.ok) throw new Error(`OpenAI API error: ${res.status}`);
+          const data = await res.json();
+          const models = (data.data || [])
+            .map((m: any) => m.id)
+            .filter((id: string) => id.includes('gpt') || id.includes('o1') || id.includes('o3'))
+            .sort();
+          return reply.send({ models, source: "openai-api" });
+        }
+
+        if (provider_type === "gemini" && api_key) {
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${api_key}`);
+          if (!res.ok) throw new Error(`Gemini API error: ${res.status}`);
+          const data = await res.json();
+          const models = (data.models || [])
+            .map((m: any) => (m.name || '').replace('models/', ''))
+            .filter((id: string) => id.includes('gemini'))
+            .sort();
+          return reply.send({ models, source: "gemini-api" });
+        }
+
+        if (provider_type === "xai" && api_key) {
+          const res = await fetch("https://api.x.ai/v1/models", {
+            headers: { "Authorization": `Bearer ${api_key}` },
+          });
+          if (!res.ok) throw new Error(`xAI API error: ${res.status}`);
+          const data = await res.json();
+          const models = (data.data || []).map((m: any) => m.id).sort();
+          return reply.send({ models, source: "xai-api" });
+        }
+
+        // Fallback: return orchestrator models
+        const { llmProxyService } = await import("@/services/llm-proxy.js");
+        const allModels = await llmProxyService.listModels();
+        const models = allModels.map((m: any) => typeof m === 'string' ? m : m.id || '').filter(Boolean);
+        return reply.send({ models, source: "orchestrator" });
+      } catch (err: any) {
+        return reply.status(400).send({ error: `Failed to fetch models: ${err.message}` });
       }
     }
   );

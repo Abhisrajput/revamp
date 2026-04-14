@@ -10,6 +10,8 @@
  */
 
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 import {
   isJiraConfigured,
   getJiraBoard,
@@ -29,11 +31,29 @@ import { getToolsForStage as getToolDefs } from "@/services/agent-tools.js";
 import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
+// ─── SCHEMAS ────────────────────────────────────────────────────
+
+const ErrorResponse = { type: "object" as const, properties: { error: { type: "string" } } };
+const IssueKeyParams = z.object({ key: z.string().min(1) });
+const CommentBodySchema = z.object({ body: z.string().min(1), agent_name: z.string().optional() });
+const TransitionBodySchema = z.object({ transition: z.string().min(1) });
+const AssignBodySchema = z.object({ account_id: z.string().nullable() });
+const AssignAgentBodySchema = z.object({ agent_id: z.string().uuid() });
+
 export async function jiraRoutes(fastify: FastifyInstance) {
   // ── Status check ─────────────────────────────────────────────
   fastify.get(
     "/jira/status",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Jira"],
+        summary: "Check Jira connection status",
+        response: {
+          200: { type: "object", properties: { connected: { type: "boolean" }, projectKey: { type: "string" }, message: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (_request, reply) => {
       const configured = isJiraConfigured();
       if (!configured) {
@@ -55,7 +75,15 @@ export async function jiraRoutes(fastify: FastifyInstance) {
   // ── Board (Kanban columns) ───────────────────────────────────
   fastify.get<{ Querystring: { project?: string } }>(
     "/jira/board",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        querystring: z.object({ project: z.string().optional() }),
+        tags: ["Jira"],
+        summary: "Get Kanban board with issues grouped by status",
+        response: { 200: {}, 400: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       if (!isJiraConfigured()) {
         return reply.status(400).send({ error: "Jira not configured" });
@@ -68,7 +96,15 @@ export async function jiraRoutes(fastify: FastifyInstance) {
   // ── Single issue ─────────────────────────────────────────────
   fastify.get<{ Params: { key: string } }>(
     "/jira/issue/:key",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IssueKeyParams,
+        tags: ["Jira"],
+        summary: "Get single Jira issue details",
+        response: { 200: {}, 400: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       if (!isJiraConfigured()) {
         return reply.status(400).send({ error: "Jira not configured" });
@@ -81,7 +117,16 @@ export async function jiraRoutes(fastify: FastifyInstance) {
   // ── Post comment (agent reporting progress) ──────────────────
   fastify.post<{ Params: { key: string }; Body: { body: string; agent_name?: string } }>(
     "/jira/issue/:key/comment",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IssueKeyParams,
+        body: CommentBodySchema,
+        tags: ["Jira"],
+        summary: "Post a comment on a Jira issue",
+        response: { 201: {}, 400: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       if (!isJiraConfigured()) {
         return reply.status(400).send({ error: "Jira not configured" });
@@ -97,7 +142,19 @@ export async function jiraRoutes(fastify: FastifyInstance) {
   // ── Transition issue ─────────────────────────────────────────
   fastify.post<{ Params: { key: string }; Body: { transition: string } }>(
     "/jira/issue/:key/transition",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IssueKeyParams,
+        body: TransitionBodySchema,
+        tags: ["Jira"],
+        summary: "Transition a Jira issue to a new status",
+        response: {
+          200: { type: "object", properties: { ok: { type: "boolean" }, issue: { type: "string" }, transition: { type: "string" } } },
+          400: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       if (!isJiraConfigured()) {
         return reply.status(400).send({ error: "Jira not configured" });
@@ -113,7 +170,19 @@ export async function jiraRoutes(fastify: FastifyInstance) {
   // ── Assign issue ─────────────────────────────────────────────
   fastify.post<{ Params: { key: string }; Body: { account_id: string | null } }>(
     "/jira/issue/:key/assign",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IssueKeyParams,
+        body: AssignBodySchema,
+        tags: ["Jira"],
+        summary: "Assign a Jira issue to a user",
+        response: {
+          200: { type: "object", properties: { ok: { type: "boolean" }, issue: { type: "string" } } },
+          400: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       if (!isJiraConfigured()) {
         return reply.status(400).send({ error: "Jira not configured" });
@@ -132,7 +201,20 @@ export async function jiraRoutes(fastify: FastifyInstance) {
   // 5. Transitions the issue when done
   fastify.post<{ Params: { key: string }; Body: { agent_id: string } }>(
     "/jira/issue/:key/assign-agent",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IssueKeyParams,
+        body: AssignAgentBodySchema,
+        tags: ["Jira"],
+        summary: "Assign a Jira issue to a REVAMP agent and execute",
+        response: {
+          202: { type: "object", properties: { task_id: { type: "string" }, jira_key: { type: "string" }, agent_id: { type: "string" }, agent_name: { type: "string" }, summary: { type: "string" }, status: { type: "string" }, message: { type: "string" } } },
+          400: ErrorResponse,
+          404: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { key } = request.params;
       const { agent_id } = request.body as { agent_id: string };
@@ -402,7 +484,16 @@ export async function jiraRoutes(fastify: FastifyInstance) {
   // ── List agents available for assignment ────────────────────
   fastify.get(
     "/jira/agents",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Jira"],
+        summary: "List agents available for Jira issue assignment",
+        response: {
+          200: { type: "array", items: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, slug: { type: "string" }, role: { type: "string" }, department: { type: "string" }, status: { type: "string" } } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (_request, reply) => {
       const agents = await db.query.agentPersonas.findMany({
         where: isNull(agentPersonas.hidden_at),

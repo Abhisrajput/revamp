@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import {
   Terminal,
@@ -61,6 +61,11 @@ export const BottomDock = memo(function BottomDock({
   onSelectRun,
   className,
 }: BottomDockProps) {
+  // Defer badge rendering to client to avoid hydration mismatch
+  // (sessionStorage data is available on client but not during SSR)
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   // Use individual selectors to avoid full-store re-renders
   const bottomDockTab = useUIPreferencesStore((s) => s.bottomDockTab);
   const setBottomDockTab = useUIPreferencesStore((s) => s.setBottomDockTab);
@@ -77,6 +82,12 @@ export const BottomDock = memo(function BottomDock({
     },
     [bottomDockCollapsed, toggleBottomDock, setBottomDockTab],
   );
+
+  // Render nothing during SSR — BottomDock depends entirely on client-side stores
+  // (sessionStorage, Zustand) that produce different values on server vs client.
+  if (!mounted) {
+    return <div className={cn('flex flex-col h-full', className)} />;
+  }
 
   return (
     <div className={cn('flex flex-col h-full', className)}>
@@ -101,10 +112,11 @@ export const BottomDock = memo(function BottomDock({
             const isActive = bottomDockTab === tab.id;
             const Icon = tab.icon;
 
-            // Show badge for activity
-            const showBadge =
+            // Show badge for activity (client-only to avoid hydration mismatch)
+            const showBadge = mounted && (
               (tab.id === 'terminal' && logs?.some((l) => l.level === 'error')) ||
-              (tab.id === 'agent' && toolCalls?.some((tc) => tc.status === 'running'));
+              (tab.id === 'agent' && toolCalls?.some((tc) => tc.status === 'running'))
+            );
 
             return (
               <button
@@ -127,8 +139,8 @@ export const BottomDock = memo(function BottomDock({
           })}
         </div>
 
-        {/* Log count badge */}
-        {!bottomDockCollapsed && bottomDockTab === 'terminal' && (
+        {/* Log count badge (client-only to avoid hydration mismatch with sessionStorage) */}
+        {mounted && !bottomDockCollapsed && bottomDockTab === 'terminal' && (
           <span className="text-[9px] text-slate-400 dark:text-slate-500 pr-3">
             {logs.length} entries
           </span>

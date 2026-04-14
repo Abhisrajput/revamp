@@ -8,7 +8,7 @@ import { ElapsedTimer } from '@/components/pipeline/elapsed-timer';
 import { STAGE_PANEL_MAP } from '@/components/pipeline/stage-panels';
 import { useRefineSection } from '@/lib/hooks/use-refine-section';
 import type { StagePanelProps } from '@/components/pipeline/stage-panels/types';
-import type { StageState } from '@/lib/stores/pipeline-store';
+import type { StageState } from '@/lib/stores/pipeline-types';
 
 // ─── Status Badge ───────────────────────────────────────────────
 

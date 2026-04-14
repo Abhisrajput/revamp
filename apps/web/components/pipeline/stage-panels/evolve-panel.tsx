@@ -13,51 +13,15 @@ import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
 import { CodeEditor } from '@/components/editor/code-editor';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
-import { usePipelineStore, canExecuteStage } from '@/lib/stores/pipeline-store';
+import { usePipelineActivityStore } from '@/lib/stores/pipeline-activity-store';
+import { useStagePanel } from '@/lib/hooks/use-stage-panel';
 import { useEvolveChat } from '@/lib/hooks/use-evolve-chat';
 import { cn } from '@/lib/utils';
+import { inferLanguage, buildFileTree } from '@/lib/utils/file-tree';
 import { DynamicStageTabs } from './dynamic-stage-tabs';
 import { getStageTabConfig } from './stage-tab-configs';
 import type { StageTabConfig, SpecialTab } from './dynamic-stage-tabs';
 import type { StagePanelProps } from './types';
-
-// ─── IDE Helpers ─────────────────────────────────────────────────
-
-function inferLanguage(filename: string | undefined): string {
-  if (!filename) return 'plaintext';
-  const ext = filename.split('.').pop()?.toLowerCase() || '';
-  const langMap: Record<string, string> = {
-    ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
-    py: 'python', go: 'go', java: 'java', rs: 'rust', rb: 'ruby',
-    cs: 'csharp', sql: 'sql', yaml: 'yaml', yml: 'yaml', json: 'json',
-    md: 'markdown', html: 'html', css: 'css', scss: 'scss',
-    sh: 'shell', bash: 'shell', dockerfile: 'dockerfile',
-    xml: 'xml', toml: 'toml', tf: 'hcl',
-  };
-  return langMap[ext] || 'plaintext';
-}
-
-function buildFileTree(files: { path: string }[]): FileNode[] {
-  const root: FileNode[] = [];
-  for (const file of files) {
-    const parts = file.path.split('/').filter(Boolean);
-    let current = root;
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      if (i === parts.length - 1) {
-        current.push({ name: part, type: 'file', path: file.path });
-      } else {
-        let dir = current.find((n) => n.name === part && n.type === 'dir');
-        if (!dir) {
-          dir = { name: part, type: 'dir', children: [] };
-          current.push(dir);
-        }
-        current = dir.children!;
-      }
-    }
-  }
-  return root;
-}
 
 // ─── IDE + Chat Panel ────────────────────────────────────────────
 
@@ -66,8 +30,8 @@ interface IDEChatPanelProps {
 }
 
 function IDEChatPanel({ pipelineRunId }: IDEChatPanelProps) {
-  const modernizedFiles = usePipelineStore((s) => s.modernizedFiles);
-  const updateModernizedFile = usePipelineStore((s) => s.updateModernizedFile);
+  const modernizedFiles = usePipelineActivityStore((s) => s.modernizedFiles);
+  const updateModernizedFile = usePipelineActivityStore((s) => s.updateModernizedFile);
   const [chatInput, setChatInput] = useState('');
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
@@ -290,12 +254,7 @@ export default function EvolvePanel({
   onRefineRequest,
   pipelineRunId,
 }: StagePanelProps) {
-  const logs = usePipelineStore((s) => s.logs);
-  const stages = usePipelineStore((s) => s.stages);
-
-  const isRunning = stage.status === 'generating' || stage.status === 'validating';
-  const hasOutput = !!(stage.output || streamingText);
-  const canExecute = (stage.status === 'pending' || stage.status === 'failed') && !isExecuting && canExecuteStage(stages, stageIndex);
+  const { logs, isRunning, hasOutput, canRun: canExecute } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
 
   // Build tab config with IDE as a special "before" tab
   const tabConfig = useMemo((): StageTabConfig => {

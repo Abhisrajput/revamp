@@ -22,6 +22,7 @@
 
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 import { db } from "@/db/index.js";
 import { agentTasks, agentRoutines, budgetPolicies, budgetIncidents } from "@/db/schema.js";
 import { eq, and, desc, asc, inArray } from "drizzle-orm";
@@ -84,6 +85,12 @@ const CreateBudgetPolicySchema = z.object({
   hard_stop: z.boolean().default(true),
 });
 
+// ─── Common response shapes ────────────────────────────────────
+
+const ErrorResponse = { type: "object" as const, properties: { error: { type: "string" } } };
+const DeletedResponse = { type: "object" as const, properties: { deleted: { type: "boolean" } } };
+const IdParams = z.object({ id: z.string().uuid() });
+
 // ─── ROUTES ─────────────────────────────────────────────────────
 
 export async function agentTaskRoutes(fastify: FastifyInstance) {
@@ -91,7 +98,15 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
 
   fastify.get<{ Querystring: { project_id?: string; status?: string; agent_id?: string; limit?: string } }>(
     "/agent-tasks",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        querystring: z.object({ project_id: z.string().optional(), status: z.string().optional(), agent_id: z.string().optional(), limit: z.string().optional() }),
+        tags: ["Agent Tasks"],
+        summary: "List tasks with Kanban grouping (filterable by status, project, agent)",
+        response: { 200: { type: "object", properties: { tasks: { type: "array", items: {} }, kanban: {} } } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { project_id, status, agent_id, limit } = request.query;
       const orgId = request.user.organization_id;
@@ -123,7 +138,15 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Body: z.infer<typeof CreateTaskSchema> }>(
     "/agent-tasks",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        body: CreateTaskSchema,
+        tags: ["Agent Tasks"],
+        summary: "Create a new agent task",
+        response: { 201: {}, 400: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const body = CreateTaskSchema.parse(request.body);
       const orgId = request.user.organization_id;
@@ -147,7 +170,16 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
 
   fastify.patch<{ Params: { id: string }; Body: z.infer<typeof UpdateTaskSchema> }>(
     "/agent-tasks/:id",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: UpdateTaskSchema,
+        tags: ["Agent Tasks"],
+        summary: "Update a task (status, assignment, priority, etc.)",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const body = UpdateTaskSchema.parse(request.body);
 
@@ -170,7 +202,16 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
 
   fastify.patch<{ Params: { id: string }; Body: z.infer<typeof MoveTaskSchema> }>(
     "/agent-tasks/:id/move",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: MoveTaskSchema,
+        tags: ["Agent Tasks"],
+        summary: "Move a task on the Kanban board (update status and sort order)",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const body = MoveTaskSchema.parse(request.body);
 
@@ -193,7 +234,15 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
 
   fastify.delete<{ Params: { id: string } }>(
     "/agent-tasks/:id",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Tasks"],
+        summary: "Delete a task",
+        response: { 200: DeletedResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       await db.delete(agentTasks).where(eq(agentTasks.id, request.params.id));
       return reply.send({ deleted: true });
@@ -204,7 +253,14 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
 
   fastify.get(
     "/agent-routines",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agent Tasks"],
+        summary: "List all agent routines for the organization",
+        response: { 200: { type: "object", properties: { routines: { type: "array", items: {} } } } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const orgId = request.user.organization_id;
       const routines = await db.query.agentRoutines.findMany({
@@ -217,7 +273,15 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Body: z.infer<typeof CreateRoutineSchema> }>(
     "/agent-routines",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        body: CreateRoutineSchema,
+        tags: ["Agent Tasks"],
+        summary: "Create a new agent routine (scheduled task)",
+        response: { 201: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const body = CreateRoutineSchema.parse(request.body);
       const orgId = request.user.organization_id;
@@ -249,7 +313,15 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Params: { id: string } }>(
     "/agent-routines/:id/trigger",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Tasks"],
+        summary: "Manually trigger a routine to create a task",
+        response: { 201: {}, 404: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const routine = await db.query.agentRoutines.findFirst({
         where: eq(agentRoutines.id, request.params.id),
@@ -288,7 +360,15 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
 
   fastify.delete<{ Params: { id: string } }>(
     "/agent-routines/:id",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Tasks"],
+        summary: "Delete a routine",
+        response: { 200: DeletedResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       await db.delete(agentRoutines).where(eq(agentRoutines.id, request.params.id));
       return reply.send({ deleted: true });
@@ -299,7 +379,14 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
 
   fastify.get(
     "/budget-policies",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agent Tasks"],
+        summary: "List active budget policies",
+        response: { 200: { type: "object", properties: { policies: { type: "array", items: {} } } } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const policies = await db.query.budgetPolicies.findMany({
         where: eq(budgetPolicies.active, true),
@@ -311,7 +398,15 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Body: z.infer<typeof CreateBudgetPolicySchema> }>(
     "/budget-policies",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        body: CreateBudgetPolicySchema,
+        tags: ["Agent Tasks"],
+        summary: "Create or replace a budget policy for a scope",
+        response: { 201: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const body = CreateBudgetPolicySchema.parse(request.body);
 
@@ -340,7 +435,15 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
   // Edit budget policy
   fastify.put<{ Params: { id: string }; Body: Partial<z.infer<typeof CreateBudgetPolicySchema>> }>(
     "/budget-policies/:id",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Tasks"],
+        summary: "Update an existing budget policy",
+        response: { 200: {}, 404: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const body = request.body as Record<string, unknown>;
       const updates: Record<string, unknown> = { updated_at: new Date() };
@@ -363,7 +466,15 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
   // Delete (deactivate) budget policy
   fastify.delete<{ Params: { id: string } }>(
     "/budget-policies/:id",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Tasks"],
+        summary: "Deactivate a budget policy",
+        response: { 200: DeletedResponse, 404: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const [updated] = await db.update(budgetPolicies)
         .set({ active: false, updated_at: new Date() })
@@ -377,7 +488,14 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
 
   fastify.get(
     "/budget-incidents",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agent Tasks"],
+        summary: "List recent budget incidents",
+        response: { 200: { type: "object", properties: { incidents: { type: "array", items: {} } } } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const incidents = await db.query.budgetIncidents.findMany({
         orderBy: desc(budgetIncidents.created_at),
@@ -389,7 +507,16 @@ export async function agentTaskRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Params: { id: string }; Body: { resolution_note?: string } }>(
     "/budget-incidents/:id/resolve",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: z.object({ resolution_note: z.string().optional() }),
+        tags: ["Agent Tasks"],
+        summary: "Resolve a budget incident",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const [updated] = await db.update(budgetIncidents)
         .set({

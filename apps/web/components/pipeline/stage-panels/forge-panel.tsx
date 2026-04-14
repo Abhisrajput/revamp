@@ -18,57 +18,15 @@ import { AgentActivity } from '@/components/pipeline/agent-activity';
 import { ConfidenceGauge } from '@/components/pipeline/confidence-gauge';
 import { CodeEditor } from '@/components/editor/code-editor';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
-import { usePipelineStore, canExecuteStage } from '@/lib/stores/pipeline-store';
+import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import { usePipelineActivityStore } from '@/lib/stores/pipeline-activity-store';
+import { useStagePanel } from '@/lib/hooks/use-stage-panel';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
+import { inferLanguage, buildFileTree } from '@/lib/utils/file-tree';
 import type { StagePanelProps } from './types';
-
-// --- Language detection ---
-
-function inferLanguage(filename: string | undefined): string {
-  if (!filename) return 'plaintext';
-  const ext = filename.split('.').pop()?.toLowerCase() || '';
-  const langMap: Record<string, string> = {
-    ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
-    py: 'python', go: 'go', java: 'java', rs: 'rust', rb: 'ruby',
-    cs: 'csharp', sql: 'sql', yaml: 'yaml', yml: 'yaml', json: 'json',
-    md: 'markdown', html: 'html', css: 'css', scss: 'scss',
-    sh: 'shell', bash: 'shell', dockerfile: 'dockerfile',
-    xml: 'xml', toml: 'toml', tf: 'hcl',
-  };
-  return langMap[ext] || 'plaintext';
-}
-
-// --- Build FileNode tree from modernized files ---
-
-function buildFileTree(files: { path: string; name?: string }[]): FileNode[] {
-  const root: FileNode[] = [];
-
-  for (const file of files) {
-    const parts = file.path.split('/').filter(Boolean);
-    let current = root;
-
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      const isLast = i === parts.length - 1;
-
-      if (isLast) {
-        current.push({ name: part, type: 'file', path: file.path });
-      } else {
-        let dir = current.find((n) => n.name === part && n.type === 'dir');
-        if (!dir) {
-          dir = { name: part, type: 'dir', children: [] };
-          current.push(dir);
-        }
-        current = dir.children!;
-      }
-    }
-  }
-
-  return root;
-}
 
 export default function ForgePanel({
   stage,
@@ -78,20 +36,15 @@ export default function ForgePanel({
   isExecuting,
   pipelineRunId,
 }: StagePanelProps) {
-  const logs = usePipelineStore((s) => s.logs);
-  const toolCalls = usePipelineStore((s) => s.toolCalls);
-  const modernizedFiles = usePipelineStore((s) => s.modernizedFiles);
-  const stages = usePipelineStore((s) => s.stages);
+  const { logs, isRunning, hasOutput, canRun: canExecute } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
+  const toolCalls = usePipelineActivityStore((s) => s.toolCalls);
+  const modernizedFiles = usePipelineActivityStore((s) => s.modernizedFiles);
   const setGithubSyncOpen = useUIPreferencesStore((s) => s.setGithubSyncOpen);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [activePane, setActivePane] = useState<'code' | 'terminal' | 'agent' | 'traceability'>('code');
   const currentPipelineRunId = usePipelineStore((s) => s.currentPipelineRunId);
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const [editorHeight, setEditorHeight] = useState(400);
-
-  const isRunning = stage.status === 'generating' || stage.status === 'validating';
-  const hasOutput = !!(stage.output || streamingText);
-  const canExecute = (stage.status === 'pending' || stage.status === 'failed') && !isExecuting && canExecuteStage(stages, stageIndex);
 
   // Build file tree from modernized files
   const fileTree = useMemo(() => buildFileTree(modernizedFiles), [modernizedFiles]);
@@ -125,7 +78,7 @@ export default function ForgePanel({
           try {
             const detail = await apiClient.get(`/pipeline/${currentPipelineRunId}/modernized-files/${file.id}`);
             if (detail.data?.content) {
-              usePipelineStore.getState().addModernizedFile({
+              usePipelineActivityStore.getState().addModernizedFile({
                 path: detail.data.file_path,
                 content: detail.data.content,
                 language: detail.data.language,

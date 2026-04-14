@@ -6,6 +6,7 @@ import bcrypt from "bcryptjs";
 import { db } from "@/db/index.js";
 import { users, organizations } from "@/db/schema.js";
 import { eq } from "drizzle-orm";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 
 const BCRYPT_ROUNDS = 12;
 /** OTP validity window in milliseconds (10 minutes) */
@@ -216,7 +217,37 @@ export async function authRoutes(fastify: FastifyInstance) {
   const resetRateLimit = { config: { rateLimit: { max: isDev ? 100 : 5, timeWindow: "15 minutes" } } };
   const signupRateLimit = { config: { rateLimit: { max: isDev ? 200 : 10, timeWindow: "1 hour" } } };
 
-  fastify.post<{ Body: z.infer<typeof SignInSchema> }>("/auth/login", loginRateLimit, async (request, reply) => {
+  fastify.post<{ Body: z.infer<typeof SignInSchema> }>("/auth/login", {
+    schema: buildRouteSchema({
+      body: SignInSchema,
+      tags: ["Auth"],
+      summary: "Login with email and password",
+      response: {
+        200: {
+          type: "object",
+          properties: {
+            token: { type: "string" },
+            user: {
+              type: "object",
+              properties: {
+                id: { type: "string" },
+                email: { type: "string", format: "email" },
+                first_name: { type: "string" },
+                last_name: { type: "string" },
+                role: { type: "string" },
+                organization_id: { type: "string", nullable: true },
+              },
+            },
+          },
+        },
+        400: { type: "object", properties: { error: { type: "string" }, details: { type: "array" } } },
+        401: { type: "object", properties: { error: { type: "string" } } },
+        403: { type: "object", properties: { error: { type: "string" } } },
+        500: { type: "object", properties: { error: { type: "string" } } },
+      },
+    }),
+    ...loginRateLimit,
+  }, async (request, reply) => {
     const validation = SignInSchema.safeParse(request.body);
     if (!validation.success) {
       return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
@@ -272,7 +303,35 @@ export async function authRoutes(fastify: FastifyInstance) {
     return reply.status(401).send({ error: "Invalid credentials" });
   });
 
-  fastify.post<{ Body: z.infer<typeof SignUpSchema> }>("/auth/signup", signupRateLimit, async (request, reply) => {
+  fastify.post<{ Body: z.infer<typeof SignUpSchema> }>("/auth/signup", {
+    schema: buildRouteSchema({
+      body: SignUpSchema,
+      tags: ["Auth"],
+      summary: "Register a new user account",
+      response: {
+        201: {
+          type: "object",
+          properties: {
+            token: { type: "string" },
+            user: {
+              type: "object",
+              properties: {
+                id: { type: "string" },
+                email: { type: "string", format: "email" },
+                first_name: { type: "string" },
+                last_name: { type: "string" },
+                role: { type: "string" },
+                organization_id: { type: "string", nullable: true },
+              },
+            },
+          },
+        },
+        400: { type: "object", properties: { error: { type: "string" }, details: { type: "array" } } },
+        409: { type: "object", properties: { error: { type: "string" } } },
+      },
+    }),
+    ...signupRateLimit,
+  }, async (request, reply) => {
     const validation = SignUpSchema.safeParse(request.body);
     if (!validation.success) {
       return reply.status(400).send({ error: "Invalid input", details: validation.error.errors });
@@ -354,7 +413,18 @@ export async function authRoutes(fastify: FastifyInstance) {
   // Generates a 6-digit OTP, stores the secret on the user, and sends via email.
   fastify.post<{ Body: z.infer<typeof OTPGenerateSchema> }>(
     "/auth/otp/generate",
-    otpRateLimit,
+    {
+      schema: buildRouteSchema({
+        body: OTPGenerateSchema,
+        tags: ["Auth"],
+        summary: "Generate a 6-digit OTP and send via email",
+        response: {
+          200: { type: "object", properties: { message: { type: "string" } } },
+          400: { type: "object", properties: { error: { type: "string" }, details: { type: "array" } } },
+        },
+      }),
+      ...otpRateLimit,
+    },
     async (request, reply) => {
       const validation = OTPGenerateSchema.safeParse(request.body);
       if (!validation.success) {
@@ -391,7 +461,36 @@ export async function authRoutes(fastify: FastifyInstance) {
   // Verifies the OTP and returns a JWT token if valid.
   fastify.post<{ Body: z.infer<typeof OTPVerifySchema> }>(
     "/auth/otp/verify",
-    otpRateLimit,
+    {
+      schema: buildRouteSchema({
+        body: OTPVerifySchema,
+        tags: ["Auth"],
+        summary: "Verify a 6-digit OTP and receive a JWT token",
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              token: { type: "string" },
+              user: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  email: { type: "string", format: "email" },
+                  first_name: { type: "string" },
+                  last_name: { type: "string" },
+                  role: { type: "string" },
+                  organization_id: { type: "string", nullable: true },
+                },
+              },
+            },
+          },
+          400: { type: "object", properties: { error: { type: "string" }, details: { type: "array" } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      ...otpRateLimit,
+    },
     async (request, reply) => {
       const validation = OTPVerifySchema.safeParse(request.body);
       if (!validation.success) {
@@ -442,7 +541,18 @@ export async function authRoutes(fastify: FastifyInstance) {
   );
 
   // Legacy OTP endpoint — backward compatible
-  fastify.post<{ Body: z.infer<typeof OTPSchema> }>("/auth/otp", async (request, reply) => {
+  fastify.post<{ Body: z.infer<typeof OTPSchema> }>("/auth/otp", {
+    schema: buildRouteSchema({
+      body: OTPSchema,
+      tags: ["Auth"],
+      summary: "Generate OTP (legacy endpoint)",
+      description: "Deprecated: Use /auth/otp/generate instead.",
+      response: {
+        200: { type: "object", properties: { message: { type: "string" } } },
+        400: { type: "object", properties: { error: { type: "string" } } },
+      },
+    }),
+  }, async (request, reply) => {
     const validation = OTPSchema.safeParse(request.body);
     if (!validation.success) {
       return reply.status(400).send({ error: "Invalid input" });
@@ -467,7 +577,18 @@ export async function authRoutes(fastify: FastifyInstance) {
   // Generates a reset token, stores it in the in-memory resetTokenStore, sends email.
   fastify.post<{ Body: z.infer<typeof ResetPasswordRequestSchema> }>(
     "/auth/reset-password/request",
-    resetRateLimit,
+    {
+      schema: buildRouteSchema({
+        body: ResetPasswordRequestSchema,
+        tags: ["Auth"],
+        summary: "Request a password reset token via email",
+        response: {
+          200: { type: "object", properties: { message: { type: "string" } } },
+          400: { type: "object", properties: { error: { type: "string" }, details: { type: "array" } } },
+        },
+      }),
+      ...resetRateLimit,
+    },
     async (request, reply) => {
       const validation = ResetPasswordRequestSchema.safeParse(request.body);
       if (!validation.success) {
@@ -498,6 +619,17 @@ export async function authRoutes(fastify: FastifyInstance) {
   // Validates that the reset token is correct and not expired.
   fastify.post<{ Body: z.infer<typeof ResetPasswordVerifySchema> }>(
     "/auth/reset-password/verify",
+    {
+      schema: buildRouteSchema({
+        body: ResetPasswordVerifySchema,
+        tags: ["Auth"],
+        summary: "Verify a password reset token is valid",
+        response: {
+          200: { type: "object", properties: { valid: { type: "boolean" } } },
+          400: { type: "object", properties: { error: { type: "string" }, details: { type: "array" } } },
+        },
+      }),
+    },
     async (request, reply) => {
       const validation = ResetPasswordVerifySchema.safeParse(request.body);
       if (!validation.success) {
@@ -523,7 +655,18 @@ export async function authRoutes(fastify: FastifyInstance) {
   // Validates the token and updates the password.
   fastify.post<{ Body: z.infer<typeof ResetPasswordConfirmSchema> }>(
     "/auth/reset-password/confirm",
-    resetRateLimit,
+    {
+      schema: buildRouteSchema({
+        body: ResetPasswordConfirmSchema,
+        tags: ["Auth"],
+        summary: "Confirm password reset with token and new password",
+        response: {
+          200: { type: "object", properties: { message: { type: "string" } } },
+          400: { type: "object", properties: { error: { type: "string" }, details: { type: "array" } } },
+        },
+      }),
+      ...resetRateLimit,
+    },
     async (request, reply) => {
       const validation = ResetPasswordConfirmSchema.safeParse(request.body);
       if (!validation.success) {
@@ -561,6 +704,18 @@ export async function authRoutes(fastify: FastifyInstance) {
   // Legacy reset-password endpoint — backward compatible
   fastify.post<{ Body: z.infer<typeof ResetPasswordSchema> }>(
     "/auth/reset-password",
+    {
+      schema: buildRouteSchema({
+        body: ResetPasswordSchema,
+        tags: ["Auth"],
+        summary: "Reset password (legacy endpoint)",
+        description: "Deprecated: Use /auth/reset-password/request + /auth/reset-password/confirm instead.",
+        response: {
+          200: { type: "object", properties: { message: { type: "string" } } },
+          400: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+    },
     async (request, reply) => {
       const validation = ResetPasswordSchema.safeParse(request.body);
       if (!validation.success) {
@@ -592,7 +747,31 @@ export async function authRoutes(fastify: FastifyInstance) {
   );
 
   // Verify token endpoint
-  fastify.get("/auth/verify", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  fastify.get("/auth/verify", {
+    schema: buildRouteSchema({
+      tags: ["Auth"],
+      summary: "Verify the current JWT token is valid",
+      response: {
+        200: {
+          type: "object",
+          properties: {
+            valid: { type: "boolean" },
+            user: {
+              type: "object",
+              properties: {
+                sub: { type: "string" },
+                email: { type: "string", format: "email" },
+                role: { type: "string" },
+                organization_id: { type: "string" },
+              },
+            },
+          },
+        },
+        401: { type: "object", properties: { error: { type: "string" } } },
+      },
+    }),
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
     return reply.send({
       valid: true,
       user: request.user,

@@ -7,8 +7,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import {
   Bot, Plus, X, Eye, EyeOff, Server, Zap, Cpu, ShieldCheck,
-  KeyRound, ChevronDown, Star,
+  KeyRound, ChevronDown, Star, RefreshCw, Loader2,
 } from 'lucide-react';
+import { apiClient } from '@/lib/api-client';
 import { useAvailableModels } from '@/components/pipeline/mission-control/model-selector';
 
 // ─── Types ────────────────────────────────────────────────────
@@ -76,6 +77,8 @@ function generateConfigId(): string {
 // ─── Component ───────────────────────────────────────────────
 
 interface LLMProviderSettingsProps {
+  /** Project ID for API calls */
+  projectId?: string;
   providers: LLMProvider[];
   stageConfigs: StageLLMConfig[];
   onProvidersChange: (providers: LLMProvider[]) => void;
@@ -93,6 +96,7 @@ interface LLMProviderSettingsProps {
 }
 
 export function LLMProviderSettings({
+  projectId,
   providers,
   stageConfigs,
   onProvidersChange,
@@ -154,6 +158,41 @@ export function LLMProviderSettings({
   // Edit models form
   const [editingModelsId, setEditingModelsId] = useState<string | null>(null);
   const [editModelsValue, setEditModelsValue] = useState('');
+
+  // Fetch models
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [fetchModelsError, setFetchModelsError] = useState<string | null>(null);
+
+  const handleFetchModels = useCallback(async () => {
+    if (!projectId) return;
+    const preset = PRESET_PROVIDERS.find(p => p.name === selectedPreset);
+    if (!preset) return;
+
+    setFetchingModels(true);
+    setFetchModelsError(null);
+    try {
+      const body: Record<string, string> = { provider_type: preset.provider_type };
+      if (newApiKey.trim()) body.api_key = newApiKey.trim();
+      if (newBaseUrl.trim()) body.base_url = newBaseUrl.trim();
+      if (preset.provider_type === 'bedrock') {
+        body.aws_region = awsRegion || 'us-east-2';
+        if (awsSSOProfile) body.aws_sso_profile = awsSSOProfile;
+        if (bedrockApiKey) body.bearer_token = bedrockApiKey;
+      }
+
+      const res = await apiClient.post(`/projects/${projectId}/llm-providers/fetch-models`, body);
+      const models = res.data?.models || [];
+      if (models.length > 0) {
+        setNewModels(models.join(', '));
+      } else {
+        setFetchModelsError('No models found');
+      }
+    } catch (err: any) {
+      setFetchModelsError(err.response?.data?.error || err.message || 'Failed to fetch models');
+    } finally {
+      setFetchingModels(false);
+    }
+  }, [projectId, selectedPreset, newApiKey, newBaseUrl, awsRegion, awsSSOProfile, bedrockApiKey]);
 
   // ─── Dynamic model options ─────────────────────────────
   /** Build model list from configured providers, falling back to orchestrator models */
@@ -973,8 +1012,29 @@ export function LLMProviderSettings({
 
               {/* Models */}
               <div>
-                <label className="text-xs font-medium text-slate-700 dark:text-slate-300">Available Models (comma-separated)</label>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-slate-700 dark:text-slate-300">Available Models</label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-[10px] gap-1 text-primary-600 hover:text-primary-700"
+                    onClick={handleFetchModels}
+                    disabled={fetchingModels || !selectedPreset}
+                    title="Fetch available models from the provider"
+                  >
+                    {fetchingModels ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-3 w-3" />
+                    )}
+                    {fetchingModels ? 'Fetching...' : 'Fetch Models'}
+                  </Button>
+                </div>
                 <Input value={newModels} onChange={e => setNewModels(e.target.value)} placeholder="gpt-4o, gpt-4-turbo, gpt-3.5-turbo" className="mt-1" />
+                {fetchModelsError && (
+                  <p className="text-[10px] text-red-500 mt-1">{fetchModelsError}</p>
+                )}
               </div>
 
               <Button

@@ -210,11 +210,22 @@ export async function runValidation(
     options.priorStageOutputs ?? [],
   );
 
-  // Adjust confidence score with cross-reference score
+  // Compose confidence score from three sources:
+  //   70% prompt-derived (requirements + LLM judge + ground truth)
+  //   15% contract completeness (structural section/artifact checks)
+  //   15% cross-reference (prior stage continuity)
   let adjustedScore = pdResult.confidenceScore;
-  if (options.priorStageOutputs && options.priorStageOutputs.length > 0) {
-    // Blend: 85% prompt-derived + 15% cross-reference
-    adjustedScore = Math.round(pdResult.confidenceScore * 0.85 + crossRef.score * 100 * 0.15);
+  const hasContractScore = contractResult.completenessScore !== undefined;
+  const hasCrossRef = options.priorStageOutputs && options.priorStageOutputs.length > 0;
+
+  if (hasContractScore || hasCrossRef) {
+    const contractPct = hasContractScore ? contractResult.completenessScore : 50;
+    const crossRefPct = hasCrossRef ? crossRef.score * 100 : 50;
+    adjustedScore = Math.round(
+      pdResult.confidenceScore * 0.70 +
+      contractPct * 0.15 +
+      crossRefPct * 0.15,
+    );
   }
 
   // Add cross-reference issues
@@ -241,22 +252,19 @@ export async function runValidation(
     weight: 1 / Math.max(pdResult.requirementChecks.length, 1),
   }));
 
-  // Fallback: if prompt-derived extraction found no requirements, run rubric-based checks
+  // If prompt-derived extraction found zero requirements, degrade gracefully.
+  // This forces human review instead of silently producing a low-quality score.
   if (deterministicResults.length === 0) {
-    const { runAllDeterministicChecks } = await import('../validation/deterministic-checks.js');
-    const { stageValidationRules } = await import('../validation/rubrics.js');
-    const rule = stageValidationRules.find((r: any) => r.stageName === stageName);
-    if (rule) {
-      const { results: rubricResults } = runAllDeterministicChecks(stageOutput, rule.deterministicChecks);
-      deterministicResults = rubricResults.map((r: any) => ({
-        type: r.type,
-        name: r.name,
-        status: r.status,
-        score: r.score,
-        message: r.message,
-        weight: r.weight,
-      }));
-    }
+    deterministicResults = [{
+      type: 'requirement_check' as const,
+      name: 'Prompt Extraction',
+      status: 'WARN' as const,
+      score: 0.5,
+      message: 'Could not extract requirements from the stage prompt. Manual review required.',
+      weight: 1,
+    }];
+    // Cap confidence to force human review
+    adjustedScore = Math.min(adjustedScore, 50);
   }
 
   // Map LLM judge criteria → llm results
@@ -282,6 +290,9 @@ export async function runValidation(
     }
   }
 
+  // Cap score to 0-100 range
+  adjustedScore = Math.max(0, Math.min(100, adjustedScore));
+
   // Map prompt-derived result → FullValidationResult format
   return {
     pipelineRunId,
@@ -303,6 +314,14 @@ export async function runValidation(
         description: iss.message,
       })),
       ...crossRefIssues,
+      // Contract violations — structural requirements not met
+      ...(contractResult.violations || []).map((v: any, i: number) => ({
+        id: `contract-${i}`,
+        code: `contract_${v.type}`,
+        severity: v.severity === 'critical' ? 'ERROR' as const : 'WARN' as const,
+        title: `Contract: ${v.section || v.artifact || v.type}`,
+        description: v.message || `${v.type}: ${v.section || v.artifact || 'unknown'}`,
+      })),
       // Ground-truth mismatches
       ...pdResult.groundTruthAnchors
         .filter(a => !a.match)

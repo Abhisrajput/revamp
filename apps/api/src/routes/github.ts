@@ -12,6 +12,7 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import * as github from "@/services/github.js";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 
 // ─── SCHEMAS ────────────────────────────────────────────────────
 
@@ -51,6 +52,10 @@ const PushSchema = z.object({
   ),
 });
 
+// ─── Common response shapes ────────────────────────────────────
+
+const ErrorResponse = { type: "object" as const, properties: { error: { type: "string" } } };
+
 // ─── ROUTES ─────────────────────────────────────────────────────
 
 export async function githubRoutes(fastify: FastifyInstance) {
@@ -59,7 +64,19 @@ export async function githubRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Body: z.infer<typeof ValidateTokenSchema> }>(
     "/github/validate-token",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        body: ValidateTokenSchema,
+        tags: ["GitHub"],
+        summary: "Validate a GitHub personal access token",
+        response: {
+          200: { type: "object", properties: { valid: { type: "boolean" }, login: { type: "string" }, name: { type: "string" } } },
+          400: ErrorResponse,
+          401: { type: "object", properties: { valid: { type: "boolean" }, error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = ValidateTokenSchema.safeParse(request.body);
       if (!validation.success) {
@@ -88,7 +105,18 @@ export async function githubRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Querystring: z.infer<typeof TreeQuerySchema> }>(
     "/github/tree",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        querystring: TreeQuerySchema,
+        tags: ["GitHub"],
+        summary: "Fetch repository file tree",
+        response: {
+          200: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" }, branch: { type: "string" }, files: { type: "array", items: { type: "string" } }, file_count: { type: "number" }, truncated: { type: "boolean" } } },
+          400: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = TreeQuerySchema.safeParse(request.query);
       if (!validation.success) {
@@ -120,7 +148,18 @@ export async function githubRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Querystring: z.infer<typeof FileQuerySchema> }>(
     "/github/file",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        querystring: FileQuerySchema,
+        tags: ["GitHub"],
+        summary: "Fetch single file content from a repository",
+        response: {
+          200: { type: "object", properties: { path: { type: "string" }, content: { type: "string" }, size: { type: "number" } } },
+          400: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = FileQuerySchema.safeParse(request.query);
       if (!validation.success) {
@@ -148,7 +187,18 @@ export async function githubRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Querystring: z.infer<typeof BranchesQuerySchema> }>(
     "/github/branches",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        querystring: BranchesQuerySchema,
+        tags: ["GitHub"],
+        summary: "List repository branches",
+        response: {
+          200: { type: "object", properties: { branches: { type: "array", items: { type: "string" } } } },
+          400: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = BranchesQuerySchema.safeParse(request.query);
       if (!validation.success) {
@@ -172,7 +222,18 @@ export async function githubRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Body: z.infer<typeof PushSchema> }>(
     "/github/push",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        body: PushSchema,
+        tags: ["GitHub"],
+        summary: "Push files to a GitHub repository",
+        response: {
+          201: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" }, branch: { type: "string" }, commit_hash: { type: "string" }, changed_files: { type: "number" }, deleted_files: { type: "number" }, summary: { type: "string" } } },
+          400: ErrorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = PushSchema.safeParse(request.body);
       if (!validation.success) {

@@ -1,6 +1,7 @@
 'use client';
 
-import { usePipelineStore, type ScanSubtaskState } from '@/lib/stores/pipeline-store';
+import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import type { ScanSubtaskState } from '@/lib/stores/pipeline-types';
 import { CheckCircle2, Circle, Loader2, XCircle, Bot } from 'lucide-react';
 
 const TYPE_LABELS: Record<string, string> = {

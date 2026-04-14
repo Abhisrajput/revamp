@@ -190,6 +190,13 @@ export async function matchAndAssignAgent(
       // Non-fatal: continue without evolution context
     }
 
+    // Update agent status to 'working' so orchestrator UI shows it active
+    try {
+      await db.update(agentPersonas)
+        .set({ status: 'working' })
+        .where(eq(agentPersonas.id, match.agent.id));
+    } catch { /* non-fatal */ }
+
     return {
       agentId: match.agent.id,
       agentName: match.agent.name,
@@ -231,6 +238,13 @@ export async function recordAgentCompletion(
     result.tokensUsed,
     result.refinementCount,
   );
+
+  // Set agent back to idle so orchestrator UI shows it available
+  try {
+    await db.update(agentPersonas)
+      .set({ status: 'idle' })
+      .where(eq(agentPersonas.id, ctx.agentId));
+  } catch { /* non-fatal */ }
 
   // Record immutable cost event
   await recordCostEvent({

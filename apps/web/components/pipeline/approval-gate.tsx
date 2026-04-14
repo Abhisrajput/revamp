@@ -16,7 +16,7 @@ import {
   type StageValidation,
   type ApprovalHistoryEntry,
   DEFAULT_CONFIDENCE_THRESHOLD,
-} from '@/lib/stores/pipeline-store';
+} from '@/lib/stores/pipeline-types';
 
 // --- Types ---
 

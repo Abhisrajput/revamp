@@ -15,6 +15,7 @@
  */
 
 import { FastifyInstance } from "fastify";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 import {
   addClient,
   removeClient,
@@ -29,7 +30,13 @@ export async function agentEventsRoutes(fastify: FastifyInstance) {
   /**
    * GET /agent-department/events — WebSocket upgrade for real-time agent events.
    */
-  fastify.get("/agent-department/events", { websocket: true }, (socket, request) => {
+  fastify.get("/agent-department/events", {
+    schema: buildRouteSchema({
+      tags: ["Agent Events"],
+      summary: "WebSocket upgrade for real-time agent event stream",
+    }),
+    websocket: true,
+  }, (socket, request) => {
     const client = addClient(socket);
 
     fastify.log.info(

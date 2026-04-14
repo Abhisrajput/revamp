@@ -46,23 +46,6 @@ export interface AWSServiceInfo {
   limits?: Record<string, string>;
 }
 
-export interface AWSModernizationPattern {
-  legacyPattern: string;
-  /** Service IDs from the catalog */
-  awsServices: readonly string[];
-  description: string;
-  benefits: readonly string[];
-  /** Specific cost tips for this migration path */
-  costTips?: readonly string[];
-}
-
-export interface AWSArchitecturePattern {
-  name: string;
-  description: string;
-  components: readonly string[];
-  considerations: readonly string[];
-}
-
 // Architecture diagram node/edge/group types for rendering
 export interface AWSArchNode {
   id: string;
@@ -94,26 +77,6 @@ export interface AWSArchitectureSpec {
   edges: AWSArchEdge[];
   groups: AWSArchGroup[];
 }
-
-// ---------------------------------------------------------------------------
-// Category colors (for diagram rendering)
-// ---------------------------------------------------------------------------
-
-export const AWS_CATEGORY_COLORS: Record<CloudServiceCategory, string> = {
-  compute: '#ED7100',
-  containers: '#ED7100',
-  database: '#3B48CC',
-  storage: '#3F8624',
-  networking: '#8C4FFF',
-  messaging: '#E7157B',
-  security: '#DD344C',
-  monitoring: '#E7157B',
-  'ai-ml': '#01A88D',
-  cicd: '#3B48CC',
-  analytics: '#8C4FFF',
-  integration: '#E7157B',
-  management: '#E7157B',
-};
 
 // ---------------------------------------------------------------------------
 // Service catalog
@@ -748,12 +711,9 @@ export const AWS_SERVICES: AWSServiceInfo[] = [
 // Quick lookups
 // ---------------------------------------------------------------------------
 
-/** Map from service ID to full service info */
-export const AWS_SERVICE_MAP = new Map(AWS_SERVICES.map((s) => [s.id, s]));
-
 /** Get AWS service info by service ID */
 export function getAWSService(serviceId: string): AWSServiceInfo | null {
-  return AWS_SERVICE_MAP.get(serviceId) ?? null;
+  return AWS_SERVICES.find((s) => s.id === serviceId) ?? null;
 }
 
 /** Get all AWS services in a category */
@@ -769,193 +729,3 @@ export function findAWSServicesForUseCase(useCase: string): AWSServiceInfo[] {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Legacy -> AWS modernization patterns
-// ---------------------------------------------------------------------------
-
-export const AWS_MODERNIZATION_PATTERNS: AWSModernizationPattern[] = [
-  {
-    legacyPattern: 'On-premises relational database (Oracle, SQL Server, MySQL)',
-    awsServices: ['rds', 'aurora'],
-    description: 'Migrate to Amazon RDS or Aurora for managed relational databases with automated backups, patching, and Multi-AZ failover.',
-    benefits: ['No server management', 'Automated backups', 'Multi-AZ high availability', '5x performance with Aurora'],
-    costTips: ['Use Reserved Instances for predictable workloads (up to 69% savings)', 'Aurora Serverless v2 for variable traffic', 'Right-size instances with Performance Insights'],
-  },
-  {
-    legacyPattern: 'Monolithic application server (WebSphere, JBoss, Tomcat)',
-    awsServices: ['ecs', 'fargate', 'alb'],
-    description: 'Containerize the monolith and deploy on ECS/Fargate behind an ALB. Use strangler fig pattern to extract microservices incrementally.',
-    benefits: ['No server management with Fargate', 'Auto-scaling', 'Rolling deployments', 'Path-based routing via ALB'],
-    costTips: ['Start with Fargate Spot for non-critical workloads', 'Use ECS Capacity Providers for mixed Spot/On-Demand', 'Right-size task definitions'],
-  },
-  {
-    legacyPattern: 'Batch processing / Cron jobs',
-    awsServices: ['lambda', 'step-functions', 'eventbridge'],
-    description: 'Replace cron-based batch jobs with EventBridge scheduled rules triggering Lambda functions or Step Functions workflows.',
-    benefits: ['Pay-per-execution', 'Built-in retry/error handling', 'Visual workflow monitoring', 'No idle compute costs'],
-    costTips: ['Use Step Functions Express for high-volume short workflows', 'Arm64 Lambda for 20% cost reduction', 'Optimize memory to find cost sweet spot'],
-  },
-  {
-    legacyPattern: 'Message queue (IBM MQ, RabbitMQ, ActiveMQ)',
-    awsServices: ['sqs', 'sns', 'mq'],
-    description: 'For JMS/AMQP compatibility use Amazon MQ. For new designs, use SQS (point-to-point) + SNS (pub/sub) for fully managed messaging.',
-    benefits: ['Unlimited throughput with SQS', 'No broker management', 'Dead letter queues', 'Fan-out with SNS'],
-    costTips: ['SQS long polling reduces empty receives', 'Batch send/receive for throughput and cost', 'SNS message filtering to reduce downstream costs'],
-  },
-  {
-    legacyPattern: 'File server / NAS / shared storage',
-    awsServices: ['s3', 'efs'],
-    description: 'Migrate file shares to S3 for object storage or EFS for POSIX-compatible shared filesystems.',
-    benefits: ['99.999999999% durability', 'Automatic scaling', 'Lifecycle policies', 'Versioning'],
-    costTips: ['S3 Intelligent-Tiering for unknown access patterns', 'EFS Infrequent Access for cold data', 'Lifecycle rules to move to Glacier after 90 days'],
-  },
-  {
-    legacyPattern: 'Monolithic frontend (JSP, ASP.NET, PHP templates)',
-    awsServices: ['cloudfront', 's3', 'api-gateway'],
-    description: 'Rebuild as a SPA (React/Vue/Angular) hosted on S3 + CloudFront CDN with API Gateway for backend APIs.',
-    benefits: ['Global CDN distribution', 'Instant scaling', 'Cache at edge', 'API management'],
-    costTips: ['CloudFront free tier includes 1 TB transfer', 'Use HTTP API instead of REST API for 71% savings', 'Enable compression for reduced transfer costs'],
-  },
-  {
-    legacyPattern: 'In-memory cache (local, Memcached, Redis)',
-    awsServices: ['elasticache'],
-    description: 'Migrate to Amazon ElastiCache for managed Redis or Memcached with automatic failover and scaling.',
-    benefits: ['Sub-millisecond latency', 'Auto-failover', 'Cluster mode', 'Backup/restore'],
-    costTips: ['Use Reserved Nodes for 30-55% savings', 'Right-size with CloudWatch metrics', 'Consider Graviton (r7g) nodes for better price-performance'],
-  },
-  {
-    legacyPattern: 'Custom authentication / LDAP / Active Directory',
-    awsServices: ['cognito', 'iam'],
-    description: 'Replace custom auth with Amazon Cognito for user pools with built-in MFA, social login, and OIDC/SAML federation.',
-    benefits: ['Built-in MFA', 'Social login', 'Standards-based (OAuth2/OIDC)', 'Adaptive authentication'],
-    costTips: ['First 50K MAU free', 'Use Cognito groups instead of per-user attribute lookups'],
-  },
-  {
-    legacyPattern: 'SOAP / XML web services',
-    awsServices: ['api-gateway', 'lambda'],
-    description: 'Wrap legacy SOAP services behind API Gateway with Lambda transformers converting XML to JSON. Gradually replace with REST/GraphQL.',
-    benefits: ['Protocol translation', 'Rate limiting', 'API versioning', 'Usage analytics'],
-    costTips: ['HTTP API for simple proxy (lower cost than REST API)', 'Cache responses at API Gateway to reduce Lambda invocations'],
-  },
-  {
-    legacyPattern: 'ETL pipelines / Data warehouse',
-    awsServices: ['step-functions', 'lambda', 'redshift', 's3'],
-    description: 'Replace legacy ETL with Step Functions orchestrating Lambda for transformation, S3 as data lake, and Redshift for analytics.',
-    benefits: ['Serverless ETL', 'Visual pipeline monitoring', 'Petabyte-scale analytics', 'Separation of storage and compute'],
-    costTips: ['Redshift Serverless for intermittent analytics', 'S3 as staging area to decouple ingest from analysis', 'Use Redshift Spectrum to query S3 directly'],
-  },
-  {
-    legacyPattern: 'VM-based deployment / manual ops',
-    awsServices: ['codepipeline', 'codebuild', 'codedeploy', 'ecr'],
-    description: 'Implement CI/CD pipeline with CodePipeline, CodeBuild, ECR, and CodeDeploy with blue/green deployment strategy.',
-    benefits: ['Automated deployments', 'Blue/green with rollback', 'Build caching', 'Deployment approval gates'],
-    costTips: ['CodePipeline V2 for pay-per-action pricing', 'CodeBuild caching to reduce build minutes', 'ECR lifecycle policies to prune old images'],
-  },
-  {
-    legacyPattern: 'Mainframe / COBOL / AS/400',
-    awsServices: ['lambda', 'api-gateway', 'dynamodb', 'step-functions', 'sqs'],
-    description: 'Decompose mainframe transactions into microservices using API Gateway + Lambda. Use DynamoDB for high-throughput data and Step Functions for transaction orchestration.',
-    benefits: ['Incremental migration', 'Pay-per-transaction', 'Horizontal scaling', 'Modern API surface'],
-    costTips: ['DynamoDB on-demand mode during migration (switch to provisioned later)', 'Lambda Provisioned Concurrency only for latency-critical paths'],
-  },
-  {
-    legacyPattern: 'Monitoring / logging (Nagios, ELK, Splunk)',
-    awsServices: ['cloudwatch', 'xray', 'cloudtrail'],
-    description: 'Consolidate monitoring on CloudWatch (metrics + logs + alarms), X-Ray for distributed tracing, and CloudTrail for audit logging.',
-    benefits: ['Unified observability', 'Automatic log collection', 'Distributed tracing', 'Compliance auditing'],
-    costTips: ['Use CloudWatch Logs Insights instead of streaming to ElasticSearch', 'Set log retention to reduce storage costs', 'X-Ray sampling to control trace volume'],
-  },
-  {
-    legacyPattern: 'Event-driven architecture / ESB',
-    awsServices: ['eventbridge', 'sns', 'sqs', 'step-functions'],
-    description: 'Replace enterprise service bus with EventBridge as the central event router, SNS for pub/sub, SQS for buffering, and Step Functions for orchestration.',
-    benefits: ['Schema registry', 'Event replay', 'Cross-account routing', 'SaaS integration'],
-    costTips: ['EventBridge archive selectively (not all events)', 'SQS long polling', 'Step Functions Express for high-volume workflows'],
-  },
-  {
-    legacyPattern: 'Static infrastructure / manual provisioning',
-    awsServices: ['cloudformation', 'cdk'],
-    description: 'Define all infrastructure as code using CloudFormation templates or AWS CDK for type-safe infrastructure definitions.',
-    benefits: ['Repeatable deployments', 'Version-controlled infra', 'Drift detection', 'Multi-environment consistency'],
-    costTips: ['No cost for IaC tools themselves', 'Use CDK aspects to enforce tagging/compliance', 'StackSets for multi-account governance'],
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Architecture patterns (high-level blueprints)
-// ---------------------------------------------------------------------------
-
-export const AWS_ARCHITECTURE_PATTERNS: AWSArchitecturePattern[] = [
-  {
-    name: 'Microservices on AWS',
-    description: 'Deploy microservices using ECS, EKS, or Lambda behind ALB/API Gateway',
-    components: ['ecs', 'eks', 'alb', 'api-gateway', 'rds', 'dynamodb', 'sqs', 'sns'],
-    considerations: ['Service discovery (Cloud Map)', 'API Gateway for external-facing APIs', 'Inter-service communication (sync vs async)', 'Shared data patterns', 'Deployment automation with CodePipeline'],
-  },
-  {
-    name: 'Serverless Applications',
-    description: 'Event-driven serverless architecture with zero server management',
-    components: ['lambda', 'api-gateway', 'dynamodb', 's3', 'sns', 'sqs', 'step-functions'],
-    considerations: ['Cold start mitigation', 'Duration limits (15 min)', 'State management via DynamoDB/Step Functions', 'Scaling characteristics', 'Cost monitoring at scale'],
-  },
-  {
-    name: 'Data Lake on AWS',
-    description: 'Store and analyze large-scale data with separation of storage and compute',
-    components: ['s3', 'redshift', 'kinesis', 'lambda', 'cloudwatch'],
-    considerations: ['Data partitioning (Hive-style)', 'Metadata catalog (Glue)', 'Access controls (Lake Formation)', 'Cost optimization (storage classes)', 'Query performance (columnar formats)'],
-  },
-  {
-    name: 'Event-Driven Architecture',
-    description: 'Loosely coupled event-driven systems using managed messaging',
-    components: ['eventbridge', 'sqs', 'sns', 'kinesis', 'lambda', 'step-functions'],
-    considerations: ['Event schema design', 'Retry and dead-letter strategies', 'Event ordering guarantees', 'Consumer scaling patterns', 'Observability across event flows'],
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Cost optimization tips (general AWS)
-// ---------------------------------------------------------------------------
-
-export const AWS_COST_OPTIMIZATION_TIPS: string[] = [
-  'Use Savings Plans or Reserved Instances for predictable workloads (up to 72% savings)',
-  'Enable S3 Intelligent-Tiering for objects with unknown access patterns',
-  'Right-size EC2 instances using AWS Compute Optimizer',
-  'Use Spot Instances for fault-tolerant workloads (up to 90% savings)',
-  'Delete unused EBS volumes, snapshots, and Elastic IPs',
-  'Set CloudWatch Logs retention policies (default is forever)',
-  'Use Graviton (Arm64) instances for 20-40% better price-performance',
-  'Enable DynamoDB auto-scaling or on-demand mode to avoid over-provisioning',
-  'Use NAT Gateway endpoints for S3/DynamoDB to avoid data transfer charges',
-  'Consolidate accounts under AWS Organizations for volume discounts',
-];
-
-// ---------------------------------------------------------------------------
-// Prompt context builder — inject into modernization stages
-// ---------------------------------------------------------------------------
-
-export function buildAWSKnowledgeContext(): string {
-  const byCategory = new Map<string, string[]>();
-  for (const s of AWS_SERVICES) {
-    const list = byCategory.get(s.category) || [];
-    list.push(`${s.id} (${s.shortName})`);
-    byCategory.set(s.category, list);
-  }
-  const serviceCatalog = Array.from(byCategory.entries())
-    .map(([cat, svcs]) => `- **${cat}**: ${svcs.join(', ')}`)
-    .join('\n');
-
-  const patterns = AWS_MODERNIZATION_PATTERNS.map(
-    (p) => `- ${p.legacyPattern} -> ${p.awsServices.join(', ')}`,
-  ).join('\n');
-
-  return [
-    '## AWS Service IDs (use these in awsArchSpec nodes)',
-    serviceCatalog,
-    '',
-    '## Legacy -> AWS Patterns',
-    patterns,
-    '',
-    'Return `awsArchSpec` JSON: {"title":"string","nodes":[{"id":"string","service":"<service-id>","label":"string","group":"group-id"}],"edges":[{"from":"id","to":"id","label":"string"}],"groups":[{"id":"string","label":"string","type":"vpc|subnet|az|region|generic"}]}',
-    'Valid service IDs: ' + AWS_SERVICES.map((s) => s.id).join(', '),
-  ].join('\n');
-}

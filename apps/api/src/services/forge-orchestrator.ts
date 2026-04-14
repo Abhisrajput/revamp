@@ -95,6 +95,9 @@ export async function orchestrateForgeStage(
     if (opts.signal?.aborted) throw new Error("Stage execution aborted");
   };
 
+  // Track failed file saves to detect data loss
+  const failedSaves: string[] = [];
+
   // ── STEP 1: Load prior context ────────────────────────────────
   emit("context_retrieval", { message: "Loading prior stage outputs..." });
 
@@ -513,14 +516,20 @@ ${gapBatch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.lang
 
             generatedFiles.push({ path: filePath, content, language, description: planned?.description || filePath, rules: planned?.rules || [] });
 
-            await db.insert(modernizedFiles).values({
-              project_id: (projectConfig?.id ?? projectConfig?.projectId ?? opts.pipelineRunId) as string,
-              pipeline_run_id: opts.pipelineRunId,
-              file_path: filePath, file_name: filePath.split('/').pop() || filePath,
-              language, content, file_size: content.length, is_new: true,
-            }).catch((err) => {
-              console.error(`[FORGE] failed to save modernized file ${filePath}:`, err instanceof Error ? err.message : err);
-            });
+            try {
+              await db.insert(modernizedFiles).values({
+                project_id: (projectConfig?.id ?? projectConfig?.projectId ?? opts.pipelineRunId) as string,
+                pipeline_run_id: opts.pipelineRunId,
+                file_path: filePath, file_name: filePath.split('/').pop() || filePath,
+                language, content, file_size: content.length, is_new: true,
+              });
+            } catch (saveErr) {
+              failedSaves.push(filePath);
+              emit("subtask_failed", {
+                message: `Failed to save file: ${filePath}`,
+                error: saveErr instanceof Error ? saveErr.message : String(saveErr),
+              });
+            }
 
             emit("subtask_executing", { path: filePath, language, size: content.length });
           }
@@ -531,6 +540,22 @@ ${gapBatch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.lang
     } catch (planErr) {
       emit("director_planning", { message: `Gap-fill planning error: ${planErr instanceof Error ? planErr.message : String(planErr)}` });
       break;
+    }
+  }
+
+  // Check file save failure rate — fail the stage if too many files were lost
+  if (failedSaves.length > 0) {
+    const failRate = failedSaves.length / Math.max(generatedFiles.length, 1);
+    emit("composing", {
+      message: `WARNING: ${failedSaves.length}/${generatedFiles.length} files failed to save to database`,
+      failedFiles: failedSaves,
+      failRate: Math.round(failRate * 100),
+    });
+    if (failRate > 0.2) {
+      throw new Error(
+        `FORGE stage failed: ${failedSaves.length}/${generatedFiles.length} generated files could not be saved (${Math.round(failRate * 100)}% failure rate). ` +
+        `First failures: ${failedSaves.slice(0, 5).join(', ')}`,
+      );
     }
   }
 
@@ -546,18 +571,21 @@ ${gapBatch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.lang
   const projectId = (projectConfig?.id ?? projectConfig?.projectId ?? opts.pipelineRunId) as string;
   for (const file of generatedFiles) {
     for (const ruleId of file.rules) {
-      await db.insert(traceabilityEntries).values({
-        project_id: projectId,
-        pipeline_run_id: opts.pipelineRunId,
-        rule_id: ruleId,
-        rule_text: `Business rule ${ruleId}`,
-        target_file_path: file.path,
-        status: "implemented",
-        confidence: "0.85",
-        notes: file.description,
-      }).catch((err) => {
-        console.error(`[FORGE] traceability entry failed for ${file.path}/${ruleId}:`, err instanceof Error ? err.message : err);
-      });
+      try {
+        await db.insert(traceabilityEntries).values({
+          project_id: projectId,
+          pipeline_run_id: opts.pipelineRunId,
+          rule_id: ruleId,
+          rule_text: `Business rule ${ruleId}`,
+          target_file_path: file.path,
+          status: "implemented",
+          confidence: "0.85",
+          notes: file.description,
+        });
+      } catch (traceErr) {
+        // Traceability is non-blocking but logged for visibility
+        console.warn(`[FORGE] traceability entry failed for ${file.path}/${ruleId}:`, traceErr instanceof Error ? traceErr.message : traceErr);
+      }
     }
   }
 
@@ -639,8 +667,23 @@ ${gapBatch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.lang
   // ── STEP 6: Validate ──────────────────────────────────────────
   emit("validating" as StagePhase, { message: "Validating generated code..." });
 
-  const stagePrompt = (projectConfig?.stagePrompts as Record<string, string> | undefined)?.["5"] || "";
-  const validationPrompt = (projectConfig?.validationPrompts as Record<string, string> | undefined)?.["5"] || "";
+  const prompts = (projectConfig?.stagePrompts as Record<string, string>) || {};
+  const valPrompts = (projectConfig?.validationPrompts as Record<string, string>) || {};
+  let stagePrompt = prompts["5"] || prompts["FORGE"] || "";
+  let validationPrompt = valPrompts["5"] || valPrompts["FORGE"] || "";
+  // Fallback to defaults so validation never degrades
+  if (!stagePrompt) {
+    try {
+      const { DEFAULT_STAGE_PROMPTS } = await import("@revamp/core-engine");
+      stagePrompt = DEFAULT_STAGE_PROMPTS["FORGE"] || DEFAULT_STAGE_PROMPTS["5"] || "";
+    } catch { /* non-fatal */ }
+  }
+  if (!validationPrompt) {
+    try {
+      const { DEFAULT_VALIDATION_PROMPTS } = await import("@revamp/core-engine");
+      validationPrompt = DEFAULT_VALIDATION_PROMPTS["FORGE"] || DEFAULT_VALIDATION_PROMPTS["5"] || "";
+    } catch { /* non-fatal */ }
+  }
 
   let validationResult: FullValidationResult | null = null;
   try {

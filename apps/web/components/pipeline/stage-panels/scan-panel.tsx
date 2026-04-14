@@ -14,7 +14,9 @@ import { BreeOutputTab } from '@/components/pipeline/bree-output-tab';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
-import { usePipelineStore, canExecuteStage, getStageBlockReason, shouldShowApprovalGate } from '@/lib/stores/pipeline-store';
+import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import { usePipelineActivityStore } from '@/lib/stores/pipeline-activity-store';
+import { canExecuteStage, getStageBlockReason, shouldShowApprovalGate } from '@/lib/stores/pipeline-types';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 import type { StagePanelProps } from './types';
@@ -255,7 +257,7 @@ export default function ScanPanel({
   currentPhase,
   onRefineRequest: _onRefineRequest,
 }: StagePanelProps) {
-  const logs = usePipelineStore((s) => s.logs);
+  const logs = usePipelineActivityStore((s) => s.logs);
   const stages = usePipelineStore((s) => s.stages);
   const isRunning = stage.status === 'generating' || stage.status === 'validating';
   const hasOutput = !!(stage.output || streamingText);
@@ -361,7 +363,7 @@ export default function ScanPanel({
     }
 
     // Log the start of execution so the user sees activity
-    usePipelineStore.getState().addLog({
+    usePipelineActivityStore.getState().addLog({
       id: `log-scan-start-${Date.now()}`,
       timestamp: new Date().toISOString(),
       level: 'info',

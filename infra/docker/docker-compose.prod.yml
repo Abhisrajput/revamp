@@ -111,7 +111,7 @@ services:
     build:
       context: ../../apps/api
       dockerfile: ../../infra/docker/Dockerfile.api
-    container_name: revamp-api-1
+    # Note: container_name removed — incompatible with deploy.replicas > 1
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -122,6 +122,9 @@ services:
       MINIO_SECRET_KEY: ${MINIO_PASSWORD}
       MINIO_BUCKET: revamp
       MINIO_USE_SSL: "true"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?CREDENTIAL_ENCRYPTION_KEY is required}
+      LLM_ORCHESTRATOR_URL: http://llm-orchestrator:8080
       LOG_LEVEL: info
       NODE_OPTIONS: "--max-old-space-size=2048"
     depends_on:
@@ -231,6 +234,64 @@ services:
         limits:
           cpus: '1'
           memory: 512M
+
+  # ─── Database Backup CronJob ────────────────────────────────────
+  # Runs pg_dump daily at 2 AM and uploads to MinIO (S3-compatible).
+  # Keeps 30 days of backups. Restore: pg_restore -d revamp < backup.dump
+  db-backup:
+    image: postgres:16-alpine
+    container_name: revamp-db-backup
+    environment:
+      PGHOST: postgres-primary
+      PGUSER: ${DB_USER:-revamp}
+      PGPASSWORD: ${DB_PASSWORD}
+      PGDATABASE: revamp
+      BACKUP_BUCKET: revamp-backups
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_PASSWORD}
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        apk add --no-cache curl && \
+        while true; do
+          echo "[backup] Starting database backup at $$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          BACKUP_FILE="/tmp/revamp-$$(date +%Y%m%d-%H%M%S).dump"
+          pg_dump -Fc --no-owner --no-privileges > "$$BACKUP_FILE" 2>/dev/null
+          if [ $$? -eq 0 ]; then
+            SIZE=$$(stat -f%z "$$BACKUP_FILE" 2>/dev/null || stat -c%s "$$BACKUP_FILE")
+            echo "[backup] Dump complete: $$SIZE bytes"
+            # Upload to MinIO using curl (no mc client needed)
+            DATE=$$(date -u +%Y%m%d)
+            curl -s -X PUT \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$$BACKUP_FILE" \
+              "$$MINIO_ENDPOINT/$$BACKUP_BUCKET/daily/$$DATE/$$(basename $$BACKUP_FILE)" \
+              -u "$$MINIO_ACCESS_KEY:$$MINIO_SECRET_KEY" && \
+              echo "[backup] Uploaded to MinIO: daily/$$DATE/$$(basename $$BACKUP_FILE)" || \
+              echo "[backup] ERROR: Upload to MinIO failed"
+            rm -f "$$BACKUP_FILE"
+          else
+            echo "[backup] ERROR: pg_dump failed"
+          fi
+          # Sleep until 2 AM next day (86400 seconds = 24 hours)
+          echo "[backup] Next backup in 24 hours"
+          sleep 86400
+        done
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - revamp-network
+    restart: on-failure
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
 
 volumes:
   postgres_primary_data:

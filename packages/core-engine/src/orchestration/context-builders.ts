@@ -23,6 +23,12 @@ export interface FileAnalysis {
   keyFiles: string[];
   codeSnippets: Array<{ path: string; language: string; content: string }>;
   detectedLanguages: string[];
+  /** Framework/runtime versions extracted from config files */
+  frameworkVersions?: Array<{ name: string; version: string; source: string }>;
+  /** Migration/schema file stats */
+  migrationStats?: { count: number; earliest: string; latest: string; directory: string };
+  /** Component counts by directory */
+  componentCounts?: Array<{ name: string; directory: string; count: number }>;
 }
 
 export interface ProjectContext {
@@ -198,16 +204,18 @@ const STAGE_GOALS: Record<PipelineStageName, StageGoal> = {
 };
 
 // Per-stage char budgets for prior context inclusion.
-// Earlier stages get more space because they're foundational.
+// Later stages need MORE prior context — they synthesize outputs from all earlier stages.
+// Capped at 12K to avoid diluting the model's generative output with too much recap.
+// The weight formula (below) gives stages closest to the current one the largest share.
 const PRIOR_CONTEXT_BUDGETS: Record<PipelineStageName, number> = {
   [PipelineStageName.SCAN]: 0,
-  [PipelineStageName.DECODE]: 8000,
-  [PipelineStageName.BLUEPRINT]: 10000,
-  [PipelineStageName.SPEC_LOCK]: 10000,
-  [PipelineStageName.ARCHITECT]: 12000,
-  [PipelineStageName.FORGE]: 10000,
-  [PipelineStageName.SHADOW_RUN]: 8000,
-  [PipelineStageName.EVOLVE]: 6000,
+  [PipelineStageName.DECODE]: 4000,
+  [PipelineStageName.BLUEPRINT]: 6000,
+  [PipelineStageName.SPEC_LOCK]: 8000,
+  [PipelineStageName.ARCHITECT]: 10000,
+  [PipelineStageName.FORGE]: 12000,
+  [PipelineStageName.SHADOW_RUN]: 12000,
+  [PipelineStageName.EVOLVE]: 10000,
 };
 
 // ─── BUILDERS ───────────────────────────────────────────────────
@@ -290,6 +298,46 @@ export function buildProjectContext(project: ProjectContext): string {
         parts.push('```');
       }
     }
+
+    // ─── GROUND TRUTH: verified data from config files ──────────
+    // This block provides exact versions, counts, and stats that
+    // downstream stages MUST reference instead of guessing.
+    const hasGroundTruth = fa.frameworkVersions?.length || fa.componentCounts?.length || fa.migrationStats;
+    if (hasGroundTruth) {
+      parts.push('', '## Verified Ground Truth (from config files — DO NOT override)');
+      parts.push('The following data is extracted directly from the codebase config files. Use these EXACT values when referencing versions, component counts, or migration data. Do NOT substitute estimates or training-data knowledge.');
+
+      if (fa.frameworkVersions && fa.frameworkVersions.length > 0) {
+        const runtimeDeps = fa.frameworkVersions.filter(fv => !fv.name.endsWith(' (dev)'));
+        if (runtimeDeps.length > 0) {
+          parts.push('', '### Technology Stack (verified)');
+          parts.push('| Technology | Version | Source |');
+          parts.push('|------------|---------|--------|');
+          for (const fv of runtimeDeps.slice(0, 40)) {
+            parts.push(`| ${fv.name} | ${fv.version} | ${fv.source} |`);
+          }
+        }
+      }
+
+      if (fa.componentCounts && fa.componentCounts.length > 0) {
+        parts.push('', '### Component Counts (verified)');
+        parts.push('| Component | Directory | Count |');
+        parts.push('|-----------|-----------|-------|');
+        for (const cc of fa.componentCounts) {
+          parts.push(`| ${cc.name} | ${cc.directory} | ${cc.count} |`);
+        }
+      }
+
+      if (fa.migrationStats) {
+        parts.push('', '### Migration Stats (verified)');
+        parts.push(`- **Count:** ${fa.migrationStats.count} files`);
+        parts.push(`- **Earliest:** ${fa.migrationStats.earliest}`);
+        parts.push(`- **Latest:** ${fa.migrationStats.latest}`);
+        parts.push(`- **Directory:** ${fa.migrationStats.directory}`);
+      }
+
+      parts.push('', 'If a technology is NOT listed above, it does NOT exist in this codebase.');
+    }
   }
 
   if (project.supportingDocs && project.supportingDocs.length > 0) {
@@ -324,10 +372,22 @@ export function buildPriorStageContext(
   // Sort by stage order
   const sorted = [...priorOutputs].sort((a, b) => a.stageIndex - b.stageIndex);
 
-  // Allocate budget: earlier stages get slightly more weight
-  const totalWeight = sorted.reduce((s, _, i) => s + (sorted.length - i), 0);
-  const allocated = sorted.map((_, i) => {
-    const weight = (sorted.length - i) / totalWeight;
+  // Allocate budget by stage importance — foundational stages (SCAN, DECODE)
+  // get more context than later stages, because they contain the architecture
+  // overview and business rules that all subsequent stages must respect.
+  const IMPORTANCE_WEIGHTS: Record<string, number> = {
+    SCAN: 0.25,        // Architecture overview — foundational
+    DECODE: 0.22,      // Business rules — critical reference
+    BLUEPRINT: 0.15,   // Capability map — structural guide
+    SPEC_LOCK: 0.13,   // BDD specs — behavioral contract
+    ARCHITECT: 0.10,   // Strategy decisions
+    FORGE: 0.07,       // Implementation details
+    SHADOW_RUN: 0.05,  // Validation results
+    EVOLVE: 0.03,      // Operations plan
+  };
+
+  const allocated = sorted.map((stage) => {
+    const weight = IMPORTANCE_WEIGHTS[stage.stageName] ?? (1 / sorted.length);
     return Math.floor(budget * weight);
   });
 
@@ -508,11 +568,27 @@ export function assembleStagePrompt(
     '',
     '## Rules',
     '- Be thorough and specific. Reference concrete files, line numbers, and code snippets.',
-    '- Use Mermaid diagrams for all architectural/dependency visualizations.',
+    '- Use Mermaid diagrams for architectural/dependency visualizations (except in SCAN stage).',
     '- Label every code block with its file path: `// File: path/to/file.ext`',
     '- Include all required sections with substantive content (no placeholders, no TBDs).',
     '- Build explicitly on prior stage outputs — reference their findings by name.',
     stageIndex >= 5 ? '- You have write access. Generate production-ready, buildable code.' : '- You are in analysis mode. Do not generate implementation code yet.',
+    '',
+    '## Ground Truth (CRITICAL)',
+    '- The project context contains a "Verified Ground Truth" section with exact versions, component counts, and migration stats extracted from config files.',
+    '- When referencing technology versions, COPY the exact version string from the verified data (e.g. if verified data says ">=8.5", write ">=8.5" — NOT "8.4", "8.5", or "8.x").',
+    '- When referencing component counts (controllers, models, etc.), use the EXACT verified number.',
+    '- If a technology or dependency is NOT listed in the verified data, it does NOT exist in this codebase — do NOT invent it.',
+    '- When citing file line counts (e.g. "god class with X lines"), use the verified largest-files data.',
+    '- Do NOT round, paraphrase, or approximate verified values. Copy them verbatim.',
+    '- If you reference a file path, that file MUST exist in the codebase. Do NOT fabricate file paths or method names.',
+    '',
+    '## Advisor',
+    'You may have access to an `advisor` tool backed by a stronger model. If available, call it:',
+    '- Before committing to architectural decisions or trade-offs',
+    '- When merging conflicting information from multiple sources',
+    '- When stuck or when your approach is not converging',
+    'The advisor sees your full context. Give its guidance serious weight.',
   ].join('\n');
 
   // User prompt — includes variable content
@@ -614,9 +690,9 @@ const SMALL_CODEBASE_THRESHOLD = 30;
  *   read only the most relevant files. Use read_file_range for large files.
  *   Prefer lsp_document_symbols over reading entire files.
  */
-export type CodebaseStrategy = 'full_read' | 'targeted_search';
+type CodebaseStrategy = 'full_read' | 'targeted_search';
 
-export interface CodebaseAdaptation {
+interface CodebaseAdaptation {
   strategy: CodebaseStrategy;
   totalFiles: number;
   /** Recommended max tool calls for this strategy */
@@ -632,7 +708,7 @@ export interface CodebaseAdaptation {
  * @param fileAnalysis - Real file analysis from codebase scan (if available)
  * @param fallbackFileCount - Estimated file count (used when no real scan available)
  */
-export function determineCodebaseStrategy(
+function determineCodebaseStrategy(
   fileAnalysis?: FileAnalysis,
   fallbackFileCount?: number,
 ): CodebaseAdaptation {

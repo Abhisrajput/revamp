@@ -71,6 +71,11 @@ func (cb *CircuitBreaker) CanExecute(providerName string) bool {
 		}
 		return false
 	case StateHalfOpen:
+		// Rate-limit probe requests — allow max 1 per 5 seconds to avoid
+		// hammering a recovering provider.
+		if time.Since(breaker.lastFailureTime) < 5*time.Second {
+			return false
+		}
 		return true
 	default:
 		return true
@@ -162,6 +167,17 @@ func (cb *CircuitBreaker) recordFailure(providerName string) {
 	breaker.failureCount++
 	breaker.successCount = 0
 	breaker.lastFailureTime = time.Now()
+
+	// In HalfOpen state, revert to Open immediately on ANY failure.
+	// The probe request failed, meaning the provider isn't recovered yet.
+	if breaker.state == StateHalfOpen {
+		cb.logger.Warn("Circuit breaker re-opened (half-open probe failed)",
+			zap.String("provider", providerName),
+		)
+		breaker.state = StateOpen
+		breaker.failureCount = 0 // Reset for next timeout cycle
+		return
+	}
 
 	if breaker.failureCount >= breaker.config.FailureThreshold {
 		cb.logger.Warn("Circuit breaker opened",

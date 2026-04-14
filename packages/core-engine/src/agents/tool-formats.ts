@@ -225,7 +225,7 @@ export function formatToolsForProvider(
  * Detect the provider type from a model name.
  * Useful for auto-selecting the correct tool format.
  */
-export function detectProviderFromModel(model: string): ToolFormatProvider {
+function detectProviderFromModel(model: string): ToolFormatProvider {
   const lower = model.toLowerCase();
 
   // OpenAI Responses API models

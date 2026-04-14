@@ -2,7 +2,9 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
-import { usePipelineStore, stageRequiresApproval } from '@/lib/stores/pipeline-store';
+import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import { usePipelineActivityStore } from '@/lib/stores/pipeline-activity-store';
+import { stageRequiresApproval } from '@/lib/stores/pipeline-types';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { useNotificationStore } from '@/lib/stores/notification-store';
 
@@ -44,6 +46,8 @@ interface ExecuteOptions {
   composerModel?: string;
   /** Override evaluator/validation model for this stage */
   evaluatorModel?: string;
+  /** Max output tokens */
+  maxTokens?: number;
 }
 
 interface UseStageExecutionReturn {
@@ -63,6 +67,7 @@ export function useStageExecution(): UseStageExecutionReturn {
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const store = usePipelineStore;
+  const activityStore = usePipelineActivityStore;
 
   const executeStage = useCallback(
     (pipelineRunId: string, stageName: string, options: ExecuteOptions = {}) => {
@@ -88,6 +93,7 @@ export function useStageExecution(): UseStageExecutionReturn {
 
       fetch(`${BASE_URL}/pipeline/${pipelineRunId}/stage/${stageName}`, {
         method: 'POST',
+        credentials: 'include', // Send HttpOnly cookie for auth
         headers: {
           'Content-Type': 'application/json',
           ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
@@ -99,6 +105,7 @@ export function useStageExecution(): UseStageExecutionReturn {
           ...(options.evaluatorModel ? { evaluator_model: options.evaluatorModel } : {}),
           ...(options.promptOverride ? { prompt_override: options.promptOverride } : {}),
           ...(options.validationFeedback?.length ? { validation_feedback: options.validationFeedback } : {}),
+          ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
         }),
         signal: controller.signal,
       })
@@ -174,11 +181,40 @@ export function useStageExecution(): UseStageExecutionReturn {
 
           return processChunk();
         })
-        .catch((err) => {
+        .catch(async (err) => {
           if (err.name === 'AbortError') {
             isExecutingRef.current = false;
             setIsExecuting(false);
             return;
+          }
+
+          // On stream failure, check if the stage is still running on the backend.
+          // A network glitch may drop the SSE connection while the backend continues.
+          // Poll status once before declaring failure — avoids false "failed" state.
+          try {
+            const statusRes = await fetch(`${BASE_URL}/pipeline/${pipelineRunId}/status`, {
+              credentials: 'include',
+              headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+            });
+            if (statusRes.ok) {
+              const status = await statusRes.json();
+              const sp = status?.stage_progress?.[stageName];
+              if (sp?.status === 'in_progress' || sp?.status === 'completed' || sp?.status === 'awaiting_approval') {
+                // Backend is still running or already completed — don't mark as failed
+                activityStore.getState().addLog({
+                  type: 'warn',
+                  message: `SSE connection lost but backend reports stage is ${sp.status}. Refresh to see results.`,
+                  timestamp: new Date().toISOString(),
+                });
+                flashError(stageName, 'Connection lost — stage may still be running. Refresh to check status.');
+                isExecutingRef.current = false;
+                setIsExecuting(false);
+                setCurrentPhase(null);
+                return;
+              }
+            }
+          } catch {
+            // Status check failed too — fall through to failure
           }
 
           const s = store.getState();
@@ -186,7 +222,7 @@ export function useStageExecution(): UseStageExecutionReturn {
           if (idx >= 0) {
             s.setStageStatus(idx, 'failed');
             const errMsg = err.message ?? 'Stage execution failed';
-            s.addLog({ type: 'error', message: errMsg, timestamp: new Date().toISOString() });
+            activityStore.getState().addLog({ type: 'error', message: errMsg, timestamp: new Date().toISOString() });
             flashError(stageName, errMsg);
           }
           isExecutingRef.current = false;
@@ -199,6 +235,7 @@ export function useStageExecution(): UseStageExecutionReturn {
 
   function handleSSEEvent(event: any, stageName: string, stageIndex: number) {
     const s = store.getState();
+    const a = activityStore.getState();
     const idx = stageIndex >= 0 ? stageIndex : s.stages.findIndex((st) => st.name === stageName);
 
     switch (event.type) {
@@ -209,7 +246,7 @@ export function useStageExecution(): UseStageExecutionReturn {
         // Token usage tracking — emitted by orchestrated stages (SCAN, DECODE, FORGE)
         if (phase === 'usage' && event.data?.data) {
           const ud = event.data.data as Record<string, unknown>;
-          s.updateRunUsage({
+          a.updateRunUsage({
             inputTokens: (ud.input_tokens as number) ?? 0,
             outputTokens: (ud.output_tokens as number) ?? 0,
             cost: (ud.cost as number) ?? 0,
@@ -232,7 +269,7 @@ export function useStageExecution(): UseStageExecutionReturn {
         if (phase === 'file_generated' && event.data?.data) {
           const fd = event.data.data as Record<string, unknown>;
           if (fd.path && typeof fd.path === 'string') {
-            s.addModernizedFile({
+            a.addModernizedFile({
               path: fd.path as string,
               content: fd.content as string || `// Generated: ${fd.path}\n// Content loading...`,
               language: fd.language as string || undefined,
@@ -309,13 +346,13 @@ export function useStageExecution(): UseStageExecutionReturn {
         }
 
         if (phaseMessage && phase !== 'generating') {
-          s.addLog({
+          a.addLog({
             type: phase.includes('fail') || phase.includes('error') ? 'error' : 'info',
             message: `[${phase}] ${phaseMessage}`,
             timestamp: new Date().toISOString(),
           });
           // Also feed as agent activity item for the Agent tab
-          s.addToolCall({
+          a.addToolCall({
             id: `${phase}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             toolName: phase,
             status: phase.includes('fail') || phase.includes('error') ? 'failed'
@@ -340,11 +377,11 @@ export function useStageExecution(): UseStageExecutionReturn {
         break;
 
       case 'tool_call':
-        s.addToolCall(event.data ?? event);
+        a.addToolCall(event.data ?? event);
         break;
 
       case 'log':
-        s.addLog({
+        a.addLog({
           type: event.data?.level ?? 'info',
           message: event.data?.message ?? event.message ?? '',
           timestamp: new Date().toISOString(),
@@ -376,8 +413,8 @@ export function useStageExecution(): UseStageExecutionReturn {
         // sends usage as phase-wrapped events (event type = 'phase', phase = 'usage'),
         // handled in the 'phase' case above. Skip here if we already counted via
         // a phase-wrapped usage event to avoid double-counting.
-        if (!s.lastUsageEventAt || (Date.now() - new Date(s.lastUsageEventAt).getTime()) > 500) {
-          s.updateRunUsage({
+        if (!a.lastUsageEventAt || (Date.now() - new Date(a.lastUsageEventAt).getTime()) > 500) {
+          a.updateRunUsage({
             inputTokens: event.data?.input_tokens ?? 0,
             outputTokens: event.data?.output_tokens ?? 0,
             cost: event.data?.cost ?? 0,
@@ -406,7 +443,7 @@ export function useStageExecution(): UseStageExecutionReturn {
       case 'validation_finding':
         // Stream individual validation findings in real-time
         if (idx >= 0 && event.data) {
-          s.addLog({
+          a.addLog({
             type: event.data.passed ? 'info' : 'error',
             message: `[${event.data.severity?.toUpperCase()}] ${event.data.name}: ${event.data.feedback}`,
             timestamp: new Date().toISOString(),
@@ -511,7 +548,7 @@ export function useStageExecution(): UseStageExecutionReturn {
                   .then((r) => r.json())
                   .then((detail) => {
                     if (detail?.content) {
-                      store.getState().addModernizedFile({
+                      activityStore.getState().addModernizedFile({
                         path: detail.file_path,
                         content: detail.content,
                         language: detail.language,
@@ -535,7 +572,7 @@ export function useStageExecution(): UseStageExecutionReturn {
         const detail = event.data?.detail ?? '';
         if (idx >= 0) {
           s.setStageStatus(idx, 'failed');
-          s.addLog({ type: 'error', message: detail || errMsg, timestamp: new Date().toISOString() });
+          a.addLog({ type: 'error', message: detail || errMsg, timestamp: new Date().toISOString() });
           flashError(stageName, errMsg);
         }
         isExecutingRef.current = false;
@@ -549,7 +586,7 @@ export function useStageExecution(): UseStageExecutionReturn {
         const errMsg = event.data?.error ?? event.error ?? 'Stage failed';
         if (idx >= 0) {
           s.setStageStatus(idx, 'failed');
-          s.addLog({ type: 'error', message: errMsg, timestamp: new Date().toISOString() });
+          a.addLog({ type: 'error', message: errMsg, timestamp: new Date().toISOString() });
           flashError(stageName, errMsg);
         }
         isExecutingRef.current = false;
@@ -565,8 +602,10 @@ export function useStageExecution(): UseStageExecutionReturn {
 
   const abort = useCallback(() => {
     abortControllerRef.current?.abort();
+    isExecutingRef.current = false;
     setIsExecuting(false);
     setCurrentPhase(null);
+    setProgress(0);
   }, []);
 
   const output = usePipelineStore((s) => s.streamingText);

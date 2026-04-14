@@ -8,7 +8,7 @@
 
 import { TypingBot } from '@/components/ui/typing-bot';
 import { CheckCircle2, XCircle, Loader2 } from 'lucide-react';
-import type { ScanSubtaskState } from '@/lib/stores/pipeline-store';
+import type { ScanSubtaskState } from '@/lib/stores/pipeline-types';
 import { cn } from '@/lib/utils';
 
 interface AgentBotGridProps {

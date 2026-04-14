@@ -21,7 +21,11 @@ import { ExportDialog } from '@/components/pipeline/export-dialog';
 import { GitHubSyncDialog } from '@/components/pipeline/github-sync-dialog';
 import { DiagnosticDialog } from '@/components/pipeline/diagnostic-dialog';
 
-import { usePipelineStore, canExecuteStage, getStageBlockReason } from '@/lib/stores/pipeline-store';
+import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import { usePipelineConfigStore } from '@/lib/stores/pipeline-config-store';
+import { usePipelineActivityStore } from '@/lib/stores/pipeline-activity-store';
+import { canExecuteStage, getStageBlockReason } from '@/lib/stores/pipeline-types';
+import { PIPELINE_STAGE_ORDER } from '@revamp/shared-types';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { useStageExecution } from '@/lib/hooks/use-stage-execution';
@@ -53,17 +57,18 @@ export default function PipelinePage() {
   const { data: pipelineStatusData } = usePipelineStatus(effectiveRunId);
 
   // Batch-fetch ALL stage outputs (parallel, cached)
-  const STAGE_NAMES = ['SCAN', 'DECODE', 'BLUEPRINT', 'SPEC_LOCK', 'ARCHITECT', 'FORGE', 'SHADOW_RUN', 'EVOLVE'];
+  const STAGE_NAMES = PIPELINE_STAGE_ORDER;
   const { data: allOutputs } = useAllStageOutputs(effectiveRunId, STAGE_NAMES);
 
   // Sync React Query data → Zustand store (one-way: RQ is source of truth)
   useEffect(() => {
     if (!effectiveRunId) return;
     const store = usePipelineStore.getState();
-    // Set the correct run ID in the store
     if (store.currentPipelineRunId !== effectiveRunId || store.currentProjectId !== projectId) {
       store.initPipeline(projectId, effectiveRunId);
     }
+    // Activity data is auto-restored from sessionStorage at store creation time —
+    // no explicit restore needed here.
   }, [effectiveRunId, projectId]);
 
   // Sync stage statuses from API → store
@@ -90,6 +95,31 @@ export default function PipelinePage() {
       const dbStartedAt = (dbEntry as any)?.startedAt;
       if (dbStartedAt && dbStartedAt !== usePipelineStore.getState().stages[i].startedAt) {
         usePipelineStore.getState().setStageStartedAt(i, dbStartedAt);
+      }
+      // Timer management based on backend stage status
+      if (dbStatus === 'pending') {
+        // Stage hasn't run yet or was reset — clear timer completely
+        const current = usePipelineStore.getState().stages[i];
+        if (current.startedAt || current.completedAt) {
+          usePipelineStore.setState((s) => {
+            const stages = [...s.stages];
+            stages[i] = { ...stages[i], startedAt: null, completedAt: null };
+            return { stages };
+          });
+        }
+      } else if (dbStatus !== 'in_progress') {
+        // Stage finished (completed/approved/awaiting_approval/failed) — stop timer
+        const dbUpdatedAt = (dbEntry as any)?.updatedAt;
+        if (dbUpdatedAt) {
+          const current = usePipelineStore.getState().stages[i];
+          if (!current.completedAt || current.completedAt !== dbUpdatedAt) {
+            usePipelineStore.setState((s) => {
+              const stages = [...s.stages];
+              stages[i] = { ...stages[i], completedAt: dbUpdatedAt };
+              return { stages };
+            });
+          }
+        }
       }
       if (dbStatus === 'approved' && storeStage.approvalStatus !== 'approved') {
         usePipelineStore.getState().setStageApproval(i, 'approved');
@@ -142,15 +172,19 @@ export default function PipelinePage() {
   const currentPipelineRunId = effectiveRunId; // Use React Query run ID, not Zustand
   const currentProjectId = projectId;
   const streamingText = usePipelineStore((s) => s.streamingText);
-  const toolCalls = usePipelineStore((s) => s.toolCalls);
-  const logs = usePipelineStore((s) => s.logs);
-  const stageModelOverrides = usePipelineStore((s) => s.stageModelOverrides);
-  const stageEvaluatorModelOverrides = usePipelineStore((s) => s.stageEvaluatorModelOverrides);
-  const stageComposerModelOverrides = usePipelineStore((s) => s.stageComposerModelOverrides);
-  const stagePromptOverrides = usePipelineStore((s) => s.stagePromptOverrides);
-  const activeTemplateId = usePipelineStore((s) => s.activeTemplateId);
-  const deepAnalysis = usePipelineStore((s) => s.deepAnalysis);
-  const runUsage = usePipelineStore((s) => s.runUsage);
+
+  // Activity store (logs, toolCalls, usage, files)
+  const toolCalls = usePipelineActivityStore((s) => s.toolCalls);
+  const logs = usePipelineActivityStore((s) => s.logs);
+  const runUsage = usePipelineActivityStore((s) => s.runUsage);
+
+  // Config store (model/prompt overrides, template, deep analysis)
+  const stageModelOverrides = usePipelineConfigStore((s) => s.stageModelOverrides);
+  const stageEvaluatorModelOverrides = usePipelineConfigStore((s) => s.stageEvaluatorModelOverrides);
+  const stageComposerModelOverrides = usePipelineConfigStore((s) => s.stageComposerModelOverrides);
+  const stagePromptOverrides = usePipelineConfigStore((s) => s.stagePromptOverrides);
+  const activeTemplateId = usePipelineConfigStore((s) => s.activeTemplateId);
+  const deepAnalysis = usePipelineConfigStore((s) => s.deepAnalysis);
 
   // Actions (stable references — never trigger re-renders)
   const setActiveStage = usePipelineStore((s) => s.setActiveStage);
@@ -158,16 +192,16 @@ export default function PipelinePage() {
   const advanceToNextStage = usePipelineStore((s) => s.advanceToNextStage);
   const setStageApproval = usePipelineStore((s) => s.setStageApproval);
   const resetStage = usePipelineStore((s) => s.resetStage);
-  const setStageModelOverride = usePipelineStore((s) => s.setStageModelOverride);
-  const setStageEvaluatorModelOverride = usePipelineStore((s) => s.setStageEvaluatorModelOverride);
-  const setStageComposerModelOverride = usePipelineStore((s) => s.setStageComposerModelOverride);
-  const setStagePromptOverride = usePipelineStore((s) => s.setStagePromptOverride);
-  const clearStagePromptOverride = usePipelineStore((s) => s.clearStagePromptOverride);
-  const stageValidationPromptOverrides = usePipelineStore((s) => s.stageValidationPromptOverrides);
-  const setStageValidationPromptOverride = usePipelineStore((s) => s.setStageValidationPromptOverride);
-  const clearStageValidationPromptOverride = usePipelineStore((s) => s.clearStageValidationPromptOverride);
-  const setActiveTemplateId = usePipelineStore((s) => s.setActiveTemplateId);
-  const setDeepAnalysis = usePipelineStore((s) => s.setDeepAnalysis);
+  const setStageModelOverride = usePipelineConfigStore((s) => s.setStageModelOverride);
+  const setStageEvaluatorModelOverride = usePipelineConfigStore((s) => s.setStageEvaluatorModelOverride);
+  const setStageComposerModelOverride = usePipelineConfigStore((s) => s.setStageComposerModelOverride);
+  const setStagePromptOverride = usePipelineConfigStore((s) => s.setStagePromptOverride);
+  const clearStagePromptOverride = usePipelineConfigStore((s) => s.clearStagePromptOverride);
+  const stageValidationPromptOverrides = usePipelineConfigStore((s) => s.stageValidationPromptOverrides);
+  const setStageValidationPromptOverride = usePipelineConfigStore((s) => s.setStageValidationPromptOverride);
+  const clearStageValidationPromptOverride = usePipelineConfigStore((s) => s.clearStageValidationPromptOverride);
+  const setActiveTemplateId = usePipelineConfigStore((s) => s.setActiveTemplateId);
+  const setDeepAnalysis = usePipelineConfigStore((s) => s.setDeepAnalysis);
 
   // ─── UI Preferences Store ─────────────────────────────────
   const {
@@ -230,29 +264,42 @@ export default function PipelinePage() {
 
   // ─── Seed prompt overrides from project defaults ──────────
   // Maps numeric DB indices (0-7) to stage names (SCAN, DECODE, etc.)
-  const STAGE_INDEX_TO_NAME = ['SCAN', 'DECODE', 'BLUEPRINT', 'SPEC_LOCK', 'ARCHITECT', 'FORGE', 'SHADOW_RUN', 'EVOLVE'];
+  const STAGE_INDEX_TO_NAME = PIPELINE_STAGE_ORDER;
 
   useEffect(() => {
     if (!project) return;
-    const store = usePipelineStore.getState();
+    const configStore = usePipelineConfigStore.getState();
     const stagePrompts = (project.stage_prompts || {}) as Record<string, string>;
     const validationPrompts = (project.validation_prompts || {}) as Record<string, string>;
 
     // Seed ALL stages from DB — always sync DB prompts to store.
     // User edits are saved to DB via the save button, so DB is the source of truth.
-    for (const [idx, prompt] of Object.entries(stagePrompts)) {
-      const stageName = STAGE_INDEX_TO_NAME[parseInt(idx)];
+    // Supports both stage-name keys (new) and numeric-index keys (legacy DB data).
+    for (const [key, prompt] of Object.entries(stagePrompts)) {
+      const stageName = PIPELINE_STAGE_ORDER.includes(key as any) ? key : STAGE_INDEX_TO_NAME[parseInt(key)];
       if (stageName && prompt) {
-        store.setStagePromptOverride(stageName, prompt);
+        configStore.setStagePromptOverride(stageName, prompt);
       }
     }
-    for (const [idx, prompt] of Object.entries(validationPrompts)) {
-      const stageName = STAGE_INDEX_TO_NAME[parseInt(idx)];
+    for (const [key, prompt] of Object.entries(validationPrompts)) {
+      const stageName = PIPELINE_STAGE_ORDER.includes(key as any) ? key : STAGE_INDEX_TO_NAME[parseInt(key)];
       if (stageName && prompt) {
-        store.setStageValidationPromptOverride(stageName, prompt);
+        configStore.setStageValidationPromptOverride(stageName, prompt);
       }
     }
   }, [project]);
+
+  // ─── Apply template prompts when template changes ──────────
+  useEffect(() => {
+    if (!activeTemplateId || !projectId) return;
+    // Apply template via API — it merges template prompts with defaults and saves to project
+    apiClient.post(`/projects/${projectId}/apply-template`, {
+      template_id: activeTemplateId,
+    }).then(() => {
+      // Refresh project to get updated prompts
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+    }).catch(() => {});
+  }, [activeTemplateId, projectId]);
 
   // ─── Sync stage statuses from backend ─────────────────────
   const syncStagesFromBackend = async (runId: string) => {
@@ -295,6 +342,30 @@ export default function PipelinePage() {
           const dbStartedAt = (dbEntry as any)?.startedAt;
           if (dbStartedAt && dbStartedAt !== usePipelineStore.getState().stages[i].startedAt) {
             usePipelineStore.getState().setStageStartedAt(i, dbStartedAt);
+          }
+          // Timer management based on backend stage status
+          if (dbStatus === 'pending') {
+            // Stage reset — clear timer
+            const current = usePipelineStore.getState().stages[i];
+            if (current.startedAt || current.completedAt) {
+              usePipelineStore.setState((s) => {
+                const stages = [...s.stages];
+                stages[i] = { ...stages[i], startedAt: null, completedAt: null };
+                return { stages };
+              });
+            }
+          } else if (dbStatus !== 'in_progress') {
+            // Stage finished — stop timer
+            const dbUpdatedAt = (dbEntry as any)?.updatedAt;
+            if (dbUpdatedAt) {
+              usePipelineStore.setState((s) => {
+                const stages = [...s.stages];
+                if (!stages[i].completedAt || stages[i].completedAt !== dbUpdatedAt) {
+                  stages[i] = { ...stages[i], completedAt: dbUpdatedAt };
+                }
+                return { stages };
+              });
+            }
           }
           // Sync approval status from stage progress — DB is authoritative
           if (dbStatus === 'approved' && storeStage.approvalStatus !== 'approved') {
@@ -502,9 +573,9 @@ export default function PipelinePage() {
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
     // Zustand persist hydrates synchronously after first render
-    const unsub = usePipelineStore.persist.onFinishHydration(() => setHydrated(true));
+    const unsub = usePipelineConfigStore.persist.onFinishHydration(() => setHydrated(true));
     // If already hydrated (hot reload), set immediately
-    if (usePipelineStore.persist.hasHydrated()) setHydrated(true);
+    if (usePipelineConfigStore.persist.hasHydrated()) setHydrated(true);
     return () => unsub();
   }, []);
 
@@ -723,6 +794,17 @@ export default function PipelinePage() {
   // ─── Handlers ─────────────────────────────────────────────
 
   const handleExecuteStage = useCallback(() => {
+    // Kill any running execution first — prevents orphaned SSE connections and stale timers
+    if (isExecuting) {
+      abort();
+      // Reset backend stage status so it's not stuck in 'in_progress'
+      const s0 = usePipelineStore.getState();
+      const activeStage0 = s0.stages[s0.activeStageIndex];
+      if (s0.currentPipelineRunId && activeStage0) {
+        apiClient.post(`/pipeline/${s0.currentPipelineRunId}/reset/${activeStage0.name}`, {}).catch(() => {});
+      }
+    }
+
     // Read state at call time to avoid stale closures with granular selectors
     const s = usePipelineStore.getState();
     const stage = s.stages[s.activeStageIndex];
@@ -738,23 +820,30 @@ export default function PipelinePage() {
       const reason = getStageBlockReason(s.stages, s.activeStageIndex) || 'Stage prerequisites not met.';
       throw new Error(reason);
     }
-    // Reset completed/failed stages before re-executing to clear stale output
-    if (stage.status === 'completed' || stage.status === 'failed') {
+    // Reset completed/failed/generating stages before re-executing
+    if (stage.status === 'completed' || stage.status === 'failed' || stage.status === 'generating') {
       resetStage(s.activeStageIndex);
     }
-    // Read model overrides from the store
-    const modelOverride = s.stageModelOverrides[stage.name];
-    const composerOverride = s.stageComposerModelOverrides[stage.name];
-    const evaluatorOverride = s.stageEvaluatorModelOverrides[stage.name];
+    // Read model overrides from the config store
+    const cfg = usePipelineConfigStore.getState();
+    const modelOverride = cfg.stageModelOverrides[stage.name];
+    const composerOverride = cfg.stageComposerModelOverrides[stage.name];
+    const evaluatorOverride = cfg.stageEvaluatorModelOverrides[stage.name];
     executeStage(s.currentPipelineRunId, stage.name, {
       skipLlmEval,
       model: modelOverride || undefined,
       composerModel: composerOverride || undefined,
       evaluatorModel: evaluatorOverride || undefined,
+      maxTokens: deepAnalysis ? 65536 : undefined,
     });
-  }, [executeStage, skipLlmEval, resetStage]);
+  }, [executeStage, skipLlmEval, resetStage, deepAnalysis]);
 
   const handleRerunStage = useCallback((promptOverride?: string) => {
+    // Kill any running execution first
+    if (isExecuting) {
+      abort();
+    }
+
     const s = usePipelineStore.getState();
     const stage = s.stages[s.activeStageIndex];
     if (!s.currentPipelineRunId || !stage) return;
@@ -788,9 +877,10 @@ export default function PipelinePage() {
     }
     setTimeout(() => {
       const updated = usePipelineStore.getState();
-      const modelOverride = updated.stageModelOverrides[stage.name];
-      const composerOverride = updated.stageComposerModelOverrides[stage.name];
-      const evaluatorOverride = updated.stageEvaluatorModelOverrides[stage.name];
+      const cfgUpdated = usePipelineConfigStore.getState();
+      const modelOverride = cfgUpdated.stageModelOverrides[stage.name];
+      const composerOverride = cfgUpdated.stageComposerModelOverrides[stage.name];
+      const evaluatorOverride = cfgUpdated.stageEvaluatorModelOverrides[stage.name];
       executeStage(updated.currentPipelineRunId!, stage.name, {
         skipLlmEval,
         promptOverride,
@@ -798,6 +888,7 @@ export default function PipelinePage() {
         composerModel: composerOverride || undefined,
         evaluatorModel: evaluatorOverride || undefined,
         validationFeedback: validationFeedback?.length ? validationFeedback : undefined,
+        maxTokens: deepAnalysis ? 65536 : undefined,
       });
     }, 100);
   }, [resetStage, executeStage, skipLlmEval]);
@@ -819,14 +910,17 @@ export default function PipelinePage() {
           `/pipeline/${s.currentPipelineRunId}/approve/${stage.name}`,
           { comment },
         );
+        // Optimistic update for immediate UI feedback
         setStageApproval(s.activeStageIndex, 'approved');
-        // Also set status to approved so the stage is marked done
         usePipelineStore.getState().setStageStatus(s.activeStageIndex, 'approved');
+        // Immediately refetch pipeline status so React Query cache matches DB
+        queryClient.invalidateQueries({ queryKey: ['pipeline-status', s.currentPipelineRunId] });
+        queryClient.invalidateQueries({ queryKey: ['pipeline'] });
       } catch {
         // API error handled by interceptor
       }
     },
-    [setStageApproval],
+    [setStageApproval, queryClient],
   );
 
   // Reject flow removed — workflow is approve or re-run only.
@@ -1324,9 +1418,9 @@ export default function PipelinePage() {
       {githubSyncOpen && (
         <GitHubSyncDialog
           open={githubSyncOpen}
-          files={usePipelineStore
+          files={usePipelineActivityStore
             .getState()
-            .modernizedFiles.map((f) => ({ path: f.path, content: f.content }))}
+            .modernizedFiles.map((f: { path: string; content: string }) => ({ path: f.path, content: f.content }))}
         />
       )}
 

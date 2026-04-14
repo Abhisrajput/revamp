@@ -170,7 +170,7 @@ export const stageContracts: StageContract[] = [
       { type: 'spec', description: 'Gherkin .feature files in code blocks', required: true, filePattern: '*.feature' },
     ],
     requiredPatterns: [
-      { name: 'gherkin_scenarios', pattern: /Scenario[:\s]/g, minOccurrences: 15, description: 'Must have at least 15 BDD scenarios' },
+      { name: 'gherkin_scenarios', pattern: /Scenario[:\s]/g, minOccurrences: 25, description: 'Must have at least 25 BDD scenarios for comprehensive coverage' },
       { name: 'given_when_then', pattern: /Given\s.+\n\s*When\s.+\n\s*Then\s/g, minOccurrences: 10, description: 'Must have complete Given/When/Then triplets' },
       { name: 'feature_files', pattern: /```gherkin\n#\s*File:/g, minOccurrences: 3, description: 'Must have at least 3 .feature file blocks' },
       { name: 'business_rule_tags', pattern: /@BR-[\w.]+/g, minOccurrences: 8, description: 'Must tag scenarios with business rule IDs' },
@@ -596,6 +596,55 @@ export async function enforceContract(
  * Call this AFTER enforceContract() to upgrade section checks from
  * regex-based to semantic understanding.
  */
+
+/**
+ * Build a condensed preview of a large output that preserves ALL headings
+ * with a preview of each section's content. This ensures the validation
+ * agent sees the complete document structure even for 50K+ outputs.
+ */
+function buildSectionPreview(output: string, budget: number): string {
+  const lines = output.split('\n');
+  const sections: Array<{ heading: string; startLine: number; content: string }> = [];
+  let currentHeading = '(preamble)';
+  let currentLines: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    if (/^#{1,4}\s/.test(lines[i])) {
+      if (currentLines.length > 0) {
+        sections.push({ heading: currentHeading, startLine: i - currentLines.length, content: currentLines.join('\n') });
+      }
+      currentHeading = lines[i];
+      currentLines = [];
+    } else {
+      currentLines.push(lines[i]);
+    }
+  }
+  if (currentLines.length > 0) {
+    sections.push({ heading: currentHeading, startLine: lines.length - currentLines.length, content: currentLines.join('\n') });
+  }
+
+  // Build preview: full heading + first N chars of content per section
+  const perSectionBudget = Math.max(300, Math.floor(budget / Math.max(sections.length, 1)));
+  const parts: string[] = [];
+  let totalLen = 0;
+
+  for (const section of sections) {
+    const preview = section.content.length > perSectionBudget
+      ? section.content.slice(0, perSectionBudget) + '\n[... section continues ...]'
+      : section.content;
+    const block = section.heading + '\n' + preview;
+    if (totalLen + block.length > budget) {
+      parts.push(section.heading + '\n[... content present but omitted for brevity ...]');
+      totalLen += section.heading.length + 50;
+    } else {
+      parts.push(block);
+      totalLen += block.length;
+    }
+  }
+
+  return parts.join('\n\n');
+}
+
 export async function validateSectionsWithAgent(
   stageName: PipelineStageName,
   output: string,
@@ -610,12 +659,16 @@ export async function validateSectionsWithAgent(
     : defaultContract;
 
   const sectionList = contract.requiredSections
-    .map((s, i) => `${i + 1}. "${s.heading}" (required: ${s.required}, min words: ${s.minWordCount ?? 'none'}${s.mustContain ? `, must contain: ${s.mustContain.join(', ')}` : ''})`)
+    .map((s, i) => {
+      const aliasText = s.aliases?.length ? ` (also acceptable: ${s.aliases.join(', ')})` : '';
+      return `${i + 1}. "${s.heading}"${aliasText} (required: ${s.required}, min words: ${s.minWordCount ?? 'none'}${s.mustContain ? `, must contain: ${s.mustContain.join(', ')}` : ''})`;
+    })
     .join('\n');
 
-  // Truncate output for the agent (keep first 20K to stay within context)
-  const truncatedOutput = output.length > 20000
-    ? output.slice(0, 20000) + '\n\n[... output truncated for validation ...]'
+  // For validation, send output headings + section previews instead of truncating mid-content.
+  // This ensures the agent sees ALL sections even in large outputs.
+  const outputForAgent = output.length > 25000
+    ? buildSectionPreview(output, 25000)
     : output;
 
   const prompt = `You are a validation agent. Review this ${stageName} stage output and determine which required sections are present.
@@ -624,7 +677,7 @@ export async function validateSectionsWithAgent(
 ${sectionList}
 
 ## STAGE OUTPUT TO VALIDATE
-${truncatedOutput}
+${outputForAgent}
 
 ## INSTRUCTIONS
 For each required section, determine:
@@ -825,7 +878,7 @@ export const SCAN_SUBTASK_CONTRACTS: SubtaskContract[] = [
 
 // ─── DECODE SUBTASK CONTRACTS ───────────────────────────────────
 
-export const DECODE_SUBTASK_CONTRACTS: SubtaskContract[] = [
+const DECODE_SUBTASK_CONTRACTS: SubtaskContract[] = [
   {
     type: 'business-rules-extraction',
     minTotalWords: 300,

@@ -172,18 +172,25 @@ export const ModelSelector = memo(function ModelSelector({
 }: ModelSelectorProps) {
   const { models: orchestratorModels, loading } = useAvailableModels();
 
-  // Merge project-configured models that aren't in the orchestrator list
+  // When project has configured models, show ONLY those (not all orchestrator models).
+  // This ensures the model selector respects project-level provider settings.
+  // Falls back to all orchestrator models when no project models are configured.
   const models = (() => {
     if (!projectModels?.length) return orchestratorModels;
-    const existingIds = new Set(orchestratorModels.map(m => m.id));
-    const extra: ModelOption[] = projectModels
-      .filter(id => id && !existingIds.has(id))
-      .map(id => ({
-        id,
-        label: MODEL_LABELS[id] || id,
-        provider: id.includes('anthropic') ? 'bedrock' : id.includes('gpt') ? 'openai' : id.includes('gemini') ? 'google' : 'unknown',
-      }));
-    return [...orchestratorModels, ...extra];
+    // Map project model IDs to full ModelOption objects
+    return projectModels
+      .filter(Boolean)
+      .map(id => {
+        const existing = orchestratorModels.find(m => m.id === id);
+        return existing || {
+          id,
+          label: MODEL_LABELS[id] || id,
+          provider: id.includes('anthropic') || id.includes('claude') ? 'bedrock'
+            : id.includes('gpt') || id.includes('o1') || id.includes('o3') ? 'openai'
+            : id.includes('gemini') ? 'google'
+            : 'unknown',
+        };
+      });
   })();
   const selected = models.find((m) => m.id === value);
 

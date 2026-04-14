@@ -23,6 +23,7 @@
 
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 import { db } from "@/db/index.js";
 import {
   agentPersonas, approvalGates, approvalComments,
@@ -94,6 +95,14 @@ const ReportsToSchema = z.object({
   reports_to: z.string().uuid().nullable(),
 });
 
+// ─── Common response shapes ────────────────────────────────────
+
+const ErrorResponse = { type: "object" as const, properties: { error: { type: "string" } } };
+const OkResponse = { type: "object" as const, properties: { ok: { type: "boolean" } } };
+const IdParams = z.object({ id: z.string().uuid() });
+const AgentIdParams = z.object({ agentId: z.string().uuid() });
+const AgentSkillParams = z.object({ agentId: z.string().uuid(), skillId: z.string().uuid() });
+
 // ─── ROUTES ─────────────────────────────────────────────────────
 
 export async function agentFeatureRoutes(fastify: FastifyInstance) {
@@ -102,7 +111,15 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
 
   fastify.get<{ Querystring: { period?: string } }>(
     "/agents/orchestrator/status",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        querystring: z.object({ period: z.string().optional() }),
+        tags: ["Agent Features"],
+        summary: "Get orchestrator connection and run status",
+        response: { 200: { type: "object", properties: { state: { type: "string" }, connected: { type: "boolean" }, activeRunCount: { type: "number" } } } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       // Check if any pipeline is actively running
       const activeRuns = await db.query.pipelineRuns.findMany({
@@ -120,7 +137,15 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
 
   fastify.get<{ Querystring: { period?: string } }>(
     "/agents/orchestrator/stats",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        querystring: z.object({ period: z.string().optional() }),
+        tags: ["Agent Features"],
+        summary: "Get orchestrator statistics for a time period",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const period = request.query.period || '24h';
       const since = new Date();
@@ -173,16 +198,31 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
 
   fastify.get(
     "/agents/orchestrator/queue",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agent Features"],
+        summary: "Get active task queue from the Kanban board",
+        response: { 200: { type: "array", items: {} } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
-      // Return real tasks from the Kanban board that are in active states
-      const tasks = await db.query.agentTasks.findMany({
-        where: inArray(agentTasks.status, ['todo', 'in_progress', 'in_review', 'blocked']),
-        orderBy: desc(agentTasks.created_at),
-        limit: 20,
-      });
+      // Combine Kanban tasks + pipeline agent assignments for a unified queue view
+      const [kanbanTasks, pipelineAssignments] = await Promise.all([
+        db.query.agentTasks.findMany({
+          where: inArray(agentTasks.status, ['todo', 'in_progress', 'in_review', 'blocked']),
+          orderBy: desc(agentTasks.created_at),
+          limit: 20,
+        }),
+        db.query.agentAssignments.findMany({
+          where: inArray(agentAssignments.status, ['pending', 'in_progress']),
+          orderBy: desc(agentAssignments.created_at),
+          limit: 20,
+          with: { agent: { columns: { id: true, name: true, department: true } } },
+        }),
+      ]);
 
-      return reply.send(tasks.map(t => ({
+      const kanbanItems = kanbanTasks.map(t => ({
         id: t.id,
         title: t.title,
         priority: t.priority || 'medium',
@@ -192,13 +232,37 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
         progress: t.progress || 0,
         tokensUsed: t.tokens_used || 0,
         createdAt: t.created_at?.toISOString(),
-      })));
+      }));
+
+      const pipelineItems = pipelineAssignments.map(a => ({
+        id: a.id,
+        title: `Pipeline: ${a.stage_name}`,
+        priority: 'high' as const,
+        status: a.status === 'in_progress' ? 'running' : 'queued',
+        assignedAgentId: a.agent_id,
+        assignedAgentName: (a as any).agent?.name,
+        assignedAgent: (a as any).agent || null,
+        stage: a.stage_name,
+        progress: 0,
+        tokensUsed: a.tokens_used || 0,
+        costCents: a.cost_cents || 0,
+        createdAt: a.created_at?.toISOString(),
+      }));
+
+      return reply.send([...pipelineItems, ...kanbanItems]);
     },
   );
 
   fastify.get(
     "/agents/orchestrator/log",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agent Features"],
+        summary: "Get orchestrator activity log from stage runs and agent activity",
+        response: { 200: { type: "array", items: {} } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       // Build activity log from stage_runs + audit_logs
       const [recentRuns, recentActivity] = await Promise.all([
@@ -274,16 +338,25 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
   );
 
   // Orchestrator control endpoints (no-ops that update UI state)
-  fastify.post("/agents/orchestrator/start", { onRequest: [fastify.authenticate] }, async (_, reply) => reply.send({ ok: true }));
-  fastify.post("/agents/orchestrator/pause", { onRequest: [fastify.authenticate] }, async (_, reply) => reply.send({ ok: true }));
-  fastify.post("/agents/orchestrator/stop", { onRequest: [fastify.authenticate] }, async (_, reply) => reply.send({ ok: true }));
-  fastify.post("/agents/orchestrator/reset", { onRequest: [fastify.authenticate] }, async (_, reply) => reply.send({ ok: true }));
+  fastify.post("/agents/orchestrator/start", { schema: buildRouteSchema({ tags: ["Agent Features"], summary: "Start the orchestrator", response: { 200: OkResponse } }), onRequest: [fastify.authenticate] }, async (_, reply) => reply.send({ ok: true }));
+  fastify.post("/agents/orchestrator/pause", { schema: buildRouteSchema({ tags: ["Agent Features"], summary: "Pause the orchestrator", response: { 200: OkResponse } }), onRequest: [fastify.authenticate] }, async (_, reply) => reply.send({ ok: true }));
+  fastify.post("/agents/orchestrator/stop", { schema: buildRouteSchema({ tags: ["Agent Features"], summary: "Stop the orchestrator", response: { 200: OkResponse } }), onRequest: [fastify.authenticate] }, async (_, reply) => reply.send({ ok: true }));
+  fastify.post("/agents/orchestrator/reset", { schema: buildRouteSchema({ tags: ["Agent Features"], summary: "Reset the orchestrator", response: { 200: OkResponse } }), onRequest: [fastify.authenticate] }, async (_, reply) => reply.send({ ok: true }));
 
   // ═══ 4. AGENT ADAPTER CONFIG ═════════════════════════════════
 
   fastify.patch<{ Params: { id: string }; Body: z.infer<typeof AdapterConfigSchema> }>(
     "/agents/:id/adapter",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: AdapterConfigSchema,
+        tags: ["Agent Features"],
+        summary: "Update an agent's LLM adapter configuration",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const body = AdapterConfigSchema.parse(request.body);
 
@@ -305,7 +378,15 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
 
   fastify.get<{ Params: { id: string } }>(
     "/approval-gates/:id/comments",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Features"],
+        summary: "List comments on an approval gate",
+        response: { 200: { type: "object", properties: { comments: { type: "array", items: {} } } } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const comments = await db.query.approvalComments.findMany({
         where: eq(approvalComments.approval_gate_id, request.params.id),
@@ -338,7 +419,16 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Params: { id: string }; Body: z.infer<typeof CommentSchema> }>(
     "/approval-gates/:id/comments",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: CommentSchema,
+        tags: ["Agent Features"],
+        summary: "Add a comment or request revision on an approval gate",
+        response: { 201: {}, 400: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const body = CommentSchema.parse(request.body);
 
@@ -364,7 +454,14 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
 
   fastify.get(
     "/agent-skills",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agent Features"],
+        summary: "List all agent skills for the organization",
+        response: { 200: { type: "object", properties: { skills: { type: "array", items: {} } } } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const orgId = request.user.organization_id;
       const skills = await db.query.agentSkills.findMany({
@@ -377,7 +474,15 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Body: z.infer<typeof CreateSkillSchema> }>(
     "/agent-skills",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        body: CreateSkillSchema,
+        tags: ["Agent Features"],
+        summary: "Create a new agent skill",
+        response: { 201: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const body = CreateSkillSchema.parse(request.body);
       const orgId = request.user.organization_id;
@@ -402,7 +507,15 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
 
   fastify.get<{ Params: { id: string } }>(
     "/agent-skills/:id",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Features"],
+        summary: "Get skill details by ID",
+        response: { 200: {}, 404: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const skill = await db.query.agentSkills.findFirst({
         where: eq(agentSkills.id, request.params.id),
@@ -415,7 +528,16 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
   // Assign skill to agent
   fastify.post<{ Params: { agentId: string; skillId: string }; Body: z.infer<typeof AssignSkillSchema> }>(
     "/agents/:agentId/skills/:skillId",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: AgentSkillParams,
+        body: AssignSkillSchema,
+        tags: ["Agent Features"],
+        summary: "Assign a skill to an agent",
+        response: { 201: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const body = AssignSkillSchema.parse(request.body || {});
 
@@ -432,7 +554,15 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
   // Remove skill from agent
   fastify.delete<{ Params: { agentId: string; skillId: string } }>(
     "/agents/:agentId/skills/:skillId",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: AgentSkillParams,
+        tags: ["Agent Features"],
+        summary: "Remove a skill from an agent",
+        response: { 200: { type: "object", properties: { deleted: { type: "boolean" } } } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       await db.delete(agentSkillAssignments).where(
         and(
@@ -447,7 +577,15 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
   // List agent's skills
   fastify.get<{ Params: { agentId: string } }>(
     "/agents/:agentId/skills",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: AgentIdParams,
+        tags: ["Agent Features"],
+        summary: "List all skills assigned to an agent",
+        response: { 200: { type: "object", properties: { skills: { type: "array", items: {} } } } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const assignments = await db.query.agentSkillAssignments.findMany({
         where: eq(agentSkillAssignments.agent_id, request.params.agentId),
@@ -473,7 +611,14 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
 
   fastify.get(
     "/agents/org-chart",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agent Features"],
+        summary: "Get hierarchical org chart of all agents",
+        response: { 200: { type: "object", properties: { roots: { type: "array", items: {} }, total: { type: "number" }, departments: { type: "array", items: { type: "string" } } } } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const agents = await db.query.agentPersonas.findMany({
         where: isNull(agentPersonas.hidden_at),
@@ -516,7 +661,16 @@ export async function agentFeatureRoutes(fastify: FastifyInstance) {
 
   fastify.patch<{ Params: { id: string }; Body: z.infer<typeof ReportsToSchema> }>(
     "/agents/:id/reports-to",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: ReportsToSchema,
+        tags: ["Agent Features"],
+        summary: "Set reporting manager for an agent",
+        response: { 200: {}, 400: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const body = ReportsToSchema.parse(request.body);
 

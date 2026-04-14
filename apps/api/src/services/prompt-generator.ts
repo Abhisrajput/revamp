@@ -49,15 +49,17 @@ const fenceEnd = FENCE;
 
 // ─── STAGE INDICES ──────────────────────────────────────────────
 
+// Stage keys — use stage NAMES (not numeric indices) to match
+// how pipeline.ts reads prompts: stagePrompts[stageName]
 const STAGE_INDEX = {
-  SCAN: '0',
-  DECODE: '1',
-  BLUEPRINT: '2',
-  SPEC_LOCK: '3',
-  ARCHITECT: '4',
-  FORGE: '5',
-  SHADOW_RUN: '6',
-  EVOLVE: '7',
+  SCAN: 'SCAN',
+  DECODE: 'DECODE',
+  BLUEPRINT: 'BLUEPRINT',
+  SPEC_LOCK: 'SPEC_LOCK',
+  ARCHITECT: 'ARCHITECT',
+  FORGE: 'FORGE',
+  SHADOW_RUN: 'SHADOW_RUN',
+  EVOLVE: 'EVOLVE',
 } as const;
 
 // ─── CLOUD-SPECIFIC SERVICE MAPPINGS ────────────────────────────
@@ -1258,9 +1260,10 @@ export async function generateAndSaveProjectPrompts(
     ...stagePrompts, // stages 1-7 (DECODE through EVOLVE)
   };
 
-  // Preserve SCAN prompt if manually set
-  if (existingStagePrompts[STAGE_INDEX.SCAN]) {
-    mergedStagePrompts[STAGE_INDEX.SCAN] = existingStagePrompts[STAGE_INDEX.SCAN];
+  // Preserve SCAN prompt if manually set (check both name and legacy numeric key)
+  const existingScanPrompt = existingStagePrompts[STAGE_INDEX.SCAN] || existingStagePrompts['0'];
+  if (existingScanPrompt) {
+    mergedStagePrompts[STAGE_INDEX.SCAN] = existingScanPrompt;
   }
 
   const mergedValidationPrompts = {

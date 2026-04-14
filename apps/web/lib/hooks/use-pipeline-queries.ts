@@ -1,6 +1,6 @@
 'use client';
 
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -63,60 +63,6 @@ export function usePipelineStatus(runId: string | null) {
 }
 
 /**
- * Fetch a single stage's output content.
- * Returns the markdown string or null.
- */
-export function useStageOutput(runId: string | null, stageName: string | null) {
-  return useQuery<string | null>({
-    queryKey: ['stage-output', runId, stageName],
-    queryFn: async () => {
-      if (!runId || !stageName) return null;
-      const res = await apiClient.get(`/pipeline/${runId}/artifacts/${stageName}`);
-      const arts = Array.isArray(res.data) ? res.data : [];
-      const outputArt = arts.find((a: any) => a.artifact_type === 'stage_output');
-      return outputArt?.metadata?.content || outputArt?.metadata?.output || null;
-    },
-    enabled: !!runId && !!stageName,
-    staleTime: 60_000, // outputs are immutable once written
-    retry: false, // 404 is normal for pending stages
-  });
-}
-
-/**
- * Fetch validation results for a stage.
- */
-export function useStageValidation(runId: string | null, stageName: string | null) {
-  return useQuery<any>({
-    queryKey: ['validation', runId, stageName],
-    queryFn: async () => {
-      if (!runId || !stageName) return null;
-      const res = await apiClient.get(`/pipeline/${runId}/validation/${stageName}`);
-      return res.data;
-    },
-    enabled: !!runId && !!stageName,
-    staleTime: 30_000,
-    retry: false,
-  });
-}
-
-/**
- * Fetch all artifacts for a stage.
- */
-export function useStageArtifacts(runId: string | null, stageName: string | null) {
-  return useQuery<any[]>({
-    queryKey: ['stage-artifacts', runId, stageName],
-    queryFn: async () => {
-      if (!runId || !stageName) return [];
-      const res = await apiClient.get(`/pipeline/${runId}/artifacts/${stageName}`);
-      return Array.isArray(res.data) ? res.data : [];
-    },
-    enabled: !!runId && !!stageName,
-    staleTime: 15_000,
-    retry: false,
-  });
-}
-
-/**
  * Batch-fetch all stage outputs for a pipeline run.
  * Used on initial page load to populate everything at once.
  */
@@ -156,33 +102,4 @@ export function useAllStageOutputs(runId: string | null, stageNames: string[]) {
     staleTime: 60_000,
     retry: 1,
   });
-}
-
-/**
- * Helper: set stage output in React Query cache (called from SSE handler)
- */
-export function setStageOutputInCache(
-  queryClient: ReturnType<typeof useQueryClient>,
-  runId: string,
-  stageName: string,
-  output: string,
-) {
-  queryClient.setQueryData(['stage-output', runId, stageName], output);
-  // Also update the batch cache
-  queryClient.setQueryData<Record<string, string | null>>(
-    ['all-stage-outputs', runId],
-    (old) => ({ ...old, [stageName]: output }),
-  );
-}
-
-/**
- * Helper: set validation in React Query cache (called from SSE handler)
- */
-export function setValidationInCache(
-  queryClient: ReturnType<typeof useQueryClient>,
-  runId: string,
-  stageName: string,
-  validation: any,
-) {
-  queryClient.setQueryData(['validation', runId, stageName], validation);
 }

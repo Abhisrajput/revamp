@@ -10,6 +10,8 @@ import fastifySwaggerUi from "@fastify/swagger-ui";
 import { authPlugin } from "@/plugins/auth.js";
 import { rateLimitPlugin } from "@/plugins/rate-limit.js";
 import { websocketPlugin } from "@/plugins/websocket.js";
+import errorHandlerPlugin from "@/plugins/error-handler.js";
+import metricsPlugin from "@/plugins/metrics.js";
 
 import { authRoutes } from "@/routes/auth.js";
 import { projectRoutes } from "@/routes/projects.js";
@@ -83,6 +85,8 @@ async function bootstrap() {
   const fastifyCookie = (await import("@fastify/cookie")).default;
   await fastify.register(fastifyCookie);
 
+  await fastify.register(errorHandlerPlugin);
+  await fastify.register(metricsPlugin);
   await fastify.register(authPlugin);
   await fastify.register(rateLimitPlugin);
   await fastify.register(websocketPlugin);
@@ -92,12 +96,46 @@ async function bootstrap() {
     swagger: {
       info: {
         title: "REVAMP API Gateway",
-        description: "AI-powered legacy application modernizer",
+        description:
+          "AIgnite LAPM — AI-powered legacy application modernizer. " +
+          "Transforms legacy systems through an 8-stage pipeline: " +
+          "SCAN → DECODE → BLUEPRINT → SPEC_LOCK → ARCHITECT → FORGE → SHADOW_RUN → EVOLVE.",
         version: "1.0.0",
+        contact: { name: "Tavant AIgnite Team" },
       },
       schemes: [NODE_ENV === "development" ? "http" : "https"],
       consumes: ["application/json"],
       produces: ["application/json"],
+      securityDefinitions: {
+        bearerAuth: {
+          type: "apiKey",
+          name: "Authorization",
+          in: "header",
+          description: "JWT token: Bearer <token>",
+        },
+        cookieAuth: {
+          type: "apiKey",
+          name: "revamp_token",
+          in: "header",
+          description: "HttpOnly cookie (set automatically on login)",
+        },
+      },
+      tags: [
+        { name: "Auth", description: "Authentication and user management" },
+        { name: "Projects", description: "Project CRUD and configuration" },
+        { name: "Pipeline", description: "8-stage modernization pipeline execution, approval, and history" },
+        { name: "Usage", description: "LLM token usage and cost tracking" },
+        { name: "Admin", description: "System administration and health checks" },
+        { name: "Storage", description: "File upload and artifact storage" },
+        { name: "Export", description: "Export pipeline results" },
+        { name: "Agents", description: "AI agent personas and configuration" },
+        { name: "Agent Department", description: "Agent department management and task routing" },
+        { name: "Agent Events", description: "Agent activity event stream" },
+        { name: "Agent Features", description: "Agent feature flags and capabilities" },
+        { name: "Agent Tasks", description: "Agent task queue and execution" },
+        { name: "GitHub", description: "GitHub integration for code sync" },
+        { name: "Jira", description: "Jira integration for project tracking" },
+      ],
     },
   });
 
@@ -287,6 +325,31 @@ async function bootstrap() {
       await closeDatabaseConnection();
       process.exit(0);
     });
+  }
+
+  // Run database migrations before accepting requests.
+  // Safe to run on every startup — Drizzle skips already-applied migrations.
+  if (process.env.SKIP_MIGRATIONS !== "true") {
+    try {
+      const { Pool: MigrationPool } = await import("pg");
+      const { drizzle: migrationDrizzle } = await import("drizzle-orm/node-postgres");
+      const { migrate } = await import("drizzle-orm/node-postgres/migrator");
+      const migrationPool = new MigrationPool({ connectionString: process.env.DATABASE_URL });
+      const migrationDb = migrationDrizzle(migrationPool);
+      await migrate(migrationDb, { migrationsFolder: "./drizzle" });
+      await migrationPool.end();
+      fastify.log.info("Database migrations applied successfully");
+    } catch (migrationErr: any) {
+      const msg = migrationErr?.message || "";
+      if (msg.includes("No file") && NODE_ENV === "development") {
+        // In dev, migration SQL files may be missing (already applied to DB).
+        // Skip gracefully — the DB schema is up-to-date from prior runs.
+        fastify.log.warn("Migration files missing (dev mode) — skipping. Run `pnpm db:generate` to regenerate.");
+      } else {
+        fastify.log.error(migrationErr, "Database migration failed — server will NOT start with stale schema");
+        process.exit(1);
+      }
+    }
   }
 
   try {

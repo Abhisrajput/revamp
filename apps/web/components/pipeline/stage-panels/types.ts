@@ -2,7 +2,7 @@
  * Shared types for all stage panel components.
  */
 
-import type { StageState } from '@/lib/stores/pipeline-store';
+import type { StageState } from '@/lib/stores/pipeline-types';
 
 export interface StagePanelProps {
   /** Current stage state from pipeline store */

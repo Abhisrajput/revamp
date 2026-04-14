@@ -360,13 +360,26 @@ export async function runStage(options: StageRunnerOptions): Promise<StageRunRes
       // Truncate the user prompt to fit within 80% of available budget
       const safeCharLimit = Math.floor((budget.contextWindow - 8192) * 0.8 * 4); // chars
       if (assembled.userPrompt.length > safeCharLimit) {
-        assembled.userPrompt = assembled.userPrompt.slice(0, safeCharLimit) +
-          '\n\n[... content truncated to fit model context window ...]';
+        // Truncate at a newline boundary to avoid splitting mid-sentence/mid-JSON
+        const truncated = assembled.userPrompt.slice(0, safeCharLimit);
+        const lastNewline = truncated.lastIndexOf('\n');
+        const cutPoint = lastNewline > safeCharLimit * 0.8 ? lastNewline : safeCharLimit;
+        const retainedPct = Math.round((cutPoint / assembled.userPrompt.length) * 100);
+
+        assembled.userPrompt = assembled.userPrompt.slice(0, cutPoint) +
+          `\n\n[... ${100 - retainedPct}% of content truncated to fit model context window ...]`;
+
+        if (retainedPct < 70) {
+          emit('assembling', {
+            warning: 'prompt_severely_truncated',
+            retained: retainedPct,
+            message: `Only ${retainedPct}% of prompt retained — output quality may be degraded`,
+          });
+        }
+
         // Re-derive cacheablePrefix from truncated content to avoid stale cache.
-        // The prefix is used for Anthropic prompt caching — if it doesn't match
-        // what the LLM actually sees, the cache serves inconsistent context.
-        if (assembled.cacheablePrefix.length > safeCharLimit) {
-          assembled.cacheablePrefix = assembled.cacheablePrefix.slice(0, safeCharLimit);
+        if (assembled.cacheablePrefix.length > cutPoint) {
+          assembled.cacheablePrefix = assembled.cacheablePrefix.slice(0, cutPoint);
         }
       }
     }
@@ -509,7 +522,9 @@ export async function runStage(options: StageRunnerOptions): Promise<StageRunRes
       stageName: options.stageName,
       stageOutput: output,
       stagePrompt: assembled.userPrompt || options.promptOverride || '',
-      validationPrompt: (options.project as any)?.validationPrompts?.[String(options.stageIndex)] || '',
+      validationPrompt: (options.project as any)?.validationPrompts?.[String(options.stageIndex)]
+        || (options.project as any)?.validationPrompts?.[options.stageName]
+        || '',
       priorStageKeywords: assembled.priorStageKeywords,
       priorStageOutputs: options.priorOutputs?.map(po => ({ stageName: po.stageName, output: po.output })),
       llmEvalFn: options.llmEvalFn,
@@ -521,10 +536,31 @@ export async function runStage(options: StageRunnerOptions): Promise<StageRunRes
     const maxPasses = options.maxRefinements ?? contract?.maxRefinementPasses ?? 1;
     let refinementCount = 0;
 
+    // If contract hard-gate fired, skip refinement — structural requirements are critically missing.
+    // Refinement can fix gaps but can't reconstruct missing sections from scratch.
+    if (validation.contractResult?.hardGated) {
+      emit('completed', {
+        passed: false,
+        confidenceScore: validation.confidenceScore,
+        hardGated: true,
+        refinementCount: 0,
+      });
+      return {
+        stageName: options.stageName,
+        stageIndex: options.stageIndex,
+        output,
+        validation,
+        refinementCount: 0,
+        duration: Date.now() - startTime,
+        phases,
+        aborted: false,
+      };
+    }
+
     while (
       !validation.passed &&
       refinementCount < maxPasses &&
-      validation.contractResult.refinementPrompt
+      validation.contractResult?.refinementPrompt
     ) {
       checkAbort();
       emit('refining', { pass: refinementCount + 1, maxPasses });
@@ -564,7 +600,9 @@ export async function runStage(options: StageRunnerOptions): Promise<StageRunRes
         stageName: options.stageName,
         stageOutput: output,
         stagePrompt: assembled.userPrompt || options.promptOverride || '',
-        validationPrompt: (options.project as any)?.validationPrompts?.[String(options.stageIndex)] || '',
+        validationPrompt: (options.project as any)?.validationPrompts?.[String(options.stageIndex)]
+        || (options.project as any)?.validationPrompts?.[options.stageName]
+        || '',
         priorStageKeywords: assembled.priorStageKeywords,
         priorStageOutputs: options.priorOutputs?.map(po => ({ stageName: po.stageName, output: po.output })),
         llmEvalFn: options.llmEvalFn,

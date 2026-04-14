@@ -82,23 +82,44 @@ export function extractRequirementsFromPrompt(prompt: string): ExtractedRequirem
   if (!prompt || prompt.trim().length === 0) return [];
 
   const requirements: ExtractedRequirement[] = [];
+  let match;
 
-  // Match numbered items: "1. LABEL — description" or "1. LABEL -- description"
+  // Pattern 1: Numbered items — "1. LABEL — description" or "1. LABEL -- description"
   const numberedPattern = /(?:^|\n)\s*(\d+)\.\s+([A-Z][A-Z &/,()-]+?)(?:\s*[—–-]{1,2}\s*|\s*:\s*)([\s\S]*?)(?=\n\s*\d+\.\s+[A-Z]|\n\n[A-Z]|\n\s*(?:CRITICAL|DO NOT|IMPORTANT|Use |Generate |Produce |Include |Focus )|\n*$)/gm;
 
-  let match;
   while ((match = numberedPattern.exec(prompt)) !== null) {
     const index = parseInt(match[1], 10);
     const label = match[2].trim();
     const description = match[3].trim().replace(/\n\s+/g, ' ');
-
-    // Extract keywords: uppercase phrases, quoted terms, technical terms
     const keywords = extractKeywordsFromDescription(description, label);
-
     requirements.push({ index, label, description, keywords });
   }
 
-  // Fallback: try bullet/dash items if no numbered items found
+  // Pattern 2: Markdown headings with numbers — "### 1. Executive Summary" or "## 3. Architecture"
+  if (requirements.length === 0) {
+    const headingPattern = /(?:^|\n)#{2,4}\s*(\d+)\.\s+(.+?)(?:\s*\(.*?\))?\s*\n([\s\S]*?)(?=\n#{2,4}\s*\d+\.|## Output|## COMPOSITION|## YOUR TASK|\n*$)/gm;
+    while ((match = headingPattern.exec(prompt)) !== null) {
+      const index = parseInt(match[1], 10);
+      const label = match[2].trim().replace(/\*+/g, '');
+      const description = match[3].trim().replace(/\n\s+/g, ' ');
+      const keywords = extractKeywordsFromDescription(description, label);
+      requirements.push({ index, label, description, keywords });
+    }
+  }
+
+  // Pattern 3: Unnumbered markdown headings — "## Executive Summary", "## Architecture"
+  if (requirements.length === 0) {
+    const unNumberedHeadingPattern = /(?:^|\n)#{2,4}\s+([A-Z][A-Za-z &/,()'-]+?)\s*\n([\s\S]*?)(?=\n#{2,4}\s+[A-Z]|## Output|## COMPOSITION|## YOUR TASK|## RULES|\n*$)/gm;
+    let idx = 1;
+    while ((match = unNumberedHeadingPattern.exec(prompt)) !== null) {
+      const label = match[1].trim().replace(/\*+/g, '');
+      const description = match[2].trim().replace(/\n\s+/g, ' ');
+      const keywords = extractKeywordsFromDescription(description, label);
+      requirements.push({ index: idx++, label, description, keywords });
+    }
+  }
+
+  // Pattern 4: Bullet/dash items — "- **LABEL** — description"
   if (requirements.length === 0) {
     const bulletPattern = /(?:^|\n)\s*[-•*]\s+\*?\*?([A-Z][A-Z &/,()-]+?)\*?\*?\s*[—–:-]\s*([\s\S]*?)(?=\n\s*[-•*]\s+\*?\*?[A-Z]|\n\n|\n*$)/gm;
     let idx = 1;
@@ -140,7 +161,7 @@ function extractKeywordsFromDescription(description: string, label: string): str
 /**
  * Check output against extracted requirements.
  */
-export function checkRequirements(
+function checkRequirements(
   output: string,
   requirements: ExtractedRequirement[],
 ): RequirementCheck[] {
@@ -161,11 +182,20 @@ export function checkRequirements(
       ? (sections[matchedHeading] || '')
       : '';
 
-    // Also search for the label anywhere in the output
-    const labelFound = outputLower.includes(req.label.toLowerCase()) ||
-      req.label.split(/\s+/).every(word => outputLower.includes(word.toLowerCase()));
+    // Also search for the label (or its significant words) anywhere in the output
+    const labelLower = req.label.toLowerCase();
+    const significantWords = req.label.split(/\s+/).filter(w => w.length > 2).map(w => w.toLowerCase());
+    const labelFound = outputLower.includes(labelLower) ||
+      (significantWords.length > 0 && significantWords.every(word => outputLower.includes(word)));
 
-    const found = !!matchedHeading || labelFound;
+    // Check keyword density even without a heading match — if most keywords are present,
+    // the content exists somewhere in the output (just under a different heading).
+    const keywordPresence = req.keywords.length > 0
+      ? req.keywords.filter(kw => outputLower.includes(kw)).length / req.keywords.length
+      : 0;
+    const contentLikelyPresent = keywordPresence >= 0.6;
+
+    const found = !!matchedHeading || labelFound || contentLikelyPresent;
 
     // Count words in the section
     const contentLength = sectionContent
@@ -209,26 +239,38 @@ function splitIntoSections(text: string): Record<string, string> {
 }
 
 function findBestHeadingMatch(label: string, headings: string[]): string | null {
-  const labelLower = label.toLowerCase().replace(/[^a-z0-9\s]/g, '');
+  const labelLower = label.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
   const labelWords = labelLower.split(/\s+/).filter(w => w.length > 2);
 
+  // Pass 1: Exact substring match (highest confidence)
+  for (const heading of headings) {
+    const headingLower = heading.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+    if (headingLower.includes(labelLower) || labelLower.includes(headingLower)) {
+      return heading;
+    }
+  }
+
+  // Pass 2: All significant words present in heading (e.g. "DATA FLOWS" → "Data Flows")
+  for (const heading of headings) {
+    const headingLower = heading.toLowerCase().replace(/[^a-z0-9\s]/g, '');
+    const headingWords = headingLower.split(/\s+/);
+    const allPresent = labelWords.length > 0 && labelWords.every(w =>
+      headingWords.some(hw => hw.includes(w) || w.includes(hw))
+    );
+    if (allPresent) return heading;
+  }
+
+  // Pass 3: Best partial overlap (threshold 60% of label words)
   let bestMatch: string | null = null;
   let bestScore = 0;
 
   for (const heading of headings) {
     const headingLower = heading.toLowerCase().replace(/[^a-z0-9\s]/g, '');
-
-    // Exact match
-    if (headingLower.includes(labelLower) || labelLower.includes(headingLower)) {
-      return heading;
-    }
-
-    // Word overlap score
     const headingWords = headingLower.split(/\s+/);
     const overlap = labelWords.filter(w => headingWords.some(hw => hw.includes(w) || w.includes(hw))).length;
     const score = overlap / Math.max(labelWords.length, 1);
 
-    if (score > bestScore && score >= 0.5) {
+    if (score > bestScore && score >= 0.6) {
       bestScore = score;
       bestMatch = heading;
     }
@@ -249,7 +291,7 @@ export interface BreeGroundTruth {
 /**
  * Cross-reference LLM output claims against BREE static analysis results.
  */
-export function anchorToGroundTruth(
+function anchorToGroundTruth(
   output: string,
   groundTruth: BreeGroundTruth,
 ): GroundTruthAnchor[] {
@@ -398,7 +440,7 @@ export async function runPromptDerivedValidation(
 
   const groundTruthScore = groundTruthAnchors.length > 0
     ? groundTruthAnchors.filter(a => a.match).length / groundTruthAnchors.length
-    : 1; // no ground truth = assume ok
+    : 0.5; // no ground truth = unverified, penalize slightly (not a free pass)
 
   // 4. LLM-as-Judge (if eval function available)
   let llmJudgeScore: number | null = null;

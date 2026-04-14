@@ -4,6 +4,7 @@ import { db } from "@/db/index.js";
 import { projects, projectMembers } from "@/db/schema.js";
 import { eq, and } from "drizzle-orm";
 import { storageService } from "@/services/storage.js";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 
 const GenerateUploadUrlSchema = z.object({
   project_id: z.string().uuid(),
@@ -29,7 +30,21 @@ export async function storageRoutes(fastify: FastifyInstance) {
   // Generate upload presigned URL — requires project membership
   fastify.post<{ Body: z.infer<typeof GenerateUploadUrlSchema> }>(
     "/storage/upload-url",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Storage"],
+        summary: "Generate a presigned URL for file upload",
+        body: GenerateUploadUrlSchema,
+        response: {
+          200: { type: "object", properties: { upload_url: { type: "string" }, storage_key: { type: "string" }, expires_in: { type: "number" } } },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = GenerateUploadUrlSchema.safeParse(request.body);
       if (!validation.success) {
@@ -90,7 +105,20 @@ export async function storageRoutes(fastify: FastifyInstance) {
   // Generate download presigned URL — requires access to the key's project
   fastify.post<{ Body: z.infer<typeof GenerateDownloadUrlSchema> }>(
     "/storage/download-url",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Storage"],
+        summary: "Generate a presigned URL for file download",
+        body: GenerateDownloadUrlSchema,
+        response: {
+          200: { type: "object", properties: { download_url: { type: "string" }, expires_in: { type: "number" } } },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = GenerateDownloadUrlSchema.safeParse(request.body);
       if (!validation.success) {
@@ -142,7 +170,20 @@ export async function storageRoutes(fastify: FastifyInstance) {
   // Delete object — requires project membership
   fastify.delete<{ Params: { key: string } }>(
     "/storage/:key",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Storage"],
+        summary: "Delete a stored object by key",
+        params: z.object({ key: z.string() }),
+        response: {
+          200: { type: "object", properties: { message: { type: "string" } } },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { key } = request.params;
 

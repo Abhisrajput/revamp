@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -94,36 +95,63 @@ func (sm *StreamMultiplexer) Stop() {
 	}
 }
 
-// SSEBridge converts streaming chunks to Server-Sent Events format
+// SSEBridge converts streaming chunks to Server-Sent Events format.
+// Uses a context for cancellation — when the HTTP handler exits (client
+// disconnect), the context is cancelled and the goroutine exits cleanly.
 type SSEBridge struct {
 	chunks  <-chan *StreamingChunk
 	eventCh chan string
+	ctx     context.Context
+	cancel  context.CancelFunc
 	mu      sync.Mutex
 }
 
-// NewSSEBridge creates a new SSE bridge
-func NewSSEBridge(chunks <-chan *StreamingChunk) *SSEBridge {
+// NewSSEBridge creates a new SSE bridge with a cancellation context.
+// Callers MUST call bridge.Close() when done (typically via defer) to
+// prevent goroutine leaks.
+func NewSSEBridge(chunks <-chan *StreamingChunk, ctx context.Context) *SSEBridge {
+	bridgeCtx, cancel := context.WithCancel(ctx)
 	bridge := &SSEBridge{
 		chunks:  chunks,
 		eventCh: make(chan string, 10),
+		ctx:     bridgeCtx,
+		cancel:  cancel,
 	}
 	go bridge.process()
 	return bridge
 }
 
-// process converts chunks to SSE format
+// Close cancels the bridge context, unblocking the process goroutine.
+func (sb *SSEBridge) Close() {
+	sb.cancel()
+}
+
+// process converts chunks to SSE format.
+// Exits when the input channel closes OR the context is cancelled.
 func (sb *SSEBridge) process() {
 	defer close(sb.eventCh)
 
-	for chunk := range sb.chunks {
-		if chunk == nil {
-			continue
-		}
+	for {
+		select {
+		case <-sb.ctx.Done():
+			return
+		case chunk, ok := <-sb.chunks:
+			if !ok {
+				return
+			}
+			if chunk == nil {
+				continue
+			}
 
-		// Format as SSE event
-		event := sb.formatSSE(chunk)
-		// Block until event is consumed — never drop streaming data
-		sb.eventCh <- event
+			// Format as SSE event
+			event := sb.formatSSE(chunk)
+			// Send with cancellation — don't block if nobody is reading
+			select {
+			case sb.eventCh <- event:
+			case <-sb.ctx.Done():
+				return
+			}
+		}
 	}
 }
 

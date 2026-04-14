@@ -46,23 +46,6 @@ export interface GCPServiceInfo {
   limits?: Record<string, string>;
 }
 
-export interface GCPModernizationPattern {
-  legacyPattern: string;
-  /** Service IDs from the catalog */
-  gcpServices: readonly string[];
-  description: string;
-  benefits: readonly string[];
-  /** Specific cost tips for this migration path */
-  costTips?: readonly string[];
-}
-
-export interface GCPArchitecturePattern {
-  name: string;
-  description: string;
-  components: readonly string[];
-  considerations: readonly string[];
-}
-
 // Architecture diagram node/edge/group types for rendering
 export interface GCPArchNode {
   id: string;
@@ -94,26 +77,6 @@ export interface GCPArchitectureSpec {
   edges: GCPArchEdge[];
   groups: GCPArchGroup[];
 }
-
-// ---------------------------------------------------------------------------
-// Category colors (for diagram rendering)
-// ---------------------------------------------------------------------------
-
-export const GCP_CATEGORY_COLORS: Record<CloudServiceCategory, string> = {
-  compute: '#4285F4',
-  containers: '#4285F4',
-  database: '#4285F4',
-  storage: '#4285F4',
-  networking: '#34A853',
-  messaging: '#EA4335',
-  security: '#EA4335',
-  monitoring: '#FBBC04',
-  'ai-ml': '#9334E6',
-  cicd: '#4285F4',
-  analytics: '#9334E6',
-  integration: '#EA4335',
-  management: '#FBBC04',
-};
 
 // ---------------------------------------------------------------------------
 // Service catalog
@@ -695,12 +658,9 @@ export const GCP_SERVICES: GCPServiceInfo[] = [
 // Quick lookups
 // ---------------------------------------------------------------------------
 
-/** Map from service ID to full service info */
-export const GCP_SERVICE_MAP = new Map(GCP_SERVICES.map((s) => [s.id, s]));
-
 /** Get GCP service info by service ID */
 export function getGCPService(serviceId: string): GCPServiceInfo | null {
-  return GCP_SERVICE_MAP.get(serviceId) ?? null;
+  return GCP_SERVICES.find((s) => s.id === serviceId) ?? null;
 }
 
 /** Get all GCP services in a category */
@@ -716,193 +676,3 @@ export function findGCPServicesForUseCase(useCase: string): GCPServiceInfo[] {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Legacy -> GCP modernization patterns
-// ---------------------------------------------------------------------------
-
-export const GCP_MODERNIZATION_PATTERNS: GCPModernizationPattern[] = [
-  {
-    legacyPattern: 'On-premises relational database (Oracle, SQL Server, MySQL)',
-    gcpServices: ['cloud-sql', 'alloydb', 'cloud-spanner'],
-    description: 'Migrate to Cloud SQL for managed MySQL/PostgreSQL/SQL Server, AlloyDB for high-performance PostgreSQL, or Cloud Spanner for globally distributed transactions.',
-    benefits: ['Automated backups', 'High availability', '4x PostgreSQL performance with AlloyDB', 'Global consistency with Spanner'],
-    costTips: ['Use Committed Use Discounts for Cloud SQL (up to 52% savings)', 'Cloud SQL Enterprise Plus for advanced HA at lower cost than Spanner', 'Rightsize with Cloud SQL Recommender'],
-  },
-  {
-    legacyPattern: 'Monolithic application server (WebSphere, JBoss, Tomcat)',
-    gcpServices: ['cloud-run', 'gke', 'cloud-load-balancing'],
-    description: 'Containerize the monolith and deploy on Cloud Run (serverless) or GKE (Kubernetes) behind Cloud Load Balancing. Extract microservices incrementally.',
-    benefits: ['Scale-to-zero with Cloud Run', 'Autopilot mode with GKE', 'Global load balancing', 'Traffic splitting for canary deploys'],
-    costTips: ['Cloud Run scale-to-zero eliminates idle costs', 'GKE Autopilot pays only for pod resources', 'Use Spot pods for fault-tolerant workloads'],
-  },
-  {
-    legacyPattern: 'Batch processing / Cron jobs',
-    gcpServices: ['cloud-functions', 'workflows', 'cloud-run-jobs'],
-    description: 'Replace cron jobs with Cloud Functions triggered by Cloud Scheduler, or Cloud Run Jobs for containerized batch work. Use Workflows for complex orchestration.',
-    benefits: ['Pay-per-invocation', 'Auto-scaling', 'YAML-based workflow definition', 'Container-based batch jobs'],
-    costTips: ['Cloud Functions v2 has free tier (2M invocations/mo)', 'Cloud Run Jobs scale parallelism based on work', 'Use Cloud Scheduler free tier (3 jobs)'],
-  },
-  {
-    legacyPattern: 'Message queue (IBM MQ, RabbitMQ, ActiveMQ)',
-    gcpServices: ['pub-sub', 'cloud-tasks'],
-    description: 'Use Pub/Sub for pub/sub messaging with exactly-once delivery. Use Cloud Tasks for rate-controlled task dispatch.',
-    benefits: ['Global message ordering', 'Exactly-once delivery', 'Seek and replay', 'Dead-letter topics'],
-    costTips: ['Pub/Sub Lite for cost-sensitive high-throughput streams', 'Cloud Tasks free tier (1M operations/mo)', 'Batch publish for throughput and cost efficiency'],
-  },
-  {
-    legacyPattern: 'File server / NAS / shared storage',
-    gcpServices: ['cloud-storage', 'filestore'],
-    description: 'Migrate file shares to Cloud Storage for object storage or Filestore for NFS-compatible shared filesystems.',
-    benefits: ['Multi-regional storage', 'Lifecycle management', 'Object versioning', 'NFS compatibility with Filestore'],
-    costTips: ['Autoclass for automatic storage class transitions', 'Nearline for monthly access, Coldline for quarterly', 'Object lifecycle rules to delete or archive old files'],
-  },
-  {
-    legacyPattern: 'Monolithic frontend (JSP, ASP.NET, PHP templates)',
-    gcpServices: ['cloud-cdn', 'cloud-storage', 'apigee'],
-    description: 'Rebuild as SPA hosted on Cloud Storage behind Cloud CDN with Apigee for API management.',
-    benefits: ['Global CDN caching', 'Anycast IP', 'Full API lifecycle management', 'Developer portal'],
-    costTips: ['GCS static website hosting is very low cost', 'Cloud CDN caching reduces origin requests', 'Cloud Endpoints as cheaper alternative to Apigee'],
-  },
-  {
-    legacyPattern: 'In-memory cache (local, Memcached, Redis)',
-    gcpServices: ['memorystore'],
-    description: 'Migrate to Memorystore for managed Redis or Memcached with automatic failover and scaling.',
-    benefits: ['Sub-millisecond latency', 'Automatic failover', 'Redis cluster mode', 'Import/export'],
-    costTips: ['Basic tier for non-HA development environments', 'Right-size based on key count and memory usage'],
-  },
-  {
-    legacyPattern: 'Custom authentication / LDAP / Active Directory',
-    gcpServices: ['identity-platform', 'cloud-iam'],
-    description: 'Replace custom auth with Identity Platform for customer-facing CIAM with multi-tenancy, or Cloud IAM for service-level access control.',
-    benefits: ['Multi-tenancy', 'Social login', 'SAML/OIDC federation', 'Adaptive MFA'],
-    costTips: ['Free tier for Identity Platform (50K MAU)', 'Workload Identity Federation to eliminate service account keys'],
-  },
-  {
-    legacyPattern: 'SOAP / XML web services',
-    gcpServices: ['apigee', 'cloud-functions'],
-    description: 'Use Apigee for protocol mediation and SOAP-to-REST conversion with Cloud Functions as lightweight adapters.',
-    benefits: ['SOAP-to-REST policies', 'Traffic management', 'API monetization', 'Analytics'],
-    costTips: ['Cloud Endpoints for simpler proxy needs (free usage tier)', 'Cloud Functions for lightweight XML transformation'],
-  },
-  {
-    legacyPattern: 'ETL pipelines / Data warehouse',
-    gcpServices: ['dataflow', 'bigquery', 'cloud-storage'],
-    description: 'Replace legacy ETL with Dataflow (Apache Beam) for stream/batch processing, Cloud Storage as data lake, and BigQuery for serverless analytics.',
-    benefits: ['Serverless Apache Beam', 'ML built into BigQuery', 'Streaming + batch unified', 'Separation of storage and compute'],
-    costTips: ['BigQuery on-demand pricing for ad-hoc queries', 'BigQuery Editions for predictable workloads', 'Partitioning and clustering to reduce query costs'],
-  },
-  {
-    legacyPattern: 'VM-based deployment / manual ops',
-    gcpServices: ['cloud-build', 'artifact-registry', 'cloud-deploy'],
-    description: 'Implement CI/CD with Cloud Build, Artifact Registry, and Cloud Deploy for progressive rollouts to GKE/Cloud Run.',
-    benefits: ['Serverless builds', 'Canary deployments', 'Rollback support', 'Approval gates'],
-    costTips: ['Cloud Build free tier (120 min/day)', 'Artifact Registry cleanup policies to reduce storage', 'Use build caching for faster, cheaper builds'],
-  },
-  {
-    legacyPattern: 'Mainframe / COBOL / AS/400',
-    gcpServices: ['cloud-run', 'apigee', 'cloud-spanner', 'workflows', 'pub-sub'],
-    description: 'Decompose mainframe transactions into containerized microservices on Cloud Run. Use Apigee as API gateway, Cloud Spanner for globally consistent data, and Workflows for orchestration.',
-    benefits: ['Incremental migration', 'Global consistency', 'Container-native', 'Event-driven with Pub/Sub'],
-    costTips: ['Cloud Run per-request pricing aligns cost with actual transaction volume', 'Pub/Sub Lite for high-volume internal events'],
-  },
-  {
-    legacyPattern: 'Monitoring / logging (Nagios, ELK, Splunk)',
-    gcpServices: ['cloud-monitoring', 'cloud-logging', 'cloud-trace'],
-    description: 'Consolidate on Cloud Operations suite: Cloud Monitoring (metrics + alerts), Cloud Logging (log management), and Cloud Trace (distributed tracing).',
-    benefits: ['Integrated operations suite', 'Log-based metrics', 'Trace sampling', 'SLO monitoring'],
-    costTips: ['First 50 GB of logs per project per month is free', 'Exclusion filters to drop noisy logs', 'Route logs to GCS for long-term retention at lower cost'],
-  },
-  {
-    legacyPattern: 'Event-driven architecture / ESB',
-    gcpServices: ['eventarc', 'pub-sub', 'workflows', 'cloud-functions'],
-    description: 'Replace ESB with Eventarc for event routing, Pub/Sub for messaging, and Workflows or Cloud Functions for event processing.',
-    benefits: ['Audit log triggers', 'Cross-service events', 'YAML workflows', 'Scale-to-zero handlers'],
-    costTips: ['Eventarc has no additional cost beyond Pub/Sub', 'Cloud Functions v2 free tier for low-volume handlers', 'Use Workflows for orchestration instead of chaining functions'],
-  },
-  {
-    legacyPattern: 'Static infrastructure / manual provisioning',
-    gcpServices: ['terraform-gcp', 'deployment-manager'],
-    description: 'Define infrastructure as code using Terraform (recommended) or Deployment Manager. Terraform provides multi-cloud portability.',
-    benefits: ['Multi-cloud IaC', 'State management', 'Plan/apply workflow', 'Module registry'],
-    costTips: ['No cost for IaC tools', 'Use Terraform modules for reusable infrastructure', 'Policy-as-code with Sentinel or OPA for governance'],
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Architecture patterns (high-level blueprints)
-// ---------------------------------------------------------------------------
-
-export const GCP_ARCHITECTURE_PATTERNS: GCPArchitecturePattern[] = [
-  {
-    name: 'Microservices on GCP',
-    description: 'Cloud Run or GKE-based microservices with managed data stores',
-    components: ['cloud-run', 'gke', 'cloud-load-balancing', 'cloud-sql', 'firestore', 'pub-sub'],
-    considerations: ['Service deployment model (Cloud Run vs GKE)', 'Inter-service communication (sync via gRPC, async via Pub/Sub)', 'Data consistency patterns', 'Observability with Cloud Operations', 'Cost optimization with scale-to-zero'],
-  },
-  {
-    name: 'Serverless Architecture',
-    description: 'Cloud Functions and Cloud Run based with zero server management',
-    components: ['cloud-functions', 'cloud-run', 'pub-sub', 'cloud-tasks', 'firestore', 'cloud-storage'],
-    considerations: ['Function composition', 'State management', 'Scaling patterns', 'Cost monitoring', 'Developer experience with local emulators'],
-  },
-  {
-    name: 'Data Analytics Pipeline',
-    description: 'BigQuery-centric analytics with streaming and batch ingestion',
-    components: ['cloud-storage', 'dataflow', 'bigquery', 'pub-sub', 'cloud-monitoring'],
-    considerations: ['Data pipeline design (streaming vs batch)', 'ETL vs ELT patterns', 'Query optimization (partitioning, clustering)', 'Cost management (slot reservations)', 'Data governance and access control'],
-  },
-  {
-    name: 'Real-Time Applications',
-    description: 'Pub/Sub and Firestore based with Cloud Run handlers',
-    components: ['pub-sub', 'firestore', 'cloud-run', 'cloud-tasks', 'memorystore'],
-    considerations: ['Message ordering guarantees', 'Latency optimization', 'Horizontal scalability', 'Consistency models (strong vs eventual)', 'Cost at scale'],
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Cost optimization tips (general GCP)
-// ---------------------------------------------------------------------------
-
-export const GCP_COST_OPTIMIZATION_TIPS: string[] = [
-  'Use Committed Use Discounts (CUDs) for predictable Compute Engine and Cloud SQL workloads (up to 57% savings)',
-  'Enable Sustained Use Discounts (automatic for Compute Engine)',
-  'Use Spot VMs for fault-tolerant batch workloads (up to 91% savings)',
-  'Right-size VMs with Google Recommender',
-  'Use Autoclass for Cloud Storage to automatically transition storage classes',
-  'Set Cloud Logging exclusion filters to reduce log ingestion costs',
-  'Use BigQuery partitioning and clustering to minimize query costs',
-  'Enable GKE Autopilot to pay only for pod resources',
-  'Use Cloud Run scale-to-zero for intermittent workloads',
-  'Consolidate projects under a billing account for committed discounts',
-];
-
-// ---------------------------------------------------------------------------
-// Prompt context builder — inject into modernization stages
-// ---------------------------------------------------------------------------
-
-export function buildGCPKnowledgeContext(): string {
-  const byCategory = new Map<string, string[]>();
-  for (const s of GCP_SERVICES) {
-    const list = byCategory.get(s.category) || [];
-    list.push(`${s.id} (${s.shortName})`);
-    byCategory.set(s.category, list);
-  }
-  const serviceCatalog = Array.from(byCategory.entries())
-    .map(([cat, svcs]) => `- **${cat}**: ${svcs.join(', ')}`)
-    .join('\n');
-
-  const patterns = GCP_MODERNIZATION_PATTERNS.map(
-    (p) => `- ${p.legacyPattern} -> ${p.gcpServices.join(', ')}`,
-  ).join('\n');
-
-  return [
-    '## GCP Service IDs (use these in cloudArchSpec nodes)',
-    serviceCatalog,
-    '',
-    '## Legacy -> GCP Patterns',
-    patterns,
-    '',
-    'Return `cloudArchSpec` JSON: {"title":"string","nodes":[{"id":"string","service":"<service-id>","label":"string","group":"group-id"}],"edges":[{"from":"id","to":"id","label":"string"}],"groups":[{"id":"string","label":"string","type":"project|vpc|subnet|region|zone|generic"}]}',
-    'Valid service IDs: ' + GCP_SERVICES.map((s) => s.id).join(', '),
-  ].join('\n');
-}

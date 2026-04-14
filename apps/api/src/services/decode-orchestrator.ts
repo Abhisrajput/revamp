@@ -198,8 +198,8 @@ export async function orchestrateDecodeStage(
           priority: plan.priority,
         },
       });
-    } catch {
-      // Non-fatal — skip this subtask
+    } catch (createErr) {
+      console.warn(`[DECODE] Failed to create subtask ${plan.type}:`, createErr instanceof Error ? createErr.message : createErr);
     }
   }
 
@@ -361,7 +361,12 @@ export async function orchestrateDecodeStage(
   // Determine the composition model — priority: UI override > env var > executor model
   const executorModel = opts.model || "";
   const composerModel = opts.composerModel || process.env.DECODE_COMPOSER_MODEL || executorModel;
-  const isLargeContext = /opus/i.test(composerModel) || /gemini.*pro/i.test(composerModel);
+  // Detect large-context models by name patterns. Context window:
+  //   Opus 4.6: 1M tokens  |  Gemini Pro: 1M+  |  Sonnet 4.6: 200K
+  // Models with >500K token context can take all subtask outputs verbatim.
+  const isLargeContext = /opus/i.test(composerModel)
+    || /gemini.*pro/i.test(composerModel)
+    || /gemini.*1\.5/i.test(composerModel);
 
   emit("composing", {
     message: `Composing with ${isLargeContext ? "large-context" : "standard"} model: ${composerModel || "default"}`,
@@ -468,16 +473,61 @@ export async function orchestrateDecodeStage(
   const compositionSystemPrompt = [
     "You are a lead architect composing a comprehensive DECODE / Intent Extraction document from specialist analysis reports.",
     "",
-    "CRITICAL RULES:",
-    "1. This document is the SOLE output the user sees. It must be thorough and self-contained.",
-    "2. DEDUPLICATE: Multiple specialists may extract the same business rule — keep the most detailed version with ONE BR-ID.",
-    "3. RENUMBER all BRs sequentially (BR-001, BR-002, ...) after deduplication.",
-    "4. PRESERVE every Mermaid diagram verbatim (skip exact duplicates).",
-    "5. PRESERVE every code citation, table, and file path reference.",
-    "6. CROSS-REFERENCE findings across domains (e.g., 'BR-042 relates to the data flow in Section 3.2').",
-    "7. Use consistent markdown: H1 title, H2 major sections, H3 subsections.",
-    "8. Output AT LEAST 8000 words. Do NOT summarize specialist findings — merge and organize them.",
-    "9. Include an Executive Summary at the top and Open Questions at the end.",
+    "## STRUCTURE RULE (HIGHEST PRIORITY — READ THIS FIRST)",
+    "You MUST produce EXACTLY these 10 H2 sections in EXACTLY this order. No more, no fewer.",
+    "Do NOT organize by file type (.twig, .vue, .css, .xml, etc.) — that is a SCAN-stage concern, not DECODE.",
+    "DECODE extracts BUSINESS INTENT: rules, workflows, data flows, entities, integrations.",
+    "If you produce sections like '## Twig Templates' or '## CSV Data Files', you have FAILED.",
+    "Strategy: Write ALL 10 section headings first, then fill each with appropriate detail.",
+    "If you are running low on output space, make early sections more concise — do NOT skip later sections.",
+    "",
+    "## REQUIRED H2 SECTIONS (in this order, with word budget guide):",
+    "",
+    "1. ## Executive Summary (~300-500 words)",
+    "   System overview, top 5 modernization concerns, key metrics from verified ground truth.",
+    "",
+    "2. ## Business Rules (~3000-5000 words)",
+    "   BR-ID inventory TABLE with columns: ID, Name, Description, Type, Trigger, Source File, Confidence.",
+    "   Include ONLY genuine business rules — NOT config files, build tools, CI/CD, SCSS compilation, or documentation.",
+    "   A business rule defines domain behavior: transactions, accounts, budgets, authentication, authorization, workflows.",
+    "   Deduplicate across specialists. Renumber sequentially (BR-001, BR-002, ...).",
+    "",
+    "3. ## Key Workflows (~1000-2000 words)",
+    "   End-to-end workflows with Mermaid sequence/state diagrams. Max 5-7 key workflows.",
+    "",
+    "4. ## Data Flows (~800-1500 words)",
+    "   ER diagram, data transformation points, storage architecture.",
+    "",
+    "5. ## Domain Entities (~500-1000 words)",
+    "   Entity inventory table with relationships and aggregate boundaries.",
+    "",
+    "6. ## Integration Points (~500-800 words)",
+    "   TABLE: every external API, email, queue, cache, webhook, OAuth provider, file storage.",
+    "   | Integration | Type | Protocol | Direction | Config Location |",
+    "",
+    "7. ## Constraints & Assumptions (~300-500 words)",
+    "   Technology lock-ins, licensing (AGPL, etc.), compliance flags, SLAs, deployment requirements.",
+    "",
+    "8. ## Technical Debt (~500-800 words)",
+    "   Standalone section — NOT embedded in Executive Summary.",
+    "   TABLE: dead code, god classes, duplicated logic, deprecated deps, missing tests, hardcoded values.",
+    "   | Item | Type | Severity | Location | Impact |",
+    "",
+    "9. ## Open Questions (~300-500 words)",
+    "   5-15 specific questions needing SME clarification before modernization.",
+    "   Every codebase has unknowns. If you found none, you didn't look hard enough.",
+    "",
+    "10. ## Migration Readiness Assessment (~200-400 words)",
+    "    Ready/Conditional/Not Ready. Blockers, risks, recommended next steps for Stage 3.",
+    "",
+    "## COMPOSITION RULES:",
+    "1. DEDUPLICATE business rules across specialists — one BR per unique rule.",
+    "2. PRESERVE Mermaid diagrams verbatim (skip exact duplicates).",
+    "3. PRESERVE file path citations — but do NOT fabricate file paths that don't exist.",
+    "4. Use verified ground truth for all version numbers, component counts, line counts.",
+    "5. Do NOT paraphrase verified versions (e.g. if ground truth says PHP >=8.5, write >=8.5 not 8.2+).",
+    "6. Cross-reference across sections (e.g. 'BR-042 relates to the data flow in Section 4').",
+    "7. Every component from SCAN must appear somewhere with extracted business rules.",
   ].join("\n");
 
   let composedOutput: string;
@@ -490,11 +540,24 @@ export async function orchestrateDecodeStage(
     });
   } catch (firstErr) {
     const firstErrMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
-    emit("composing", { message: `Composition failed (${firstErrMsg}), retrying...`, progress: 82 });
+    const isContextError = /context.length|too.long|token.limit|max.tokens/i.test(firstErrMsg);
+
+    emit("composing", {
+      message: `Composition failed (${firstErrMsg}), retrying${isContextError ? " with reduced input" : ""}...`,
+      progress: 82,
+    });
+
+    // On context-length errors, aggressively truncate input.
+    // On other errors, retry with same input (may be transient).
+    const retryInput = isContextError
+      ? compositionInput.slice(0, Math.floor(compositionInput.length * 0.6)) +
+        "\n\n[... input truncated to fit model context window. Prioritize structured data (BRs, tables, diagrams) over prose ...]"
+      : compositionInput;
+
     try {
       composedOutput = await composerCallFn({
         systemPrompt: compositionSystemPrompt,
-        userPrompt: DECODE_COMPOSITION.replace("{{subtaskResults}}", compositionInput + failedNote),
+        userPrompt: DECODE_COMPOSITION.replace("{{subtaskResults}}", retryInput + failedNote),
         onDelta: opts.onDelta,
         signal: opts.signal,
       });
@@ -542,19 +605,89 @@ export async function orchestrateDecodeStage(
     console.warn("[DECODE] Early artifact save failed:", saveErr instanceof Error ? saveErr.message : saveErr);
   }
 
-  // ── STEP 4: COVERAGE CHECK (informational) ─────────────────────
+  // ── STEP 4: COVERAGE CHECK — targeted refinement on gaps ────────
+  //
+  // Legacy production apps have dozens of components. If DECODE misses even a
+  // few, the modernized system silently drops functionality. Coverage must be
+  // measured and enforced — not just reported.
   let refinementCount = 0;
   const scanComponents = extractScanComponents(opts.scanOutput);
+  const COVERAGE_THRESHOLD = 0.65; // Minimum 65% component coverage
+
   if (scanComponents.length > 0) {
-    const coverage = measureDecodeCoverage(composedOutput, scanComponents);
+    let coverage = measureDecodeCoverage(composedOutput, scanComponents);
     emit("coverage_check" as StagePhase, {
       message: `DECODE coverage: ${Math.round(coverage.percentage * 100)}% (${coverage.covered}/${coverage.total} components)`,
       coverage: Math.round(coverage.percentage * 100),
       covered: coverage.covered,
       total: coverage.total,
-      uncovered: coverage.uncovered.slice(0, 5),
-      progress: 90,
+      uncovered: coverage.uncovered.slice(0, 10),
+      progress: 88,
     });
+
+    // If coverage is below threshold, run a targeted refinement pass that
+    // explicitly names the missing components and asks the composer to address them.
+    if (coverage.percentage < COVERAGE_THRESHOLD && coverage.uncovered.length > 0) {
+      emit("refining" as StagePhase, {
+        message: `Coverage ${Math.round(coverage.percentage * 100)}% is below ${Math.round(COVERAGE_THRESHOLD * 100)}% — refining with ${coverage.uncovered.length} uncovered components`,
+        progress: 89,
+      });
+
+      try {
+        const uncoveredList = coverage.uncovered.slice(0, 20).map((c, i) => `${i + 1}. ${c}`).join("\n");
+        const coverageRefinementPrompt = [
+          "## Coverage Gap",
+          "",
+          `The DECODE output only covers ${Math.round(coverage.percentage * 100)}% of the components discovered in SCAN.`,
+          "",
+          "The following components from SCAN are NOT addressed in the DECODE output:",
+          uncoveredList,
+          "",
+          "## Required Action",
+          "For EACH uncovered component above, add a section that extracts:",
+          "- Business rules (with BR-IDs)",
+          "- Data flows (inputs, outputs, storage)",
+          "- Integration points",
+          "- Key workflows",
+          "",
+          "Integrate these into the existing document structure. Do NOT remove any existing content.",
+        ].join("\n");
+
+        composedOutput = await refineComposition(opts, composedOutput, coverageRefinementPrompt);
+        refinementCount++;
+
+        // Re-measure coverage after refinement
+        coverage = measureDecodeCoverage(composedOutput, scanComponents);
+        emit("coverage_check" as StagePhase, {
+          message: `Post-refinement coverage: ${Math.round(coverage.percentage * 100)}% (${coverage.covered}/${coverage.total})`,
+          coverage: Math.round(coverage.percentage * 100),
+          covered: coverage.covered,
+          total: coverage.total,
+          uncovered: coverage.uncovered.slice(0, 5),
+          progress: 91,
+        });
+
+        // Update early artifact with refined version
+        try {
+          await db.insert(stageArtifacts).values({
+            pipeline_run_id: opts.pipelineRunId,
+            stage_name: PipelineStageName.DECODE,
+            artifact_type: "stage_output",
+            storage_path: `decode/${opts.pipelineRunId}/output.md`,
+            file_size: composedOutput.length,
+            metadata: { content: composedOutput, output: composedOutput },
+          }).onConflictDoUpdate({
+            target: [stageArtifacts.pipeline_run_id, stageArtifacts.stage_name, stageArtifacts.artifact_type],
+            set: { file_size: composedOutput.length, metadata: { content: composedOutput, output: composedOutput }, updated_at: new Date() },
+          });
+        } catch {
+          // Non-fatal — original artifact still exists
+        }
+      } catch (refineErr) {
+        // Refinement failed — keep original composition but log the gap
+        console.warn("[DECODE] Coverage refinement failed:", refineErr instanceof Error ? refineErr.message : refineErr);
+      }
+    }
   }
 
   // ── STEP 5: CONTRACT VALIDATION ──────────────────────────────
@@ -575,13 +708,13 @@ export async function orchestrateDecodeStage(
           violations: revalidation.violations.length,
         });
       }
-    } catch {
-      // Refinement failed — keep original composition
+    } catch (contractRefineErr) {
+      console.warn("[DECODE] Contract refinement failed, keeping original:", contractRefineErr instanceof Error ? contractRefineErr.message : contractRefineErr);
     }
   }
 
-  // Build FullValidationResult — use agent-based section validation for accuracy
-  // Pass LLM function for agent-based section validation (all stages)
+  // Build FullValidationResult — single LLM-based validation pass
+  // One agent function handles both contract enforcement and section validation.
   const validationAgentFn = llmProxyService.createCallFn({
     maxTokens: 2048,
     model: opts.model || "",
@@ -592,11 +725,6 @@ export async function orchestrateDecodeStage(
   // Upgrade section checks with LLM agent (replaces regex with semantic understanding)
   try {
     emit("validating" as StagePhase, { message: "Agent validating section completeness...", progress: 95 });
-    const agentFn = llmProxyService.createCallFn({
-      maxTokens: 2048,
-      model: opts.model || "",
-      credentials: opts.credentials,
-    });
     // Dynamic import to avoid circular dependency — validateSectionsWithAgent is async
     const stageContractsMod = await import("@revamp/core-engine") as any;
     const agentValidateFn = stageContractsMod.validateSectionsWithAgent;
@@ -604,7 +732,7 @@ export async function orchestrateDecodeStage(
     const agentResult = await agentValidateFn(
       PipelineStageName.DECODE,
       composedOutput,
-      agentFn,
+      validationAgentFn,
     ) as { sectionResults: Array<{ heading: string; found: boolean; quality: string; matchedHeading?: string; wordCount?: number; reasoning: string }>; score: number };
 
     if (agentResult.sectionResults.length > 0) {
@@ -635,18 +763,24 @@ export async function orchestrateDecodeStage(
       const agentScore = agentResult.score;
       const patternScore = finalContractResult.completenessScore;
       // Blend: 60% agent section score + 40% deterministic pattern score
-      const blendedScore = Math.round(agentScore * 0.6 + patternScore * 0.4);
+      const blendedScore = Math.min(100, Math.round(agentScore * 0.6 + patternScore * 0.4));
+
+      const hasCriticalViolations = allViolations.some(v => v.severity === 'critical');
+      const passesThreshold = blendedScore >= 70;
 
       finalContractResult = {
         ...finalContractResult,
         violations: allViolations,
         completenessScore: blendedScore,
-        passed: allViolations.filter(v => v.severity === 'critical').length === 0 && blendedScore >= 70,
-        hardGated: finalContractResult.hardGated || !(allViolations.filter(v => v.severity === 'critical').length === 0 && blendedScore >= 70),
+        passed: !hasCriticalViolations && passesThreshold,
+        // Hard-gate when contract says so OR when critical sections are missing.
+        // Score threshold alone doesn't trigger hard-gate — that's what the
+        // approval gate's confidence threshold is for.
+        hardGated: finalContractResult.hardGated || hasCriticalViolations,
       };
     }
-  } catch {
-    // Agent validation failed — keep deterministic results
+  } catch (agentValErr) {
+    console.warn("[DECODE] Agent section validation failed, using deterministic results:", agentValErr instanceof Error ? agentValErr.message : agentValErr);
   }
 
   const validationResult: import("@revamp/core-engine").FullValidationResult = {
@@ -654,7 +788,7 @@ export async function orchestrateDecodeStage(
     stageName: PipelineStageName.DECODE,
     timestamp: new Date().toISOString(),
     passed: finalContractResult.passed,
-    confidenceScore: finalContractResult.completenessScore,
+    confidenceScore: Math.max(0, Math.min(100, finalContractResult.completenessScore)),
     deterministicResults: finalContractResult.violations.map((v) => ({
       name: v.type,
       type: "SECTION_COMPLETENESS" as any,

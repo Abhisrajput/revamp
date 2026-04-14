@@ -17,6 +17,7 @@
 
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 import { db } from "@/db/index.js";
 import { stageArtifacts, approvalGates, auditLogs, stageRuns, stageExecutionLogs, projectMembers, pipelineRuns, users, projects, modernizedFiles, traceabilityEntries, agentSubtasks } from "@/db/schema.js";
 import { eq, and, desc, inArray, sql } from "drizzle-orm";
@@ -77,6 +78,8 @@ const ExecuteStageSchema = z.object({
   composer_model: z.string().optional(),
   /** Override evaluator/validation model for this stage */
   evaluator_model: z.string().optional(),
+  /** Max output tokens (scales output depth for larger codebases) */
+  max_tokens: z.number().optional(),
   /** Override stage prompt for this execution (re-run with edited prompt) */
   prompt_override: z.string().optional(),
   /** Validation feedback from previous run — injected into prompt on re-run */
@@ -91,6 +94,8 @@ const ExecuteStageSchema = z.object({
 
 const ApproveGateSchema = z.object({
   comment: z.string().optional(),
+  /** Admin-only: bypass confidence threshold check */
+  force: z.boolean().optional(),
 });
 
 const RejectGateSchema = z.object({
@@ -115,6 +120,22 @@ const ChatMessageSchema = z.object({
 
 const validStageNames = Object.values(PipelineStageName);
 
+// ─── SHARED PARAM SCHEMAS ──────────────────────────────────────
+
+const PipelineRunParamsSchema = z.object({
+  pipelineRunId: z.string().uuid(),
+});
+
+const PipelineStageParamsSchema = z.object({
+  pipelineRunId: z.string().uuid(),
+  stage: z.string(),
+});
+
+const errorResponse = {
+  400: { type: "object" as const, properties: { error: { type: "string" } } },
+  404: { type: "object" as const, properties: { error: { type: "string" } } },
+};
+
 // ─── ROUTES ─────────────────────────────────────────────────────
 
 export async function pipelineRoutes(fastify: FastifyInstance) {
@@ -123,7 +144,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { pipelineRunId: string } }>(
     "/pipeline/:pipelineRunId/history",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunParamsSchema,
+        tags: ["Pipeline"],
+        summary: "Get pipeline execution history and approval timeline",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const { pipelineRunId } = request.params;
 
@@ -216,7 +245,18 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Body: z.infer<typeof StartPipelineSchema> }>(
     "/pipeline/start",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        body: StartPipelineSchema,
+        tags: ["Pipeline"],
+        summary: "Create a new pipeline run for a project",
+        response: {
+          201: { type: "object", properties: { pipeline_run_id: { type: "string" } }, additionalProperties: true },
+          ...errorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = StartPipelineSchema.safeParse(request.body);
       if (!validation.success) {
@@ -278,7 +318,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { pipelineRunId: string } }>(
     "/pipeline/:pipelineRunId/status",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunParamsSchema,
+        tags: ["Pipeline"],
+        summary: "Get current pipeline run status, stage progress, and subtasks",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const run = await pipelineService.getPipelineRun(request.params.pipelineRunId);
       if (!run) {
@@ -514,7 +562,20 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
     Body: z.infer<typeof ExecuteStageSchema>;
   }>(
     "/pipeline/:pipelineRunId/stage/:stage",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineStageParamsSchema,
+        body: ExecuteStageSchema,
+        tags: ["Pipeline"],
+        summary: "Execute a pipeline stage (SSE streaming response)",
+        description: "Executes the specified stage and streams progress via Server-Sent Events (text/event-stream). Events: phase, delta, validation, validation_finding, validation_result, complete, error.",
+        response: {
+          200: { type: "string", description: "SSE stream (text/event-stream)" },
+          ...errorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const { pipelineRunId, stage } = request.params;
 
@@ -532,6 +593,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       const composerModelOverride = body.success ? body.data.composer_model : undefined;
       const evaluatorModelOverride = body.success ? body.data.evaluator_model : undefined;
       const promptOverride = body.success ? body.data.prompt_override : undefined;
+      const maxTokensOverride = body.success ? body.data.max_tokens : undefined;
       const validationFeedback = body.success ? body.data.validation_feedback : undefined;
 
       const run = await pipelineService.getPipelineRun(pipelineRunId);
@@ -560,10 +622,10 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           const priorStage = stageOrder[i];
           const priorStatus = stageProgress[priorStage]?.status;
 
-          // Allow next stage when prior stage has finished execution.
-          // "approved", "skipped", "completed", "awaiting_approval" all mean the stage has output.
-          // Approval is a review gate, not an execution gate (matches legacy-bridge pattern).
-          const doneStatuses = new Set(["approved", "skipped", "completed", "awaiting_approval"]);
+          // Allow next stage ONLY when prior stage is explicitly approved or skipped.
+          // Approval is a HARD GATE — the stage output must be reviewed before proceeding.
+          // This ensures every stage output is validated by a human before the next stage builds on it.
+          const doneStatuses = new Set(["approved", "skipped"]);
           if (!doneStatuses.has(priorStatus || "")) {
             const priorConfig = pipelineService.getStageConfig(priorStage);
 
@@ -579,24 +641,47 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       }
 
       // ─── Approval gate enforcement ─────────────────────────────
-      // If THIS stage already has a pending approval gate (e.g. re-run attempt
-      // after completion), block until the existing gate is resolved.
-      const currentStatus = stageProgress[stageName]?.status;
-      if (currentStatus === "in_progress") {
-        return reply.status(409).send({ error: "Stage is already executing" });
-      }
-      if (currentStatus === "awaiting_approval") {
-        const pendingGate = await db.query.approvalGates.findFirst({
-          where: and(
-            eq(approvalGates.pipeline_run_id, pipelineRunId),
-            eq(approvalGates.stage_name, stageName),
-          ),
-        });
-        if (pendingGate && pendingGate.status === "pending") {
-          return reply.status(400).send({
-            error: `Stage ${stageName} is awaiting approval. Please review and approve or reject before re-running.`,
-          });
+      // Atomic guard: acquire row lock, check stage status, set to in_progress.
+      // This prevents concurrent execution of the same stage — the second request
+      // will block on the FOR UPDATE lock until the first sets in_progress, then see
+      // the updated status and return 409.
+      const lockAcquired = await db.transaction(async (tx) => {
+        // Acquire exclusive row lock on the pipeline run
+        const lockResult = await tx.execute(
+          sql`SELECT stage_progress FROM ${pipelineRuns} WHERE id = ${pipelineRunId} FOR UPDATE`
+        );
+        const locked = lockResult.rows?.[0] ?? (lockResult as any)[0];
+        if (!locked) return { ok: false, error: "Pipeline run not found", code: 404 };
+
+        const sp = (locked.stage_progress as Record<string, { status?: string }>) || {};
+        const currentStatus = sp[stageName]?.status;
+
+        if (currentStatus === "in_progress") {
+          return { ok: false, error: "Stage is already executing", code: 409 };
         }
+        if (currentStatus === "awaiting_approval") {
+          const pendingGate = await tx.query.approvalGates.findFirst({
+            where: and(
+              eq(approvalGates.pipeline_run_id, pipelineRunId),
+              eq(approvalGates.stage_name, stageName),
+            ),
+          });
+          if (pendingGate && pendingGate.status === "pending") {
+            return {
+              ok: false,
+              error: `Stage ${stageName} is awaiting approval. Please review and approve or reject before re-running.`,
+              code: 400,
+            };
+          }
+        }
+
+        // Atomically set stage to in_progress under the lock
+        await pipelineService.updateStageProgress(pipelineRunId, stageName, "in_progress", 0, { conn: tx });
+        return { ok: true };
+      });
+
+      if (!lockAcquired.ok) {
+        return reply.status((lockAcquired as any).code || 409).send({ error: (lockAcquired as any).error });
       }
 
       // SSE response — must set CORS headers manually since reply.raw bypasses Fastify plugins
@@ -640,6 +725,17 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
 
       const controller = new AbortController();
       request.raw.on("close", () => { closed = true; clearInterval(keepalive); controller.abort(); });
+
+      // Stage-level timeout: abort if stage takes longer than 30 minutes.
+      // Individual LLM calls have their own timeout (5-10 min via llm-proxy config),
+      // but the entire stage (with refinement loops) could exceed that.
+      const STAGE_TIMEOUT_MS = 30 * 60 * 1000;
+      const stageTimeout = setTimeout(() => {
+        if (!closed) {
+          sendSSE("error", { message: "Stage execution timed out after 30 minutes" });
+          controller.abort();
+        }
+      }, STAGE_TIMEOUT_MS);
 
       // Audit: stage execution started
       const userId = request.user?.sub;
@@ -719,6 +815,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
             composerModel: composerModelOverride,
             evaluatorModel: evaluatorModelOverride,
             promptOverride,
+            maxTokens: maxTokensOverride,
             validationFeedback,
             onEvent: (event: { phase: string; stageName: string; stageIndex: number; data?: unknown; timestamp?: string }) => {
               sendSSE("phase", {
@@ -953,6 +1050,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           // Ignore DB errors during error handling
         }
       } finally {
+        clearTimeout(stageTimeout);
         clearInterval(keepalive);
         reply.raw.end();
       }
@@ -964,7 +1062,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Params: { pipelineRunId: string } }>(
     "/pipeline/:pipelineRunId/advance",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunParamsSchema,
+        tags: ["Pipeline"],
+        summary: "Advance pipeline to the next stage",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const run = await pipelineService.getPipelineRun(request.params.pipelineRunId);
       if (!run) {
@@ -987,7 +1093,14 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { pipelineRunId: string } }>(
     "/pipeline/:pipelineRunId/artifacts",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunParamsSchema,
+        tags: ["Pipeline"],
+        summary: "List all artifacts for a pipeline run",
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const artifacts = await db.query.stageArtifacts.findMany({
         where: eq(stageArtifacts.pipeline_run_id, request.params.pipelineRunId),
@@ -1009,7 +1122,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { pipelineRunId: string; stage: string } }>(
     "/pipeline/:pipelineRunId/artifacts/:stage",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineStageParamsSchema,
+        tags: ["Pipeline"],
+        summary: "Get artifacts for a specific pipeline stage",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const artifacts = await db.query.stageArtifacts.findMany({
         where: and(
@@ -1027,7 +1148,19 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { pipelineRunId: string; stage: string; artifactId: string } }>(
     "/pipeline/:pipelineRunId/artifacts/:stage/:artifactId",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: z.object({
+          pipelineRunId: z.string().uuid(),
+          stage: z.string(),
+          artifactId: z.string().uuid(),
+        }),
+        tags: ["Pipeline"],
+        summary: "Get a single artifact with full metadata",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const artifact = await db.query.stageArtifacts.findFirst({
         where: and(
@@ -1045,7 +1178,19 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.delete<{ Params: { pipelineRunId: string; stage: string; artifactId: string } }>(
     "/pipeline/:pipelineRunId/artifacts/:stage/:artifactId",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: z.object({
+          pipelineRunId: z.string().uuid(),
+          stage: z.string(),
+          artifactId: z.string().uuid(),
+        }),
+        tags: ["Pipeline"],
+        summary: "Delete an artifact",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const result = await db.delete(stageArtifacts).where(
         and(
@@ -1062,7 +1207,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { pipelineRunId: string; stage: string } }>(
     "/pipeline/:pipelineRunId/validation/:stage",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineStageParamsSchema,
+        tags: ["Pipeline"],
+        summary: "Get validation results for a pipeline stage",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const artifacts = await db.query.stageArtifacts.findMany({
         where: and(
@@ -1090,7 +1243,16 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
     Body: z.infer<typeof ApproveGateSchema>;
   }>(
     "/pipeline/:pipelineRunId/approve/:stage",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineStageParamsSchema,
+        body: ApproveGateSchema,
+        tags: ["Pipeline"],
+        summary: "Approve an approval gate for a pipeline stage",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const { pipelineRunId, stage } = request.params;
       const validation = ApproveGateSchema.safeParse(request.body);
@@ -1121,11 +1283,14 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       }
 
       try {
+        // Admin users can force-approve below confidence threshold
+        const force = request.user.role === "admin" && validation.data.force === true;
         await pipelineService.approveGate(
           pipelineRunId,
           stage as PipelineStageName,
           request.user.sub,
           validation.data.comment,
+          force,
         );
         writeAuditLog({
           userId: request.user.sub,
@@ -1152,7 +1317,16 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
     Body: z.infer<typeof RejectGateSchema>;
   }>(
     "/pipeline/:pipelineRunId/reject/:stage",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineStageParamsSchema,
+        body: RejectGateSchema,
+        tags: ["Pipeline"],
+        summary: "Reject an approval gate for a pipeline stage",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const { pipelineRunId, stage } = request.params;
       const validation = RejectGateSchema.safeParse(request.body);
@@ -1210,7 +1384,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Params: { pipelineRunId: string } }>(
     "/pipeline/:pipelineRunId/diagnose",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunParamsSchema,
+        tags: ["Pipeline"],
+        summary: "Run diagnostic agent to investigate pipeline failures",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const { pipelineRunId } = request.params;
 
@@ -1252,7 +1434,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Params: { pipelineRunId: string } }>(
     "/pipeline/:pipelineRunId/generate-prompts",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunParamsSchema,
+        tags: ["Pipeline"],
+        summary: "Regenerate tailored prompts for stages 2-8",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const { pipelineRunId } = request.params;
 
@@ -1297,7 +1487,16 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
     Body: z.infer<typeof RefineSectionSchema>;
   }>(
     "/pipeline/:pipelineRunId/refine",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunParamsSchema,
+        body: RefineSectionSchema,
+        tags: ["Pipeline"],
+        summary: "Refine a section of stage output with user feedback",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const { pipelineRunId } = request.params;
       const validation = RefineSectionSchema.safeParse(request.body);
@@ -1340,7 +1539,20 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
     Body: z.infer<typeof ChatMessageSchema>;
   }>(
     "/pipeline/:pipelineRunId/chat",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunParamsSchema,
+        body: ChatMessageSchema,
+        tags: ["Pipeline"],
+        summary: "Interactive chat for Evolve stage (SSE streaming response)",
+        description: "Streams LLM response via Server-Sent Events (text/event-stream) for real-time chat. Events: delta, complete, error.",
+        response: {
+          200: { type: "string", description: "SSE stream (text/event-stream)" },
+          ...errorResponse,
+        },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const { pipelineRunId } = request.params;
       const validation = ChatMessageSchema.safeParse(request.body);
@@ -1414,7 +1626,17 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Querystring: { project_id?: string; limit?: string } }>(
     "/audit-logs",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        querystring: z.object({
+          project_id: z.string().uuid().optional(),
+          limit: z.string().optional(),
+        }),
+        tags: ["Pipeline"],
+        summary: "List project-scoped audit logs",
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const projectId = request.query.project_id;
       const limit = Math.min(parseInt(request.query.limit || "100", 10), 500);
@@ -1440,7 +1662,14 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { pipelineRunId: string } }>(
     "/pipeline/:pipelineRunId/runs",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunParamsSchema,
+        tags: ["Pipeline"],
+        summary: "List all stage run attempts for a pipeline",
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const runs = await db.query.stageRuns.findMany({
         where: eq(stageRuns.pipeline_run_id, request.params.pipelineRunId),
@@ -1455,7 +1684,17 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { pipelineRunId: string; stageName: string } }>(
     "/pipeline/:pipelineRunId/runs/:stageName",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: z.object({
+          pipelineRunId: z.string().uuid(),
+          stageName: z.string(),
+        }),
+        tags: ["Pipeline"],
+        summary: "Get stage run history for a specific stage",
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const runs = await db.query.stageRuns.findMany({
         where: and(
@@ -1474,7 +1713,20 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { pipelineRunId: string; stageName: string }; Querystring: { stage_run_id?: string } }>(
     "/pipeline/:pipelineRunId/logs/:stageName",
-    { onRequest: [fastify.authenticate, fastify.requirePipelineAccess] },
+    {
+      schema: buildRouteSchema({
+        params: z.object({
+          pipelineRunId: z.string().uuid(),
+          stageName: z.string(),
+        }),
+        querystring: z.object({
+          stage_run_id: z.string().uuid().optional(),
+        }),
+        tags: ["Pipeline"],
+        summary: "Get execution logs for a stage (most recent run or specific run)",
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
     async (request, reply) => {
       const { pipelineRunId, stageName } = request.params;
       const stageRunId = request.query.stage_run_id;
@@ -1515,7 +1767,14 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
 
   fastify.get<{ Params: { pipelineRunId: string } }>(
     "/pipeline/:pipelineRunId/modernized-files",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunParamsSchema,
+        tags: ["Pipeline"],
+        summary: "List modernized files generated by the pipeline",
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const files = await db.query.modernizedFiles.findMany({
         where: eq(modernizedFiles.pipeline_run_id, request.params.pipelineRunId),
@@ -1528,7 +1787,18 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
 
   fastify.get<{ Params: { pipelineRunId: string; fileId: string } }>(
     "/pipeline/:pipelineRunId/modernized-files/:fileId",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: z.object({
+          pipelineRunId: z.string().uuid(),
+          fileId: z.string().uuid(),
+        }),
+        tags: ["Pipeline"],
+        summary: "Get a single modernized file with content",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const file = await db.query.modernizedFiles.findFirst({
         where: and(
@@ -1545,7 +1815,14 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
 
   fastify.get<{ Params: { pipelineRunId: string } }>(
     "/pipeline/:pipelineRunId/traceability",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunParamsSchema,
+        tags: ["Pipeline"],
+        summary: "Get traceability matrix entries for a pipeline run",
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const entries = await db.query.traceabilityEntries.findMany({
         where: eq(traceabilityEntries.pipeline_run_id, request.params.pipelineRunId),
@@ -1559,7 +1836,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
   // Resets a stage back to pending so it can be re-executed.
   fastify.post<{ Params: { pipelineRunId: string; stage: string } }>(
     "/pipeline/:pipelineRunId/reset/:stage",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineStageParamsSchema,
+        tags: ["Pipeline"],
+        summary: "Reset a stage back to pending for re-execution",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { pipelineRunId, stage } = request.params;
       await pipelineService.updateStageProgress(pipelineRunId, stage as PipelineStageName, "pending", 0);
@@ -1571,7 +1856,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
   // Sends a minimal "ping" completion to verify credentials work before running the pipeline.
   fastify.post<{ Params: { projectId: string } }>(
     "/pipeline/test-credentials/:projectId",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: z.object({ projectId: z.string().uuid() }),
+        tags: ["Pipeline"],
+        summary: "Test LLM credentials with a minimal ping request",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { projectId } = request.params;
 

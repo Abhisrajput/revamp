@@ -21,6 +21,7 @@
 
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 import {
   listPersonas,
   getPersona,
@@ -148,6 +149,17 @@ const MatchSchema = z.object({
   min_proficiency: z.enum(["intermediate", "advanced", "expert"]).optional(),
 });
 
+// ─── Common response shapes ────────────────────────────────────
+
+const ErrorResponse = { type: "object" as const, properties: { error: { type: "string" } } };
+const MessageResponse = { type: "object" as const, properties: { message: { type: "string" } } };
+const SuccessResponse = { type: "object" as const, properties: { success: { type: "boolean" } } };
+const IdParams = z.object({ id: z.string().uuid() });
+const DeptParams = z.object({ dept: z.string().min(1) });
+const IdAndTaskIdParams = z.object({ id: z.string().uuid(), taskId: z.string().uuid() });
+const PipelineRunIdParams = z.object({ pipelineRunId: z.string().uuid() });
+const PipelineRunAndStageParams = z.object({ pipelineRunId: z.string().uuid(), stageName: z.string().min(1) });
+
 // ─── ROUTES ─────────────────────────────────────────────────────
 
 export async function agentDepartmentRoutes(fastify: FastifyInstance) {
@@ -156,7 +168,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Querystring: { department?: string; role?: string; status?: string } }>(
     "/agent-department/personas",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        querystring: z.object({ department: z.string().optional(), role: z.string().optional(), status: z.string().optional() }),
+        tags: ["Agent Department"],
+        summary: "List agent personas with optional filters",
+        response: { 200: { type: "array", items: {} } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const personas = await listPersonas({
         department: request.query.department,
@@ -172,7 +192,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { id: string } }>(
     "/agent-department/personas/:id",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Department"],
+        summary: "Get agent persona detail by ID",
+        response: { 200: {}, 404: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const persona = await getPersona(request.params.id);
       if (!persona) {
@@ -187,7 +215,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Body: z.infer<typeof CreatePersonaSchema> }>(
     "/agent-department/personas",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        body: CreatePersonaSchema,
+        tags: ["Agent Department"],
+        summary: "Create a new agent persona",
+        response: { 201: {}, 400: ErrorResponse, 409: ErrorResponse },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       const validation = CreatePersonaSchema.safeParse(request.body);
       if (!validation.success) {
@@ -211,7 +247,16 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.patch<{ Params: { id: string }; Body: z.infer<typeof UpdatePersonaSchema> }>(
     "/agent-department/personas/:id",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: UpdatePersonaSchema,
+        tags: ["Agent Department"],
+        summary: "Update an agent persona",
+        response: { 200: {}, 400: ErrorResponse, 404: ErrorResponse },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       const validation = UpdatePersonaSchema.safeParse(request.body);
       if (!validation.success) {
@@ -231,7 +276,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.delete<{ Params: { id: string } }>(
     "/agent-department/personas/:id",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Department"],
+        summary: "Soft-delete an agent persona",
+        response: { 200: MessageResponse, 404: ErrorResponse },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       const deleted = await softDeletePersona(request.params.id);
       if (!deleted) {
@@ -246,7 +299,16 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Params: { id: string }; Body: z.infer<typeof AssignTaskSchema> }>(
     "/agent-department/personas/:id/assign",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: AssignTaskSchema,
+        tags: ["Agent Department"],
+        summary: "Assign a pipeline stage task to an agent",
+        response: { 201: {}, 400: ErrorResponse, 403: ErrorResponse },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       const validation = AssignTaskSchema.safeParse(request.body);
       if (!validation.success) {
@@ -279,7 +341,16 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Params: { id: string }; Body: z.infer<typeof CheckoutSchema> }>(
     "/agent-department/assignments/:id/checkout",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: CheckoutSchema,
+        tags: ["Agent Department"],
+        summary: "Atomically checkout an assignment for execution",
+        response: { 200: {}, 400: ErrorResponse, 409: ErrorResponse },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       const validation = CheckoutSchema.safeParse(request.body);
       if (!validation.success) {
@@ -300,7 +371,16 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Params: { id: string }; Body: z.infer<typeof CompleteTaskSchema> }>(
     "/agent-department/assignments/:id/complete",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: CompleteTaskSchema,
+        tags: ["Agent Department"],
+        summary: "Mark an assignment as completed with results",
+        response: { 200: {}, 400: ErrorResponse, 409: ErrorResponse },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       const validation = CompleteTaskSchema.safeParse(request.body);
       if (!validation.success) {
@@ -329,7 +409,16 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Params: { id: string }; Body: z.infer<typeof EscalateSchema> }>(
     "/agent-department/assignments/:id/escalate",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: EscalateSchema,
+        tags: ["Agent Department"],
+        summary: "Escalate an assignment to the agent's manager",
+        response: { 200: {}, 400: ErrorResponse, 409: ErrorResponse },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       const validation = EscalateSchema.safeParse(request.body);
       if (!validation.success) {
@@ -350,7 +439,14 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     "/agent-department/dashboard",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agent Department"],
+        summary: "Get department overview dashboard",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (_request, reply) => {
       const dashboard = await getAgentDashboard();
       return reply.send(dashboard);
@@ -365,7 +461,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Querystring: { days?: string } }>(
     "/agent-department/activity-history",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        querystring: z.object({ days: z.string().optional() }),
+        tags: ["Agent Department"],
+        summary: "Get full activity history for orchestration dashboard",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const days = Math.min(parseInt(request.query.days || "7", 10), 30);
       const history = await getAgentActivityHistory(days);
@@ -378,7 +482,16 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
     "/agent-department/personas/:id/costs",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        querystring: z.object({ limit: z.string().optional() }),
+        tags: ["Agent Department"],
+        summary: "Get cost history for an agent",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const limit = Math.min(parseInt(request.query.limit || "100", 10), 500);
       const costs = await getAgentCosts(request.params.id, limit);
@@ -391,7 +504,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Body: z.infer<typeof MatchSchema> }>(
     "/agent-department/match",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        body: MatchSchema,
+        tags: ["Agent Department"],
+        summary: "Skill-match agents for a task",
+        response: { 200: { type: "array", items: {} }, 400: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const validation = MatchSchema.safeParse(request.body);
       if (!validation.success) {
@@ -456,7 +577,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Querystring: { department?: string } }>(
     "/agent-department/escalations",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        querystring: z.object({ department: z.string().optional() }),
+        tags: ["Agent Department"],
+        summary: "List all escalated assignments across agents",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const escalations = await listEscalatedAssignments({
         department: request.query.department,
@@ -472,7 +601,16 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
     "/agent-department/personas/:id/sessions",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        querystring: z.object({ limit: z.string().optional() }),
+        tags: ["Agent Department"],
+        summary: "List sessions for an agent",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const limit = Math.min(parseInt(request.query.limit || "50", 10), 200);
       const sessions = await getAgentSessions(request.params.id, limit);
@@ -485,7 +623,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { id: string; taskId: string } }>(
     "/agent-department/personas/:id/sessions/:taskId/chain",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdAndTaskIdParams,
+        tags: ["Agent Department"],
+        summary: "Get session chain for a specific task",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const chain = await getSessionChain(request.params.id, request.params.taskId);
       return reply.send(chain);
@@ -497,7 +643,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { id: string; taskId: string } }>(
     "/agent-department/personas/:id/sessions/:taskId/context",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdAndTaskIdParams,
+        tags: ["Agent Department"],
+        summary: "Build session context for prompt injection",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const context = await buildSessionContext(request.params.id, request.params.taskId);
       return reply.send(context);
@@ -509,7 +663,16 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Params: { id: string; taskId: string }; Body: { keep_recent?: number } }>(
     "/agent-department/personas/:id/sessions/:taskId/compact",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        params: IdAndTaskIdParams,
+        body: z.object({ keep_recent: z.number().optional() }),
+        tags: ["Agent Department"],
+        summary: "Compact old sessions for a task",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       const result = await compactSessionChain(
         request.params.id,
@@ -527,7 +690,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { id: string } }>(
     "/agent-department/personas/:id/subordinates",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Department"],
+        summary: "Get agents who report to this agent",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const subs = await getSubordinates(request.params.id);
       return reply.send(subs);
@@ -539,7 +710,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { id: string } }>(
     "/agent-department/personas/:id/chain",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Department"],
+        summary: "Get reporting chain up to director",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const chain = await getReportingChain(request.params.id);
       return reply.send(chain);
@@ -551,7 +730,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { dept: string } }>(
     "/agent-department/departments/:dept/tree",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: DeptParams,
+        tags: ["Agent Department"],
+        summary: "Get full org tree for a department",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const tree = await getDepartmentTree(request.params.dept);
       return reply.send(tree);
@@ -565,7 +752,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { id: string } }>(
     "/agent-department/personas/:id/budget",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Department"],
+        summary: "Get budget status for an agent",
+        response: { 200: {}, 404: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const status = await getAgentBudgetStatus(request.params.id);
       if (!status) {
@@ -580,7 +775,14 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.post(
     "/agent-department/reconcile-budgets",
-    { onRequest: [fastify.authorize(["admin"])] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agent Department"],
+        summary: "Trigger manual budget reconciliation (admin only)",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authorize(["admin"])],
+    },
     async (_request, reply) => {
       const result = await reconcileMonthlyBudgets();
       return reply.send(result);
@@ -592,7 +794,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Params: { id: string } }>(
     "/agent-department/personas/:id/resume",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Department"],
+        summary: "Resume a paused agent (admin only)",
+        response: { 200: MessageResponse, 409: ErrorResponse },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       const success = await resumeAgent(request.params.id);
       if (!success) {
@@ -623,7 +833,25 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
     };
   }>(
     "/agent-department/subtasks",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        body: z.object({
+          created_by_agent_id: z.string().uuid(),
+          pipeline_run_id: z.string().uuid(),
+          stage_name: z.string().min(1),
+          title: z.string().min(1),
+          description: z.string().optional(),
+          required_skills: z.array(z.string()).optional(),
+          required_tech_stack: z.array(z.string()).optional(),
+          priority: z.number().optional(),
+          parent_subtask_id: z.string().uuid().optional(),
+        }),
+        tags: ["Agent Department"],
+        summary: "Create a subtask for delegation",
+        response: { 201: {}, 400: ErrorResponse },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       const body = request.body;
       const subtask = await createSubtask(body.created_by_agent_id, {
@@ -645,7 +873,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Querystring: { pipeline_run_id: string; stage_name?: string } }>(
     "/agent-department/subtasks",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        querystring: z.object({ pipeline_run_id: z.string().uuid(), stage_name: z.string().optional() }),
+        tags: ["Agent Department"],
+        summary: "List subtasks for a pipeline run",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const subtasks = await listSubtasks(
         request.query.pipeline_run_id,
@@ -660,7 +896,16 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Params: { id: string }; Body: { agent_id: string; assigned_by: string } }>(
     "/agent-department/subtasks/:id/assign",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: z.object({ agent_id: z.string().uuid(), assigned_by: z.string().uuid() }),
+        tags: ["Agent Department"],
+        summary: "Assign a subtask to an agent",
+        response: { 200: {}, 409: ErrorResponse },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       const result = await assignSubtask(
         request.params.id,
@@ -679,7 +924,16 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Params: { id: string }; Body: { result: Record<string, unknown>; cost_cents: number } }>(
     "/agent-department/subtasks/:id/complete",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: z.object({ result: z.record(z.any()), cost_cents: z.number().int().min(0) }),
+        tags: ["Agent Department"],
+        summary: "Complete a subtask with results",
+        response: { 200: {}, 409: ErrorResponse },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       const completed = await completeSubtask(
         request.params.id,
@@ -706,6 +960,13 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { id: string }; Body: { source?: string } }>(
     "/agent-department/assignments/:id/execute",
     {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: z.object({ source: z.string().optional() }),
+        tags: ["Agent Department"],
+        summary: "Trigger agent execution for an assignment",
+        response: { 200: {}, 500: ErrorResponse },
+      }),
       onRequest: [
         // Allow both internal service calls and admin users
         async (request, reply) => {
@@ -741,7 +1002,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { id: string } }>(
     "/agent-department/assignments/:id/status",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        tags: ["Agent Department"],
+        summary: "Get execution status of an assignment",
+        response: { 200: {}, 404: ErrorResponse },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       const { db } = await import("@/db/index.js");
       const { agentAssignments } = await import("@/db/schema.js");
@@ -782,7 +1051,14 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     "/agent-department/execution/active",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Agent Department"],
+        summary: "List currently executing assignments with agent details",
+        response: { 200: { type: "object", properties: { active: { type: "array", items: {} } } } },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (_request, reply) => {
       const { db } = await import("@/db/index.js");
       const { sql } = await import("drizzle-orm");
@@ -821,7 +1097,16 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { id: string }; Querystring: { category?: string; limit?: string } }>(
     "/agent-department/personas/:id/evolution",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        querystring: z.object({ category: z.string().optional(), limit: z.string().optional() }),
+        tags: ["Agent Department"],
+        summary: "List evolution memories for an agent",
+        response: { 200: { type: "array", items: {} } },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const { db } = await import("@/db/index.js");
       const { agentEvolutionMemory } = await import("@/db/schema.js");
@@ -867,7 +1152,16 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Params: { id: string }; Body: { newMemoryId: string } }>(
     "/agent-department/evolution/:id/supersede",
-    { onRequest: [fastify.authorize(["admin", "architect"])] },
+    {
+      schema: buildRouteSchema({
+        params: IdParams,
+        body: z.object({ newMemoryId: z.string().uuid() }),
+        tags: ["Agent Department"],
+        summary: "Mark an evolution memory as superseded",
+        response: { 200: SuccessResponse, 400: ErrorResponse },
+      }),
+      onRequest: [fastify.authorize(["admin", "architect"])],
+    },
     async (request, reply) => {
       if (!request.body?.newMemoryId) {
         return reply.status(400).send({ error: "newMemoryId is required" });
@@ -884,7 +1178,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { pipelineRunId: string } }>(
     "/agent-department/trajectories/:pipelineRunId",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunIdParams,
+        tags: ["Agent Department"],
+        summary: "Get all retrieval trajectories for a pipeline run",
+        response: { 200: {} },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const trajectories = await getRetrievalTrajectories(request.params.pipelineRunId);
       return reply.send(trajectories);
@@ -896,7 +1198,15 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Params: { pipelineRunId: string; stageName: string } }>(
     "/agent-department/trajectories/:pipelineRunId/:stageName",
-    { onRequest: [fastify.authenticate] },
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunAndStageParams,
+        tags: ["Agent Department"],
+        summary: "Get retrieval trajectory for a specific pipeline stage",
+        response: { 200: {}, 404: ErrorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
     async (request, reply) => {
       const trajectory = await getStageTrajectory(
         request.params.pipelineRunId,

@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { cn } from '@/lib/utils';
 import { QuickSettings } from './quick-settings';
 import { CostSummaryCard } from './cost-summary-card';
-import type { StageState } from '@/lib/stores/pipeline-store';
+import type { StageState } from '@/lib/stores/pipeline-types';
 
 // ─── Types ──────────────────────────────────────────────────────
 

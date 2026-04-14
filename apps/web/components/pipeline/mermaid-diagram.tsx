@@ -95,11 +95,14 @@ function sanitizeAllLabels(chart: string): string {
   let result = chart.replace(/\["([^\]"]*)"\]/g, (_m, l: string) => `["${toAscii(l)}"]`);
   result = result.replace(/\[\(([^)]*)\)\]/g, (_m, l: string) => `[(${toAscii(l)})]`);
   result = result.replace(/\{\{([^}]*)\}\}/g, (_m, l: string) => `{{${toAscii(l)}}}`);
-  // Edge labels |...| — strip brackets/parens which Mermaid interprets as node shapes
-  result = result.replace(/\|([^|]+)\|/g, (_m, l: string) => {
-    const clean = toAscii(l).replace(/[()[\]{}]/g, '');
-    return `|${clean}|`;
-  });
+  // Edge labels |...| — strip brackets/parens which Mermaid interprets as node shapes.
+  // SKIP for erDiagram — ER syntax uses ||, |{, o{ as relationship markers, not edge labels.
+  if (!/^\s*erDiagram/m.test(result)) {
+    result = result.replace(/\|([^|]+)\|/g, (_m, l: string) => {
+      const clean = toAscii(l).replace(/[()[\]{}]/g, '');
+      return `|${clean}|`;
+    });
+  }
   // sequenceDiagram: sanitize all free-text lines
   if (/^\s*sequenceDiagram/m.test(result)) {
     /** Clean sequence diagram text: strip <br/>, replace {}/unicode, make Mermaid-safe */
@@ -165,8 +168,19 @@ function stripSubgraphStyles(chart: string): string {
   }).join('\n');
 }
 
-function sanitizeMermaidChart(chart: string): string {
-  let sanitized = chart
+export function sanitizeMermaidChart(chart: string): string {
+  // FIRST: collapse multiline quoted labels into single lines.
+  // LLMs produce labels like:  User["👤 User\n(Browser)"]
+  // Mermaid only supports single-line labels, so join with space.
+  let sanitized = chart.replace(/\["([^"]*?)"\]/gs, (_m, label: string) => {
+    return `["${label.replace(/\n/g, ' ')}"]`;
+  });
+  // Same for round-bracket labels: [(text)]
+  sanitized = sanitized.replace(/\[\(([^)]*?)\)\]/gs, (_m, label: string) => {
+    return `[(${label.replace(/\n/g, ' ')})]`;
+  });
+
+  sanitized = sanitized
     .split('\n')
     .flatMap((line) => expandGroupedEdges(normalizeClassAssignment(line)))
     .join('\n');

@@ -22,6 +22,7 @@ import { calculateCost } from "@revamp/core-engine";
 import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 
 // ─── SCHEMAS ────────────────────────────────────────────────────
 
@@ -81,7 +82,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     "/admin/health",
-    { onRequest: [fastify.authorize(["admin"])] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Admin"],
+        summary: "Comprehensive system health check (DB, Redis, LLM, S3)",
+        response: {
+          200: { type: "object", properties: { status: { type: "string" }, timestamp: { type: "string" }, uptime: { type: "number" }, memory: { type: "object" }, services: { type: "object" } } },
+        },
+      }),
+      onRequest: [fastify.authorize(["admin"])],
+    },
     async (_request, reply) => {
       const [dbHealth, redisHealth, orchestratorHealth, s3Health] = await Promise.all([
         checkDatabaseHealth(),
@@ -127,7 +137,17 @@ export async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Querystring: z.infer<typeof PaginationSchema> }>(
     "/admin/users",
-    { onRequest: [fastify.authorize(["admin"])] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Admin"],
+        summary: "List all users with project memberships (paginated)",
+        querystring: PaginationSchema,
+        response: {
+          200: { type: "object", properties: { users: { type: "array" }, pagination: { type: "object" } } },
+        },
+      }),
+      onRequest: [fastify.authorize(["admin"])],
+    },
     async (request, reply) => {
       const { page, limit } = PaginationSchema.parse(request.query || {});
 
@@ -191,7 +211,20 @@ export async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.patch<{ Params: { userId: string }; Body: z.infer<typeof UpdateUserSchema> }>(
     "/admin/users/:userId",
-    { onRequest: [fastify.authorize(["admin"])] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Admin"],
+        summary: "Update user role or active status",
+        params: z.object({ userId: z.string().uuid() }),
+        body: UpdateUserSchema,
+        response: {
+          200: { type: "object", properties: { message: { type: "string" } } },
+          400: { type: "object", properties: { error: { type: "string" }, details: { type: "array" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authorize(["admin"])],
+    },
     async (request, reply) => {
       const { userId } = request.params;
       const validation = UpdateUserSchema.safeParse(request.body);
@@ -232,7 +265,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     "/admin/stats",
-    { onRequest: [fastify.authorize(["admin"])] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Admin"],
+        summary: "Get platform-wide statistics (users, projects, pipelines, LLM cost)",
+        response: {
+          200: { type: "object", properties: { total_users: { type: "number" }, total_projects: { type: "number" }, total_pipeline_runs: { type: "number" }, total_llm_tokens: { type: "number" }, total_llm_cost_usd: { type: "number" }, recent_pipelines: { type: "array" } } },
+        },
+      }),
+      onRequest: [fastify.authorize(["admin"])],
+    },
     async (_request, reply) => {
       const [
         [userCount],
@@ -298,7 +340,17 @@ export async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.get<{ Querystring: z.infer<typeof PaginationSchema> }>(
     "/admin/audit-logs",
-    { onRequest: [fastify.authorize(["admin"])] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Admin"],
+        summary: "Get paginated audit logs with user and project enrichment",
+        querystring: PaginationSchema,
+        response: {
+          200: { type: "object", properties: { logs: { type: "array" }, pagination: { type: "object" } } },
+        },
+      }),
+      onRequest: [fastify.authorize(["admin"])],
+    },
     async (request, reply) => {
       const { page, limit } = PaginationSchema.parse(request.query || {});
 
@@ -391,7 +443,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     "/admin/llm-usage",
-    { onRequest: [fastify.authorize(["admin"])] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Admin"],
+        summary: "Get LLM usage statistics with per-model breakdown",
+        response: {
+          200: { type: "object", properties: { total_requests: { type: "number" }, total_tokens: { type: "number" }, total_cost_usd: { type: "number" }, by_model: { type: "array" } } },
+        },
+      }),
+      onRequest: [fastify.authorize(["admin"])],
+    },
     async (_request, reply) => {
       const stats = await db.query.llmUsage.findMany({
         limit: 500,
@@ -444,7 +505,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     "/admin/metrics",
-    { onRequest: [fastify.authorize(["admin"])] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Admin"],
+        summary: "Get platform-wide aggregated metrics (projects, LLM usage, cost)",
+        response: {
+          200: { type: "object", properties: { platform: { type: "object" }, llm_usage: { type: "object" }, generated_at: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authorize(["admin"])],
+    },
     async (_request, reply) => {
       const [allProjects, allUsage, [projectTotal], [pipelineTotal]] = await Promise.all([
         db.query.projects.findMany({
@@ -522,7 +592,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     "/admin/performance",
-    { onRequest: [fastify.authorize(["admin"])] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Admin"],
+        summary: "Get server performance and resource snapshot",
+        response: {
+          200: { type: "object", properties: { uptime_seconds: { type: "number" }, memory: { type: "object" }, processes: { type: "object" }, caches: { type: "object" }, pid: { type: "number" } } },
+        },
+      }),
+      onRequest: [fastify.authorize(["admin"])],
+    },
     async (_request, reply) => {
       const mem = process.memoryUsage();
 
@@ -581,7 +660,17 @@ export async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.post<{ Body: { targets?: string[] } }>(
     "/admin/cleanup",
-    { onRequest: [fastify.authorize(["admin"])] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Admin"],
+        summary: "Trigger manual cleanup of orphaned processes, caches, and stale DB records",
+        body: z.object({ targets: z.array(z.string()).optional() }),
+        response: {
+          200: { type: "object", properties: { message: { type: "string" }, results: { type: "object" }, timestamp: { type: "string" } } },
+        },
+      }),
+      onRequest: [fastify.authorize(["admin"])],
+    },
     async (request, reply) => {
       const targets = (request.body as { targets?: string[] })?.targets || [
         "processes",
@@ -689,7 +778,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     "/admin/export/audit-logs",
-    { onRequest: [fastify.authorize(["admin"])] },
+    {
+      schema: buildRouteSchema({
+        tags: ["Admin"],
+        summary: "Export audit logs as CSV download",
+        response: {
+          200: { type: "string", description: "CSV file" },
+        },
+      }),
+      onRequest: [fastify.authorize(["admin"])],
+    },
     async (_request, reply) => {
       const logs = await db.query.auditLogs.findMany({
         limit: 10000,

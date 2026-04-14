@@ -51,8 +51,10 @@ export const useAuthStore = create<AuthState>()(
       storage: createJSONStorage(() =>
         typeof window !== 'undefined' ? localStorage : ({} as Storage),
       ),
+      // Only persist auth status and user profile — NOT the token.
+      // Token is kept in Zustand memory for SSE Bearer headers but never
+      // written to localStorage (prevents XSS token theft).
       partialize: (state) => ({
-        token: state.token,
         user: state.user,
         isAuthenticated: state.isAuthenticated,
       }),

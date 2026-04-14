@@ -1,6 +1,15 @@
 /**
  * Stage validation rules — hybrid deterministic + LLM confidence scoring
  *
+ * @deprecated This rubrics system is superseded by prompt-derived validation
+ * (`validation/prompt-derived.ts`) as the PRIMARY validation approach.
+ * Rubrics are only used as a fallback in `validation-runner.ts` when prompt
+ * extraction yields zero requirements — which is rare in practice.
+ *
+ * The CheckType/EvalDimension taxonomy defined in `validation/types.ts`
+ * is still used across the platform. Only the per-stage rule definitions
+ * here are deprecated.
+ *
  * Each stage defines:
  *   - Deterministic checks: fast, repeatable, no LLM cost (section counts, BDD patterns, code blocks, etc.)
  *   - LLM evaluations: accuracy, completeness, actionability, traceability scored by a validation LLM

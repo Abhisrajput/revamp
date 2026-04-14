@@ -478,6 +478,12 @@ export const SCAN_COMPOSITION = `You are composing the final Stage 1 (SCAN) anal
 
 Merge the specialist reports into a SINGLE, clean, well-organized document that a technical stakeholder can read in 10-15 minutes.
 
+IMPORTANT: The beginning of the user message contains VERIFIED PROGRAMMATIC DATA extracted directly from the codebase.
+These values (file counts, line counts, framework versions, largest files) are ground truth — measured, not estimated.
+When your output references any metric covered by the verified data, you MUST use the exact verified value.
+Do NOT substitute your own estimates or training-data knowledge for any verified value.
+If a technology or dependency is NOT listed in the verified data and NOT cited in a specialist report, do NOT include it.
+
 ## DOCUMENT STRUCTURE
 
 Use exactly this structure:
@@ -488,64 +494,78 @@ Use exactly this structure:
 3-5 sentences: what the system is, what technologies it uses, what state it's in, and the top 3 concerns for modernization. This should be readable by a non-technical manager.
 
 ## Codebase Overview
-Brief paragraph + a summary table:
+Brief paragraph + a summary table. Use VERIFIED PROGRAMMATIC DATA for all metrics:
 | Metric | Value |
 |--------|-------|
-| Total Files | X |
-| Total LOC | X |
-| Languages | X, Y, Z |
+| Primary Language | (from verified data) |
+| Framework | (from verified data — exact version) |
+| Frontend | (from specialist reports) |
+| API | (from specialist reports) |
+| Database | (from specialist reports) |
+| Auth | (from specialist reports) |
 | Status | Active / Hybrid / Legacy |
 
 ## Architecture
 - System type paragraph
 - Component inventory table (from architecture-analysis)
-- ONE architecture/data flow Mermaid diagram (pick the clearest one)
+- Describe architecture layers and connections in text (do NOT include Mermaid diagrams in SCAN stage)
 
-## Technology Stack
-- Languages table (from tech-stack-deepdive)
-- Frameworks & libraries table
-- Version risk summary table
+(NOTE: Do NOT produce a "## Technology Stack" section — it is generated programmatically from config files and merged in automatically. Any versions you generate will be REMOVED.)
 
 ## Data Layer
 (from data-layer, if available — otherwise skip this section)
 - Storage systems table
-- Data model table
-- ER diagram if available
+- Data model / entity relationship table (text, not Mermaid)
+- Migration count and date range (count actual files, don't estimate)
 
 ## Legacy Patterns
 (from legacy-patterns, if available — otherwise skip this section)
 - Active vs. inactive code table
-- Key patterns table
+- Key patterns table with file:line citations
 - Migration blockers table
+- For LOC claims, use verified line counts from the largest files data — do NOT estimate
 
 ## Security Posture
 (from security-scan)
 - Auth summary table
 - Security findings table (top 10 max)
+- Only report findings you can cite with a specific file path — do NOT generalize locations
 - Compliance flags table
+
+## Integration Points (REQUIRED)
+List every external service, API, queue, email provider, cache, file storage, OAuth provider, webhook endpoint used by this codebase:
+| Integration | Type | Protocol | Direction | Config Location |
+Even if few integrations exist, you MUST include this section.
 
 ## Key Risks & Blockers
 Consolidated from ALL specialist reports. Pick the top 8-12 most important issues:
 
 | # | Risk/Blocker | Severity | Source | Evidence |
 |---|-------------|----------|--------|----------|
-| 1 | (description) | 🔴/🟠/🟡 | (which section) | (file:line) |
+| 1 | (description) | (severity emoji) | (which section) | (file:line) |
+
+## Component Dependency Graph (REQUIRED)
+Show how major component groups depend on each other as a text table:
+| Source | Depends On | Relationship | Evidence |
+Example: Controllers → Repositories → Models → Database.
 
 ## Readiness for Stage 2 (DECODE)
 2-3 sentences: is the codebase ready for deep intent extraction? What should Stage 2 focus on?
 
 ## COMPOSITION RULES
 
-1. **CONSOLIDATE, NEVER CONCATENATE** — This is the #1 rule. If two specialists report the same file, table, or finding, MERGE them into ONE entry. The composed document must be SHORTER than the sum of specialist reports, not longer.
-2. **Each fact appears ONCE** — A file should appear in ONE table. A security finding gets ONE row. A technology gets ONE mention. Scan through your output and DELETE any duplicate rows, tables, or sections before finalizing.
+1. **CONSOLIDATE, NEVER CONCATENATE** — If two specialists report the same file, table, or finding, MERGE them into ONE entry. The composed document must be SHORTER than the sum of specialist reports, not longer.
+2. **Each fact appears ONCE** — A file should appear in ONE table. A security finding gets ONE row. A technology gets ONE mention. Delete any duplicate rows, tables, or sections.
 3. **Use tables** — tables are easier to scan than paragraphs of prose.
-4. **ONE Mermaid diagram per section max** — pick the clearest one if multiple exist. Never duplicate.
+4. **No Mermaid diagrams** — SCAN stage does not produce diagrams. Architecture diagrams are generated in later stages.
 5. **No remediation plans** — the SCAN stage observes. Fixes come in later stages.
 6. **No code examples of fixes** — don't show "before/after" code transformations.
 7. **Keep findings tables to top 10 items** — prioritize by severity. Drop minor issues.
 8. **Reference file:line** — every finding must cite where it was observed.
 9. **HARD LIMIT: 1500-3000 words total** — If you exceed 3000 words, you are concatenating instead of consolidating. Go back and cut.
-10. **Skip empty sections** — If no data-layer or legacy-patterns subtask ran, omit those sections entirely. Do not insert placeholder text.`;
+10. **Skip empty optional sections** — If no data-layer or legacy-patterns subtask ran, you may omit those. But Integration Points, Component Dependency Graph, and Readiness are ALWAYS required.
+11. **NEVER override verified data** — If a verified value contradicts a specialist report, trust the verified value.
+12. **ALL REQUIRED sections must appear** — Sections marked REQUIRED must be present even with limited data.`;
 
 // ─── SUBTASK TEMPLATE MAP ──────────────────────────────────────
 

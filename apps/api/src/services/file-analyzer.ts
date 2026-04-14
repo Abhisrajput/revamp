@@ -40,6 +40,12 @@ export interface FileAnalysisResult {
   codeSkeletons?: string;
   /** Skeleton extraction stats */
   skeletonStats?: { supportedFiles: number; unsupportedFiles: number; tokensSaved: number };
+  /** Framework/runtime versions extracted from config files (composer.json, package.json, pom.xml, etc.) */
+  frameworkVersions?: Array<{ name: string; version: string; source: string }>;
+  /** Migration/schema file stats */
+  migrationStats?: { count: number; earliest: string; latest: string; directory: string };
+  /** Component counts by directory (controllers, models, etc.) */
+  componentCounts?: Array<{ name: string; directory: string; count: number }>;
 }
 
 // ─── CONSTANTS ──────────────────────────────────────────────────
@@ -175,7 +181,147 @@ export async function analyzeCodebase(
   const result = await scanDirectory(dirPath);
   // Attach the codebase path so the pipeline service can reference it later
   result.codebasePath = dirPath;
+  // Extract framework/runtime versions from config files
+  result.frameworkVersions = await extractFrameworkVersions(dirPath);
+  // Extract migration stats and component counts
+  result.migrationStats = await extractMigrationStats(dirPath);
+  result.componentCounts = await extractComponentCounts(dirPath);
   return result;
+}
+
+/**
+ * Extract framework and runtime versions from config files.
+ * Dynamically detects the project type and reads the relevant config.
+ * Works for ANY language/framework — not hardcoded to specific stacks.
+ */
+async function extractFrameworkVersions(dirPath: string): Promise<Array<{ name: string; version: string; source: string }>> {
+  const versions: Array<{ name: string; version: string; source: string }> = [];
+
+  const tryReadJson = async (filePath: string): Promise<any> => {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      return JSON.parse(content);
+    } catch { return null; }
+  };
+
+  const tryReadFile = async (filePath: string): Promise<string | null> => {
+    try { return await fs.readFile(filePath, 'utf-8'); } catch { return null; }
+  };
+
+  // PHP: composer.json — extract ALL dependencies (runtime + dev)
+  const composer = await tryReadJson(path.join(dirPath, 'composer.json'));
+  if (composer) {
+    const reqProd = composer.require || {};
+    const reqDev = composer['require-dev'] || {};
+    if (reqProd.php) versions.push({ name: 'PHP', version: reqProd.php, source: 'composer.json' });
+    for (const [pkg, ver] of Object.entries(reqProd)) {
+      if (pkg === 'php' || pkg.startsWith('ext-')) continue;
+      versions.push({ name: pkg, version: ver as string, source: 'composer.json' });
+    }
+    for (const [pkg, ver] of Object.entries(reqDev)) {
+      if (pkg === 'php' || pkg.startsWith('ext-')) continue;
+      versions.push({ name: `${pkg} (dev)`, version: ver as string, source: 'composer.json' });
+    }
+  }
+
+  // Node.js: package.json — search root + common workspace locations
+  const packageJsonPaths = [
+    path.join(dirPath, 'package.json'),
+    // Common workspace/asset locations for monorepos and Laravel projects
+    ...await (async () => {
+      try {
+        const candidates = ['resources/assets/v2/package.json', 'resources/assets/v1/package.json',
+          'frontend/package.json', 'client/package.json', 'src/package.json'];
+        return candidates.map(c => path.join(dirPath, c));
+      } catch { return []; }
+    })(),
+  ];
+
+  for (const pkgPath of packageJsonPaths) {
+    const pkg = await tryReadJson(pkgPath);
+    if (!pkg) continue;
+    const relPath = path.relative(dirPath, pkgPath);
+    const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+    if (pkg.engines?.node) versions.push({ name: 'Node.js', version: pkg.engines.node, source: relPath });
+    for (const [name, ver] of Object.entries(deps)) {
+      // Skip meta-packages and internal workspace refs
+      if (typeof ver !== 'string' || (ver as string).startsWith('workspace:') || (ver as string).startsWith('file:')) continue;
+      versions.push({ name, version: ver as string, source: relPath });
+    }
+  }
+
+  // Java: pom.xml
+  const pom = await tryReadFile(path.join(dirPath, 'pom.xml'));
+  if (pom) {
+    const javaVersion = pom.match(/<java\.version>([^<]+)<\/java\.version>/)?.[1];
+    const springVersion = pom.match(/<spring-boot\.version>([^<]+)<\/spring-boot\.version>/)?.[1]
+      || pom.match(/<parent>[\s\S]*?<version>([^<]+)<\/version>/)?.[1];
+    if (javaVersion) versions.push({ name: 'Java', version: javaVersion, source: 'pom.xml' });
+    if (springVersion) versions.push({ name: 'Spring Boot', version: springVersion, source: 'pom.xml' });
+  }
+
+  // Java: build.gradle
+  const gradle = await tryReadFile(path.join(dirPath, 'build.gradle'));
+  if (gradle) {
+    const javaVer = gradle.match(/sourceCompatibility\s*=\s*['"]?(\d+)/)?.[1];
+    const springVer = gradle.match(/springBootVersion\s*=\s*['"]([^'"]+)/)?.[1]
+      || gradle.match(/org\.springframework\.boot.*?:([^'"]+)/)?.[1];
+    if (javaVer) versions.push({ name: 'Java', version: javaVer, source: 'build.gradle' });
+    if (springVer) versions.push({ name: 'Spring Boot', version: springVer, source: 'build.gradle' });
+  }
+
+  // Python: pyproject.toml, setup.py, requirements.txt
+  const pyproject = await tryReadFile(path.join(dirPath, 'pyproject.toml'));
+  if (pyproject) {
+    const pythonVer = pyproject.match(/requires-python\s*=\s*"([^"]+)"/)?.[1];
+    if (pythonVer) versions.push({ name: 'Python', version: pythonVer, source: 'pyproject.toml' });
+    const deps = pyproject.match(/dependencies\s*=\s*\[([\s\S]*?)\]/)?.[1];
+    if (deps) {
+      for (const fw of ['django', 'flask', 'fastapi', 'sqlalchemy', 'celery', 'pydantic']) {
+        const m = deps.match(new RegExp(`${fw}[><=~!]*([\\d.]+)`, 'i'));
+        if (m) versions.push({ name: fw, version: m[1], source: 'pyproject.toml' });
+      }
+    }
+  }
+
+  // Go: go.mod
+  const gomod = await tryReadFile(path.join(dirPath, 'go.mod'));
+  if (gomod) {
+    const goVer = gomod.match(/^go\s+(\d+\.\d+)/m)?.[1];
+    if (goVer) versions.push({ name: 'Go', version: goVer, source: 'go.mod' });
+  }
+
+  // .NET: *.csproj
+  const csproj = await tryReadFile(path.join(dirPath, '*.csproj'))
+    || await (async () => {
+      try {
+        const files = await fs.readdir(dirPath);
+        const cs = files.find(f => f.endsWith('.csproj'));
+        return cs ? await fs.readFile(path.join(dirPath, cs), 'utf-8') : null;
+      } catch { return null; }
+    })();
+  if (csproj) {
+    const tfm = csproj.match(/<TargetFramework>([^<]+)/)?.[1];
+    if (tfm) versions.push({ name: '.NET', version: tfm, source: '*.csproj' });
+  }
+
+  // Ruby: Gemfile
+  const gemfile = await tryReadFile(path.join(dirPath, 'Gemfile'));
+  if (gemfile) {
+    const rubyVer = gemfile.match(/ruby\s+['"]([^'"]+)/)?.[1];
+    const railsVer = gemfile.match(/gem\s+['"]rails['"],\s*['"]([^'"]+)/)?.[1];
+    if (rubyVer) versions.push({ name: 'Ruby', version: rubyVer, source: 'Gemfile' });
+    if (railsVer) versions.push({ name: 'Rails', version: railsVer, source: 'Gemfile' });
+  }
+
+  // Rust: Cargo.toml
+  const cargo = await tryReadFile(path.join(dirPath, 'Cargo.toml'));
+  if (cargo) {
+    const edition = cargo.match(/edition\s*=\s*"(\d+)"/)?.[1];
+    if (edition) versions.push({ name: 'Rust Edition', version: edition, source: 'Cargo.toml' });
+  }
+
+  return versions;
 }
 
 // ─── DIRECTORY SCANNER ──────────────────────────────────────────
@@ -516,4 +662,106 @@ async function extractCodeSnippets(
   }
 
   return snippets;
+}
+
+// ─── MIGRATION STATS ────────────────────────────────────────────
+
+/**
+ * Counts migration/schema files and extracts date range.
+ * Dynamically detects the migration directory for any framework.
+ */
+async function extractMigrationStats(dirPath: string): Promise<FileAnalysisResult['migrationStats']> {
+  const candidates = [
+    'database/migrations',     // Laravel
+    'db/migrate',              // Rails
+    'migrations',              // Django, generic
+    'src/migrations',          // TypeORM
+    'prisma/migrations',       // Prisma
+    'alembic/versions',        // Alembic (Python)
+    'flyway/sql',              // Flyway (Java)
+    'liquibase',               // Liquibase
+  ];
+
+  for (const candidate of candidates) {
+    const migDir = path.join(dirPath, candidate);
+    try {
+      const stat = await fs.stat(migDir);
+      if (!stat.isDirectory()) continue;
+
+      const entries = await fs.readdir(migDir);
+      const migFiles = entries.filter(f => /\.(php|rb|py|sql|ts|js)$/i.test(f)).sort();
+      if (migFiles.length === 0) continue;
+
+      return {
+        count: migFiles.length,
+        earliest: migFiles[0],
+        latest: migFiles[migFiles.length - 1],
+        directory: candidate,
+      };
+    } catch { /* dir doesn't exist */ }
+  }
+
+  return undefined;
+}
+
+// ─── COMPONENT COUNTS ───────────────────────────────────────────
+
+/**
+ * Counts source files in common component directories.
+ * Dynamically discovers directories — works for any framework.
+ */
+async function extractComponentCounts(dirPath: string): Promise<FileAnalysisResult['componentCounts']> {
+  // Common component directories across frameworks
+  const candidates = [
+    { name: 'Controllers', dirs: ['app/Http/Controllers', 'app/Api', 'src/controllers', 'app/controllers', 'Controllers'] },
+    { name: 'Models', dirs: ['app/Models', 'src/models', 'app/models', 'Models', 'app/Entity'] },
+    { name: 'Repositories', dirs: ['app/Repositories', 'src/repositories', 'app/repositories'] },
+    { name: 'Services', dirs: ['app/Services', 'src/services', 'app/services'] },
+    { name: 'Middleware', dirs: ['app/Http/Middleware', 'app/Api/V1/Middleware', 'src/middleware', 'app/middleware'] },
+    { name: 'Views/Templates', dirs: ['resources/views', 'templates', 'src/views', 'app/views'] },
+    { name: 'Migrations', dirs: ['database/migrations', 'db/migrate', 'migrations', 'prisma/migrations'] },
+    { name: 'Tests', dirs: ['tests', 'test', 'spec', '__tests__', 'src/test'] },
+    { name: 'Jobs/Workers', dirs: ['app/Jobs', 'src/jobs', 'app/workers'] },
+    { name: 'Events', dirs: ['app/Events', 'src/events'] },
+    { name: 'Providers', dirs: ['app/Providers', 'src/providers'] },
+    { name: 'Factories', dirs: ['app/Factory', 'database/factories', 'src/factories'] },
+    { name: 'Console Commands', dirs: ['app/Console/Commands', 'app/Console', 'src/commands'] },
+  ];
+
+  const counts: NonNullable<FileAnalysisResult['componentCounts']> = [];
+
+  for (const candidate of candidates) {
+    for (const dir of candidate.dirs) {
+      const fullDir = path.join(dirPath, dir);
+      try {
+        const stat = await fs.stat(fullDir);
+        if (!stat.isDirectory()) continue;
+
+        const fileCount = await countFilesRecursive(fullDir);
+        if (fileCount > 0) {
+          counts.push({ name: candidate.name, directory: dir, count: fileCount });
+          break; // use first matching dir for this component type
+        }
+      } catch { /* dir doesn't exist */ }
+    }
+  }
+
+  return counts.length > 0 ? counts : undefined;
+}
+
+async function countFilesRecursive(dir: string, depth = 0): Promise<number> {
+  if (depth > 10) return 0;
+  let count = 0;
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      if (entry.isFile() && /\.(php|rb|py|ts|js|java|go|rs|cs|vue|jsx|tsx)$/i.test(entry.name)) {
+        count++;
+      } else if (entry.isDirectory()) {
+        count += await countFilesRecursive(path.join(dir, entry.name), depth + 1);
+      }
+    }
+  } catch { /* permission error */ }
+  return count;
 }

@@ -46,23 +46,6 @@ export interface AzureServiceInfo {
   limits?: Record<string, string>;
 }
 
-export interface AzureModernizationPattern {
-  legacyPattern: string;
-  /** Service IDs from the catalog */
-  azureServices: readonly string[];
-  description: string;
-  benefits: readonly string[];
-  /** Specific cost tips for this migration path */
-  costTips?: readonly string[];
-}
-
-export interface AzureArchitecturePattern {
-  name: string;
-  description: string;
-  components: readonly string[];
-  considerations: readonly string[];
-}
-
 // Architecture diagram node/edge/group types for rendering
 export interface AzureArchNode {
   id: string;
@@ -94,26 +77,6 @@ export interface AzureArchitectureSpec {
   edges: AzureArchEdge[];
   groups: AzureArchGroup[];
 }
-
-// ---------------------------------------------------------------------------
-// Category colors (for diagram rendering)
-// ---------------------------------------------------------------------------
-
-export const AZURE_CATEGORY_COLORS: Record<CloudServiceCategory, string> = {
-  compute: '#0078D4',
-  containers: '#0078D4',
-  database: '#0078D4',
-  storage: '#0078D4',
-  networking: '#7FBA00',
-  messaging: '#FF8C00',
-  security: '#DD5900',
-  monitoring: '#50E6FF',
-  'ai-ml': '#773ADC',
-  cicd: '#0078D4',
-  analytics: '#773ADC',
-  integration: '#FF8C00',
-  management: '#50E6FF',
-};
 
 // ---------------------------------------------------------------------------
 // Service catalog
@@ -772,12 +735,9 @@ export const AZURE_SERVICES: AzureServiceInfo[] = [
 // Quick lookups
 // ---------------------------------------------------------------------------
 
-/** Map from service ID to full service info */
-export const AZURE_SERVICE_MAP = new Map(AZURE_SERVICES.map((s) => [s.id, s]));
-
 /** Get Azure service info by service ID */
 export function getAzureService(serviceId: string): AzureServiceInfo | null {
-  return AZURE_SERVICE_MAP.get(serviceId) ?? null;
+  return AZURE_SERVICES.find((s) => s.id === serviceId) ?? null;
 }
 
 /** Get all Azure services in a category */
@@ -793,193 +753,3 @@ export function findAzureServicesForUseCase(useCase: string): AzureServiceInfo[]
   );
 }
 
-// ---------------------------------------------------------------------------
-// Legacy -> Azure modernization patterns
-// ---------------------------------------------------------------------------
-
-export const AZURE_MODERNIZATION_PATTERNS: AzureModernizationPattern[] = [
-  {
-    legacyPattern: 'On-premises relational database (Oracle, SQL Server, MySQL)',
-    azureServices: ['azure-sql', 'azure-sql-mi', 'azure-postgresql'],
-    description: 'Migrate to Azure SQL Database or Managed Instance for near-100% SQL Server compatibility, or Azure Database for PostgreSQL for open-source workloads.',
-    benefits: ['Built-in HA', 'Automated patching', 'Intelligent performance tuning', 'Geo-replication'],
-    costTips: ['Azure SQL Serverless for intermittent workloads (auto-pause)', 'Azure Hybrid Benefit for existing SQL Server licenses (up to 55% savings)', 'Reserved capacity for predictable workloads (up to 65% savings)'],
-  },
-  {
-    legacyPattern: 'Monolithic application server (WebSphere, JBoss, Tomcat)',
-    azureServices: ['container-apps', 'aks', 'app-gateway'],
-    description: 'Containerize the monolith and deploy on Container Apps or AKS behind Application Gateway. Use strangler fig pattern for incremental decomposition.',
-    benefits: ['Scale-to-zero with Container Apps', 'Managed Kubernetes with AKS', 'L7 routing with App Gateway', 'Rolling deployments'],
-    costTips: ['Container Apps Consumption plan for scale-to-zero', 'AKS Spot node pools for non-critical workloads', 'App Service deployment slots for blue/green at no extra cost'],
-  },
-  {
-    legacyPattern: 'Batch processing / Cron jobs',
-    azureServices: ['azure-functions', 'durable-functions', 'event-grid'],
-    description: 'Replace cron-based batch jobs with Azure Functions triggered by timers or Event Grid. Use Durable Functions for complex orchestration.',
-    benefits: ['Pay-per-execution', 'Built-in retry/error handling', 'Stateful workflows with Durable Functions', 'Scale-to-zero'],
-    costTips: ['Consumption plan for intermittent jobs (no idle cost)', 'Premium plan only for VNet access or warm instances', 'Event Grid first 100K events/month free'],
-  },
-  {
-    legacyPattern: 'Message queue (IBM MQ, RabbitMQ, ActiveMQ)',
-    azureServices: ['service-bus', 'storage-queues', 'event-hubs'],
-    description: 'Use Service Bus for enterprise messaging with topics and sessions. Use Event Hubs for high-throughput streaming. Queue Storage for simple scenarios.',
-    benefits: ['AMQP/JMS support', 'Dead-letter queues', 'Duplicate detection', 'Kafka-compatible with Event Hubs'],
-    costTips: ['Queue Storage for simple, low-cost queuing', 'Service Bus Standard for most workloads (Premium only for isolation)', 'Event Hubs Auto-inflate to avoid over-provisioning'],
-  },
-  {
-    legacyPattern: 'File server / NAS / shared storage',
-    azureServices: ['blob-storage', 'azure-files', 'data-lake'],
-    description: 'Migrate file shares to Azure Files (SMB/NFS compatible) or Blob Storage for object storage. Use Data Lake Storage for analytics workloads.',
-    benefits: ['Tiered storage', 'SMB/NFS protocol support', 'Lifecycle management', 'Geo-redundancy'],
-    costTips: ['Cool/Archive tiers for infrequently accessed data', 'Lifecycle management rules for automatic tiering', 'Azure File Sync for hybrid file server (reduces on-prem storage)'],
-  },
-  {
-    legacyPattern: 'Monolithic frontend (JSP, ASP.NET, PHP templates)',
-    azureServices: ['front-door', 'blob-storage', 'apim'],
-    description: 'Rebuild as SPA hosted on Blob Storage static website behind Azure Front Door CDN with API Management for backend APIs.',
-    benefits: ['Global CDN with Front Door', 'SSL/WAF at edge', 'API management', 'Developer portal'],
-    costTips: ['Blob Storage static website hosting is extremely cost-effective', 'Front Door Standard tier for most use cases', 'APIM Consumption plan for low-traffic APIs'],
-  },
-  {
-    legacyPattern: 'In-memory cache (local, Memcached, Redis)',
-    azureServices: ['azure-redis'],
-    description: 'Migrate to Azure Cache for Redis with clustering, persistence, and geo-replication.',
-    benefits: ['Sub-millisecond latency', 'Clustering', 'Data persistence', 'Geo-replication'],
-    costTips: ['Basic tier for dev/test only', 'Standard tier for production HA', 'Right-size using Redis metrics (memory usage, connections)'],
-  },
-  {
-    legacyPattern: 'Custom authentication / LDAP / Active Directory',
-    azureServices: ['entra-id', 'key-vault'],
-    description: 'Replace custom auth with Microsoft Entra ID for SSO, MFA, conditional access, and seamless Microsoft 365 integration.',
-    benefits: ['SSO with thousands of apps', 'Conditional access', 'Built-in MFA', 'B2B/B2C identity'],
-    costTips: ['Entra ID Free tier for basic SSO', 'P1 covers most enterprise needs (conditional access, MFA)', 'Azure AD B2C first 50K MAU free'],
-  },
-  {
-    legacyPattern: 'SOAP / XML web services',
-    azureServices: ['apim', 'azure-functions'],
-    description: 'Wrap legacy SOAP services behind Azure API Management with policy-based XML to JSON transformation. Use Functions for lightweight adapters.',
-    benefits: ['Protocol mediation', 'Rate limiting', 'Developer portal', 'Usage analytics'],
-    costTips: ['APIM Consumption plan for low-volume APIs', 'APIM Developer tier for internal-only APIs', 'Functions Consumption plan for transform functions'],
-  },
-  {
-    legacyPattern: 'ETL pipelines / Data warehouse',
-    azureServices: ['data-factory', 'synapse', 'data-lake'],
-    description: 'Replace legacy ETL with Azure Data Factory for orchestration, Data Lake Storage as staging, and Synapse Analytics for analytics and warehousing.',
-    benefits: ['Visual pipeline authoring', '100+ connectors', 'Serverless Spark pools', 'Dedicated SQL pools'],
-    costTips: ['Synapse serverless SQL for ad-hoc queries (pay-per-TB)', 'Data Factory self-hosted IR for on-prem sources', 'Pause dedicated SQL pool when not in use'],
-  },
-  {
-    legacyPattern: 'VM-based deployment / manual ops',
-    azureServices: ['azure-devops', 'acr', 'container-apps'],
-    description: 'Implement CI/CD with Azure DevOps pipelines, ACR, and Container Apps/AKS with blue-green deployment slots.',
-    benefits: ['Integrated CI/CD', 'Container scanning', 'Deployment slots', 'Approval gates'],
-    costTips: ['Azure DevOps free for 5 users with 1 parallel job', 'ACR Basic tier for small teams', 'Self-hosted agents on existing VMs to save parallel job costs'],
-  },
-  {
-    legacyPattern: 'Mainframe / COBOL / AS/400',
-    azureServices: ['azure-functions', 'apim', 'cosmos-db', 'logic-apps', 'service-bus'],
-    description: 'Decompose mainframe transactions into microservices using API Management + Functions. Use Cosmos DB for global distribution and Logic Apps for workflow orchestration.',
-    benefits: ['Incremental migration', 'Global distribution', 'Multi-model database', 'Integration connectors'],
-    costTips: ['Cosmos DB serverless for variable workloads during migration', 'Logic Apps Consumption for low-frequency workflows', 'Functions Consumption plan aligns cost with transaction volume'],
-  },
-  {
-    legacyPattern: 'Monitoring / logging (Nagios, ELK, Splunk)',
-    azureServices: ['azure-monitor', 'app-insights', 'log-analytics'],
-    description: 'Consolidate monitoring on Azure Monitor (metrics + alerts), Application Insights (APM + tracing), and Log Analytics (KQL-based log queries).',
-    benefits: ['Unified observability', 'Distributed tracing', 'KQL queries', 'Smart detection'],
-    costTips: ['App Insights first 5 GB/month free', 'Use sampling to reduce data volume', 'Basic logs for high-volume, low-query tables (cheaper)', 'Commitment tiers for Log Analytics (up to 30% savings)'],
-  },
-  {
-    legacyPattern: 'Event-driven architecture / ESB',
-    azureServices: ['event-grid', 'service-bus', 'logic-apps', 'durable-functions'],
-    description: 'Replace ESB with Event Grid for event routing, Service Bus for reliable messaging, and Logic Apps or Durable Functions for orchestration.',
-    benefits: ['Event-driven serverless', 'Push-based delivery', '400+ SaaS connectors', 'Stateful orchestration'],
-    costTips: ['Event Grid first 100K operations/month free', 'Service Bus Standard for most messaging needs', 'Durable Functions on Consumption plan for variable loads'],
-  },
-  {
-    legacyPattern: 'Static infrastructure / manual provisioning',
-    azureServices: ['bicep', 'arm-templates', 'azure-policy'],
-    description: 'Define infrastructure as code using Bicep (recommended) or ARM templates. Enforce governance with Azure Policy.',
-    benefits: ['Type-safe IaC with Bicep', 'What-if deployments', 'Policy compliance', 'Template specs'],
-    costTips: ['No cost for IaC tools or Azure Policy on Azure resources', 'Use Bicep modules for reuse across environments', 'Policy initiatives to enforce cost-saving configurations (e.g., required tags, allowed SKUs)'],
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Architecture patterns (high-level blueprints)
-// ---------------------------------------------------------------------------
-
-export const AZURE_ARCHITECTURE_PATTERNS: AzureArchitecturePattern[] = [
-  {
-    name: 'Microservices on Azure',
-    description: 'AKS or Container Apps based microservices with managed data stores',
-    components: ['aks', 'container-apps', 'app-gateway', 'azure-sql', 'cosmos-db', 'service-bus'],
-    considerations: ['Deployment platform (AKS vs Container Apps)', 'Service communication (Dapr, gRPC, Service Bus)', 'Data store selection per service', 'Observability with App Insights', 'Blue/green deployment strategy'],
-  },
-  {
-    name: 'Serverless on Azure',
-    description: 'Functions and Logic Apps with event-driven messaging',
-    components: ['azure-functions', 'durable-functions', 'logic-apps', 'cosmos-db', 'service-bus', 'blob-storage'],
-    considerations: ['Function triggers and bindings', 'Durable Functions for stateful orchestration', 'State management patterns', 'Scaling behavior (Consumption vs Premium)', 'Cold start mitigation'],
-  },
-  {
-    name: 'Event-Driven Architecture',
-    description: 'Event Grid and Service Bus for loosely coupled systems',
-    components: ['event-grid', 'event-hubs', 'service-bus', 'azure-functions', 'durable-functions'],
-    considerations: ['Event source and routing design', 'Push vs pull patterns', 'Handler resilience', 'Message ordering guarantees', 'Observability across event flows'],
-  },
-  {
-    name: 'Data Analytics Pipeline',
-    description: 'Synapse and Data Lake for unified analytics',
-    components: ['data-lake', 'synapse', 'data-factory', 'event-hubs', 'azure-monitor'],
-    considerations: ['Data modeling (star schema, data vault)', 'ETL vs ELT pipeline design', 'Query optimization (dedicated vs serverless SQL)', 'Cost management (pause dedicated pools)', 'Data governance and Purview integration'],
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Cost optimization tips (general Azure)
-// ---------------------------------------------------------------------------
-
-export const AZURE_COST_OPTIMIZATION_TIPS: readonly string[] = [
-  'Use Azure Reserved Instances for predictable workloads (up to 72% savings)',
-  'Enable Azure Hybrid Benefit for existing Windows Server and SQL Server licenses',
-  'Use Spot VMs for fault-tolerant batch workloads (up to 90% savings)',
-  'Right-size VMs using Azure Advisor recommendations',
-  'Set up Azure Budgets and Cost Alerts in Cost Management',
-  'Use auto-shutdown for dev/test VMs',
-  'Enable Blob Storage lifecycle management to tier cold data',
-  'Use Azure SQL Serverless with auto-pause for intermittent workloads',
-  'Consolidate Log Analytics workspaces and use Basic logs for high-volume tables',
-  'Use Azure Policy to enforce allowed VM SKUs and required tags',
-];
-
-// ---------------------------------------------------------------------------
-// Prompt context builder — inject into modernization stages
-// ---------------------------------------------------------------------------
-
-export function buildAzureKnowledgeContext(): string {
-  const byCategory = new Map<string, string[]>();
-  for (const s of AZURE_SERVICES) {
-    const list = byCategory.get(s.category) || [];
-    list.push(`${s.id} (${s.shortName})`);
-    byCategory.set(s.category, list);
-  }
-  const serviceCatalog = Array.from(byCategory.entries())
-    .map(([cat, svcs]) => `- **${cat}**: ${svcs.join(', ')}`)
-    .join('\n');
-
-  const patterns = AZURE_MODERNIZATION_PATTERNS.map(
-    (p) => `- ${p.legacyPattern} -> ${p.azureServices.join(', ')}`,
-  ).join('\n');
-
-  return [
-    '## Azure Service IDs (use these in cloudArchSpec nodes)',
-    serviceCatalog,
-    '',
-    '## Legacy -> Azure Patterns',
-    patterns,
-    '',
-    'Return `cloudArchSpec` JSON: {"title":"string","nodes":[{"id":"string","service":"<service-id>","label":"string","group":"group-id"}],"edges":[{"from":"id","to":"id","label":"string"}],"groups":[{"id":"string","label":"string","type":"subscription|resource-group|vnet|subnet|region|generic"}]}',
-    'Valid service IDs: ' + AZURE_SERVICES.map((s) => s.id).join(', '),
-  ].join('\n');
-}

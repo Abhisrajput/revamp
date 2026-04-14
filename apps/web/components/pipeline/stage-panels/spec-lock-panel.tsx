@@ -11,8 +11,9 @@ import { Badge } from '@/components/ui/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
+import { buildFileTree } from '@/lib/utils/file-tree';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
-import { usePipelineStore, canExecuteStage } from '@/lib/stores/pipeline-store';
+import { useStagePanel } from '@/lib/hooks/use-stage-panel';
 import { cn } from '@/lib/utils';
 import { TabFallback } from './tab-fallback';
 import type { StagePanelProps } from './types';
@@ -58,27 +59,6 @@ function extractSection(text: string, ...headings: string[]): string | null {
   return null;
 }
 
-function buildFileTree(files: FeatureFileBlock[]): FileNode[] {
-  const root: FileNode[] = [];
-  for (const f of files) {
-    const parts = f.path.split('/');
-    let current = root;
-    for (let i = 0; i < parts.length; i++) {
-      const name = parts[i];
-      if (i === parts.length - 1) {
-        current.push({ name, type: 'file', path: f.path, language: 'gherkin' });
-      } else {
-        let dir = current.find((n) => n.type === 'dir' && n.name === name);
-        if (!dir) {
-          dir = { name, type: 'dir', children: [] };
-          current.push(dir);
-        }
-        current = dir.children!;
-      }
-    }
-  }
-  return root;
-}
 
 // ─── Gherkin Syntax Highlighter ──────────────────────────────
 
@@ -132,17 +112,13 @@ export default function SpecLockPanel({
   isExecuting,
   onRefineRequest: _onRefineRequest,
 }: StagePanelProps) {
-  const logs = usePipelineStore((s) => s.logs);
-  const stages = usePipelineStore((s) => s.stages);
+  const { logs, isRunning, hasOutput, canRun } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
   const [activeTab, setActiveTab] = useState<TabKey>('features');
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const isRunning = stage.status === 'generating' || stage.status === 'validating';
-  const hasOutput = !!(stage.output || streamingText);
-  const canRun = (stage.status === 'pending' || stage.status === 'failed') && !isExecuting && canExecuteStage(stages, stageIndex);
 
   // ─── Parsed data ───────────────────────────────────────────
   const featureFiles = useMemo(() => stage.output ? extractFeatureFiles(stage.output) : [], [stage.output]);
-  const fileTree = useMemo(() => buildFileTree(featureFiles), [featureFiles]);
+  const fileTree = useMemo(() => buildFileTree(featureFiles, 'gherkin'), [featureFiles]);
   const currentFile = useMemo(() => {
     if (!selectedFile) return featureFiles[0] ?? null;
     return featureFiles.find((f) => f.path === selectedFile) ?? featureFiles[0] ?? null;

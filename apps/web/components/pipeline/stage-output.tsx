@@ -126,15 +126,16 @@ function renderMarkdown(text: string): string {
 
   for (let li = 0; li < lines.length; li++) {
     const line = lines[li];
-    if (line.startsWith('```') && !inCodeBlock) {
+    const trimmedLine = line.trimStart();
+    if (trimmedLine.startsWith('```') && !inCodeBlock) {
       if (inTable) flushTable();
       inCodeBlock = true;
-      codeLanguage = line.slice(3).trim();
+      codeLanguage = trimmedLine.slice(3).trim();
       codeLines = [];
       continue;
     }
 
-    if (line.startsWith('```') && inCodeBlock) {
+    if (trimmedLine.startsWith('```') && inCodeBlock) {
       inCodeBlock = false;
       if (codeLanguage === 'mermaid') {
         // Mark mermaid blocks for client-side rendering
@@ -287,13 +288,28 @@ export const StageOutput = memo(function StageOutput({ output, isStreaming }: St
   const contentRef = useRef<HTMLDivElement>(null);
   const html = useMemo(() => {
     const raw = renderMarkdown(normalizeMarkdown(output));
-    // Sanitize to prevent XSS from LLM-generated or user-injected content.
-    // Allow class/style attrs and data-chart for mermaid, but block javascript: URLs.
-    return DOMPurify.sanitize(raw, {
+    // Extract mermaid blocks BEFORE DOMPurify — DOMPurify can corrupt
+    // data-chart attribute values containing HTML entities like <br/>.
+    const mermaidPlaceholders: Record<string, string> = {};
+    let protected_ = raw.replace(
+      /<div class="mermaid-block"[^>]*>[\s\S]*?<\/div>/g,
+      (match) => {
+        const id = `__MERMAID_${Object.keys(mermaidPlaceholders).length}__`;
+        mermaidPlaceholders[id] = match;
+        return id;
+      },
+    );
+    // Sanitize everything except mermaid blocks
+    protected_ = DOMPurify.sanitize(protected_, {
       ADD_ATTR: ['data-chart', 'data-rendered'],
       ADD_TAGS: ['style'],
       FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover'],
     });
+    // Re-inject mermaid blocks (they were built from escaped content, safe by construction)
+    for (const [id, block] of Object.entries(mermaidPlaceholders)) {
+      protected_ = protected_.replace(id, block);
+    }
+    return protected_;
   }, [output]);
 
   // Render mermaid diagrams after HTML is mounted
@@ -313,18 +329,23 @@ export const StageOutput = memo(function StageOutput({ output, isStreaming }: St
           fontSize: 11,
         } as any);
 
+        // Lazy-import the mermaid sanitizer from the MermaidDiagram component's module
+        const { sanitizeMermaidChart } = await import('./mermaid-diagram');
+
         for (const block of mermaidBlocks) {
           if (block.getAttribute('data-rendered')) continue;
-          const chart = block.getAttribute('data-chart');
-          if (!chart) continue;
+          const rawChart = block.getAttribute('data-chart');
+          if (!rawChart) continue;
           try {
+            // Sanitize: collapse multiline labels, strip emojis, normalize Unicode
+            const chart = sanitizeMermaidChart(rawChart);
             const id = `mermaid-so-${Math.random().toString(36).slice(2, 7)}`;
             const { svg } = await mermaid.render(id, chart);
             block.innerHTML = svg;
             block.setAttribute('data-rendered', 'true');
             (block as HTMLElement).style.cssText = 'overflow: auto; background: white; border-radius: 0.5rem; border: 1px solid #e2e8f0; padding: 0.5rem; margin: 0.75rem 0;';
           } catch {
-            // leave raw code if render fails
+            // Leave raw code visible if render fails
           }
         }
       } catch {

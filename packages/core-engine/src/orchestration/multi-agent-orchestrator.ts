@@ -129,7 +129,7 @@ export interface OrchestrationResult {
 /**
  * Build the subtask catalog text for the Director prompt.
  */
-export function buildSubtaskCatalogText(catalog: SubtaskDefinition[]): string {
+function buildSubtaskCatalogText(catalog: SubtaskDefinition[]): string {
   const mandatory = catalog.filter(s => s.mandatory);
   const conditional = catalog.filter(s => !s.mandatory);
 
@@ -183,7 +183,7 @@ export function parseDirectorPlan(
 /**
  * Build default plan from mandatory subtasks (fallback when Director fails).
  */
-export function buildDefaultPlan(catalog: SubtaskDefinition[]): SubtaskPlanItem[] {
+function buildDefaultPlan(catalog: SubtaskDefinition[]): SubtaskPlanItem[] {
   return catalog
     .filter(s => s.mandatory)
     .map(s => ({

@@ -11,6 +11,10 @@
  */
 
 import crypto from "crypto";
+// Advisor tool: enable Opus guidance for strategic calls (director, composition)
+const SCAN_ADVISOR_ENABLED = process.env.ADVISOR_ENABLED !== 'false';
+const SCAN_ADVISOR_CONFIG = SCAN_ADVISOR_ENABLED ? { enabled: true, model: 'claude-opus-4-6', max_uses: 2 } as const : undefined;
+
 import { db } from "@/db/index.js";
 import { stageArtifacts, agentSubtasks, agentPersonas } from "@/db/schema.js";
 import { eq, and, or, isNull, inArray, asc } from "drizzle-orm";
@@ -36,6 +40,7 @@ import {
   DEFAULT_SCAN_SUBTASKS,
   type ScanSubtaskType,
   type FullValidationResult,
+  extractRequirementsFromPrompt,
 } from "@revamp/core-engine";
 import { llmProxyService, type ProjectCredentials } from "./llm-proxy.js";
 import {
@@ -64,11 +69,7 @@ import {
 } from "./agent-sessions.js";
 import { runQuickReview } from "./two-stage-review.js";
 import { PipelineMessageBus, type SubtaskMessage } from "./agent-message-bus.js";
-import {
-  checkPipelineBudget,
-  PipelineBudgetExceededError,
-  ProjectBudgetExceededError,
-} from "./pipeline-budget.js";
+// Budget enforcement removed — cost tracking retained in pipeline.ts
 import type { FileAnalysisResult } from "./file-analyzer.js";
 
 // ─── TYPES ──────────────────────────────────────────────────────
@@ -83,6 +84,10 @@ export interface ScanOrchestrationOptions {
   onDelta?: OnDelta;
   signal?: AbortSignal;
   model?: string;
+  /** Composition model override (e.g. Opus for deeper analysis) */
+  composerModel?: string;
+  /** Max output tokens */
+  maxTokens?: number;
   /** BYOK credentials from project settings */
   credentials?: ProjectCredentials;
 }
@@ -299,18 +304,29 @@ export async function orchestrateScanStage(
     });
 
     try {
-      // Budget pre-check before each subtask
-      try {
-        await checkPipelineBudget(opts.pipelineRunId);
-      } catch (budgetErr) {
-        if (budgetErr instanceof PipelineBudgetExceededError || budgetErr instanceof ProjectBudgetExceededError) {
-          emit("failed", { message: (budgetErr as Error).message, budgetExceeded: true });
-          break;
-        }
-        throw budgetErr;
+      // Per-subtask timeout (3 minutes) — prevents hung LLM calls from blocking the pipeline
+      const SUBTASK_TIMEOUT_MS = 5 * 60 * 1000;
+      const subtaskController = new AbortController();
+      const subtaskTimer = setTimeout(() => subtaskController.abort(), SUBTASK_TIMEOUT_MS);
+      const origSignal = opts.signal;
+      if (origSignal) {
+        origSignal.addEventListener("abort", () => subtaskController.abort(), { once: true });
       }
 
-      const result = await executeSubtask(opts, plan, subtask, subtaskResults, scoutAssessment, messageBus);
+      let result: SubtaskResult;
+      try {
+        result = await executeSubtask(
+          { ...opts, signal: subtaskController.signal },
+          plan, subtask, subtaskResults, scoutAssessment, messageBus,
+        );
+      } catch (timeoutErr: any) {
+        if (subtaskController.signal.aborted && !origSignal?.aborted) {
+          throw new Error(`Subtask timed out after ${SUBTASK_TIMEOUT_MS / 1000}s: ${plan.title}`);
+        }
+        throw timeoutErr;
+      } finally {
+        clearTimeout(subtaskTimer);
+      }
 
       // ── PATTERN 2: REVIEW-REVISE — if review says NEEDS_REVISION, revise once
       if (result.status === "completed" && result.output) {
@@ -328,35 +344,25 @@ export async function orchestrateScanStage(
 
           // REVIEW-REVISE: If needs revision and we have a revision prompt, do one pass
           if (review.overallVerdict === "NEEDS_REVISION" && review.revisionPrompt) {
-            // Budget check before revision to avoid double-spending
-            let budgetOk = true;
+            opts.onEvent?.({
+              phase: "subtask_executing",
+              stageName: PipelineStageName.SCAN,
+              stageIndex: 0,
+              timestamp: new Date().toISOString(),
+              data: {
+                event: "subtask_revising",
+                subtaskId: subtask.id,
+                reviewScore: review.overallScore,
+                concerns: review.dimensions.flatMap((d) => d.concerns).slice(0, 3),
+              },
+            });
+
             try {
-              await checkPipelineBudget(opts.pipelineRunId);
+              const revised = await reviseSubtaskOutput(opts, result.output, review.revisionPrompt, plan.type);
+              result.output = revised;
+              result.revised = true;
             } catch {
-              budgetOk = false;
-            }
-
-            if (budgetOk) {
-              opts.onEvent?.({
-                phase: "subtask_executing",
-                stageName: PipelineStageName.SCAN,
-                stageIndex: 0,
-                timestamp: new Date().toISOString(),
-                data: {
-                  event: "subtask_revising",
-                  subtaskId: subtask.id,
-                  reviewScore: review.overallScore,
-                  concerns: review.dimensions.flatMap((d) => d.concerns).slice(0, 3),
-                },
-              });
-
-              try {
-                const revised = await reviseSubtaskOutput(opts, result.output, review.revisionPrompt, plan.type);
-                result.output = revised;
-                result.revised = true;
-              } catch {
-                // Revision failed — keep original output
-              }
+              // Revision failed — keep original output
             }
           }
 
@@ -408,6 +414,10 @@ export async function orchestrateScanStage(
         }
       }
 
+      // Calculate progress: subtasks = 80% of stage, composition = remaining 20%
+      const scanCompletedCount = subtaskResults.filter(r => r.status === "completed").length;
+      const scanSubtaskProgress = Math.round((scanCompletedCount / subtaskPlans.length) * 80);
+
       opts.onEvent?.({
         phase: "subtask_executing",
         stageName: PipelineStageName.SCAN,
@@ -420,6 +430,7 @@ export async function orchestrateScanStage(
           type: plan.type,
           agentName: result.agentName,
           duration: Date.now() - subtaskStart,
+          progress: scanSubtaskProgress,
         },
       });
 
@@ -576,12 +587,35 @@ export async function orchestrateScanStage(
 
   // Get stage prompt from project context for prompt-derived validation.
   // DB stores prompts by numeric index ('0'-'7') or stage name ('SCAN').
+  // Falls back to the DEFAULT stage prompt from core-engine so validation
+  // always has requirements to check against — never degrades to 45%.
   const prompts = (opts.projectContext as any)?.stagePrompts || {};
   const valPrompts = (opts.projectContext as any)?.validationPrompts || {};
-  const stagePrompt = prompts['0'] || prompts['SCAN'] || prompts.SCAN || '';
-  const validationPrompt = valPrompts['0'] || valPrompts['SCAN'] || valPrompts.SCAN || '';
-  console.log(`[ScanOrchestrator] Validation prompt check — stagePrompt length: ${stagePrompt.length}, validationPrompt length: ${validationPrompt.length}, promptKeys: ${JSON.stringify(Object.keys(prompts))}, valKeys: ${JSON.stringify(Object.keys(valPrompts))}`);
-
+  // For validation, we need a prompt with structured sections (numbered items,
+  // markdown headings) that the requirement extractor can parse. Short one-liner
+  // prompts from the DB are fine for LLM execution but useless for validation scoring.
+  // Use the DEFAULT prompt for validation if the DB prompt is too short to extract from.
+  let stagePrompt = prompts['0'] || prompts['SCAN'] || prompts.SCAN || '';
+  // The DB prompt may be a short one-liner that can't be parsed for requirements.
+  // If the requirement extractor finds zero sections, fall back to the DEFAULT prompt
+  // which has 11 structured sections for proper validation scoring.
+  const extractedFromDb = stagePrompt ? extractRequirementsFromPrompt(stagePrompt) : [];
+  if (extractedFromDb.length === 0) {
+    try {
+      const coreEngine = await import("@revamp/core-engine");
+      const defaultPrompt = coreEngine.DEFAULT_STAGE_PROMPTS?.['SCAN'] || coreEngine.DEFAULT_STAGE_PROMPTS?.['0'] || '';
+      if (defaultPrompt && extractRequirementsFromPrompt(defaultPrompt).length > 0) {
+        stagePrompt = defaultPrompt;
+      }
+    } catch { /* non-fatal */ }
+  }
+  let validationPrompt = valPrompts['0'] || valPrompts['SCAN'] || valPrompts.SCAN || '';
+  if (!validationPrompt) {
+    try {
+      const { DEFAULT_VALIDATION_PROMPTS } = await import("@revamp/core-engine");
+      validationPrompt = DEFAULT_VALIDATION_PROMPTS['SCAN'] || DEFAULT_VALIDATION_PROMPTS['0'] || '';
+    } catch { /* non-fatal */ }
+  }
   let validationResult: FullValidationResult = await runValidation({
     pipelineRunId: opts.pipelineRunId,
     stageName: PipelineStageName.SCAN,
@@ -745,6 +779,7 @@ async function runDirectorPlanning(
     maxTokens: 4096,
     model: opts.model || "",
     credentials: opts.credentials,
+    advisor: SCAN_ADVISOR_CONFIG,
   });
 
   // Build agent roster from available agents
@@ -1107,70 +1142,307 @@ async function composeResults(
   results: SubtaskResult[],
 ): Promise<string> {
   const successfulResults = results.filter((r) => r.status === "completed" && r.output);
+  const fa = opts.fileAnalysis;
 
-  // Format all subtask outputs for the composition prompt
+  // ════════════════════════════════════════════════════════════════
+  // STEP 1: BUILD PROGRAMMATIC DATA SECTIONS
+  // These use EXACT numbers from the file system scan — no LLM guessing.
+  // ════════════════════════════════════════════════════════════════
+
+  const dataSections: string[] = [];
+
+  // Codebase Inventory
+  dataSections.push("## Codebase Inventory\n");
+  dataSections.push("| Metric | Value |");
+  dataSections.push("|--------|-------|");
+  dataSections.push(`| Total Files | ${fa.totalFiles.toLocaleString()} |`);
+  dataSections.push(`| Total Lines of Code | ${fa.totalLines.toLocaleString()} |`);
+  dataSections.push(`| Detected Languages | ${fa.detectedLanguages.join(", ")} |`);
+
+  const langEntries = Object.entries(fa.filesByExtension)
+    .sort(([, a], [, b]) => (b as number) - (a as number))
+    .filter(([, count]) => (count as number) > 0);
+
+  if (langEntries.length > 0) {
+    dataSections.push("\n### Language Breakdown\n");
+    dataSections.push("| Extension | Files | Lines of Code | % of Total |");
+    dataSections.push("|-----------|-------|---------------|------------|");
+    for (const [ext, count] of langEntries.slice(0, 25)) {
+      const loc = fa.linesByExtension[ext] || 0;
+      const pct = fa.totalLines > 0 ? ((loc / fa.totalLines) * 100).toFixed(1) : "0";
+      dataSections.push(`| .${ext} | ${(count as number).toLocaleString()} | ${loc.toLocaleString()} | ${pct}% |`);
+    }
+  }
+
+  if (fa.keyFiles.length > 0) {
+    dataSections.push("\n### Key Configuration Files\n");
+    for (const f of fa.keyFiles.slice(0, 20)) {
+      dataSections.push(`- \`${f}\``);
+    }
+  }
+
+  if (fa.largestFiles.length > 0) {
+    dataSections.push("\n### Largest Files (Complexity Indicators)\n");
+    dataSections.push("| File | Lines | Type |");
+    dataSections.push("|------|-------|------|");
+    for (const f of fa.largestFiles.slice(0, 15)) {
+      dataSections.push(`| \`${f.path}\` | ${f.lines.toLocaleString()} | .${f.extension} |`);
+    }
+  }
+
+  if (fa.frameworkVersions && fa.frameworkVersions.length > 0) {
+    // Split into runtime/production vs dev dependencies
+    const runtimeDeps = fa.frameworkVersions.filter(fv => !fv.name.endsWith(' (dev)'));
+    const devDeps = fa.frameworkVersions.filter(fv => fv.name.endsWith(' (dev)'));
+
+    dataSections.push("\n### Technology Stack (from config files — verified)\n");
+    dataSections.push("| Technology | Version | Source File |");
+    dataSections.push("|------------|---------|-------------|");
+    for (const fv of runtimeDeps) {
+      dataSections.push(`| ${fv.name} | ${fv.version} | \`${fv.source}\` |`);
+    }
+
+    if (devDeps.length > 0) {
+      dataSections.push("\n### Dev Dependencies (from config files — verified)\n");
+      dataSections.push("| Technology | Version | Source File |");
+      dataSections.push("|------------|---------|-------------|");
+      for (const fv of devDeps) {
+        dataSections.push(`| ${fv.name.replace(' (dev)', '')} | ${fv.version} | \`${fv.source}\` |`);
+      }
+    }
+  }
+
+  if (fa.componentCounts && fa.componentCounts.length > 0) {
+    dataSections.push("\n### Component Counts (verified file counts)\n");
+    dataSections.push("| Component Type | Directory | File Count |");
+    dataSections.push("|---------------|-----------|------------|");
+    for (const cc of fa.componentCounts) {
+      dataSections.push(`| ${cc.name} | \`${cc.directory}\` | ${cc.count} |`);
+    }
+  }
+
+  if (fa.migrationStats) {
+    dataSections.push("\n### Migration Stats (verified)\n");
+    dataSections.push("| Metric | Value |");
+    dataSections.push("|--------|-------|");
+    dataSections.push(`| Migration Count | ${fa.migrationStats.count} |`);
+    dataSections.push(`| Directory | \`${fa.migrationStats.directory}\` |`);
+    dataSections.push(`| Earliest | ${fa.migrationStats.earliest} |`);
+    dataSections.push(`| Latest | ${fa.migrationStats.latest} |`);
+  }
+
+  if (fa.directoryTree) {
+    dataSections.push("\n### Directory Structure\n");
+    dataSections.push("```");
+    dataSections.push(fa.directoryTree.slice(0, 4000));
+    dataSections.push("```");
+  }
+
+  const programmaticContent = dataSections.join("\n");
+
+  // ════════════════════════════════════════════════════════════════
+  // STEP 2: LLM COMPOSES ANALYSIS SECTIONS
+  // The LLM adds architecture insights, risk assessment, security
+  // findings — things that require judgment, not counting.
+  // ════════════════════════════════════════════════════════════════
+
   const subtaskResultsText = successfulResults
-    .map((r, i) => {
-      return [
-        `═══ SUBTASK ${i + 1}: ${r.title} (${r.type}) ═══`,
-        `Agent: ${r.agentName}`,
-        `Duration: ${Math.round(r.duration / 1000)}s`,
-        "",
-        r.output,
-        "",
-      ].join("\n");
-    })
+    .map((r, i) => [
+      `═══ SUBTASK ${i + 1}: ${r.title} (${r.type}) ═══`,
+      `Agent: ${r.agentName}`,
+      "", r.output, "",
+    ].join("\n"))
     .join("\n");
 
-  // Note failed subtasks
   const failedResults = results.filter((r) => r.status === "failed");
   const failedNote = failedResults.length > 0
-    ? `\n\nNOTE: The following subtasks failed and are not included:\n${failedResults.map((r) => `- ${r.title}: ${r.error}`).join("\n")}\nAddress these gaps in the composition if possible.\n`
+    ? `\nFailed subtasks:\n${failedResults.map((r) => `- ${r.title}: ${r.error}`).join("\n")}\n`
     : "";
+
+  const breeContextText = (opts.projectContext as any)?.breeContextText || '';
+  const breeBlock = breeContextText
+    ? `\n═══ BREE STATIC ANALYSIS ═══\n${breeContextText}\n\n`
+    : '';
 
   const prompt = SCAN_COMPOSITION.replace(
     "{{subtaskResults}}",
-    subtaskResultsText + failedNote,
+    breeBlock + subtaskResultsText + failedNote,
   );
 
-  // Composition output target: 1500-3000 words (~6K-12K tokens).
-  // Scale by codebase size — small codebases need shorter documents.
-  const totalLines = opts.fileAnalysis.totalLines;
-  const compositionMaxTokens = totalLines < 5000 ? 4096
-    : totalLines < 50000 ? 6144
-    : 8192;
+  const totalLines = fa.totalLines;
+  const compositionMaxTokens = opts.maxTokens
+    || (totalLines < 5000 ? 16384 : totalLines < 50000 ? 32768 : 65536);
+
+  const composerModel = opts.composerModel || opts.model || "";
+  const skipAdvisor = /opus/i.test(composerModel);
   const composerCallFn = llmProxyService.createCallFn({
     maxTokens: compositionMaxTokens,
-    model: opts.model || "",
+    model: composerModel,
     credentials: opts.credentials,
+    advisor: skipAdvisor ? undefined : SCAN_ADVISOR_CONFIG,
   });
 
-  // Clear delta before composition — signals fresh start to frontend
   opts.onDelta?.("");
 
-  const wordLimit = totalLines < 5000 ? "1000-2000" : totalLines < 50000 ? "1500-3000" : "2000-4000";
+  const wordLimit = totalLines < 5000 ? "3000-6000" : totalLines < 50000 ? "6000-12000" : "10000-20000";
 
-  return composerCallFn({
+  // Build a ground-truth context block from programmatic data so the LLM
+  // can reference exact numbers/versions instead of guessing from training data.
+  const groundTruthLines: string[] = [
+    "═══ VERIFIED PROGRAMMATIC DATA (use these exact values — do NOT override) ═══",
+    "",
+    `Total Files: ${fa.totalFiles.toLocaleString()}`,
+    `Total Lines of Code: ${fa.totalLines.toLocaleString()}`,
+    `Detected Languages: ${fa.detectedLanguages.join(", ")}`,
+  ];
+
+  if (fa.frameworkVersions && fa.frameworkVersions.length > 0) {
+    const runtimeDeps = fa.frameworkVersions.filter(fv => !fv.name.endsWith(' (dev)'));
+    const devDeps = fa.frameworkVersions.filter(fv => fv.name.endsWith(' (dev)'));
+
+    groundTruthLines.push("", "VERIFIED Dependencies (production) — these are the ONLY dependencies that exist:");
+    for (const fv of runtimeDeps) {
+      groundTruthLines.push(`  - ${fv.name}: ${fv.version} (${fv.source})`);
+    }
+    if (devDeps.length > 0) {
+      groundTruthLines.push("", "VERIFIED Dev Dependencies:");
+      for (const fv of devDeps) {
+        groundTruthLines.push(`  - ${fv.name.replace(' (dev)', '')}: ${fv.version} (${fv.source})`);
+      }
+    }
+    groundTruthLines.push("", "If a dependency is NOT in the lists above, it does NOT exist in this codebase. Do NOT invent dependencies.");
+  }
+
+  if (fa.largestFiles.length > 0) {
+    groundTruthLines.push("", "Largest Files (verified line counts — use these, do NOT estimate):");
+    for (const f of fa.largestFiles.slice(0, 10)) {
+      groundTruthLines.push(`  - ${f.path}: ${f.lines.toLocaleString()} lines (.${f.extension})`);
+    }
+  }
+
+  if (fa.componentCounts && fa.componentCounts.length > 0) {
+    groundTruthLines.push("", "VERIFIED Component Counts (use these exact numbers):");
+    for (const cc of fa.componentCounts) {
+      groundTruthLines.push(`  - ${cc.name}: ${cc.count} files in ${cc.directory}`);
+    }
+  }
+
+  if (fa.migrationStats) {
+    groundTruthLines.push("", "VERIFIED Migration Stats:");
+    groundTruthLines.push(`  - Count: ${fa.migrationStats.count} files`);
+    groundTruthLines.push(`  - Directory: ${fa.migrationStats.directory}`);
+    groundTruthLines.push(`  - Earliest: ${fa.migrationStats.earliest}`);
+    groundTruthLines.push(`  - Latest: ${fa.migrationStats.latest}`);
+  }
+
+  groundTruthLines.push("", "═══ END VERIFIED DATA ═══");
+  const groundTruthBlock = groundTruthLines.join("\n");
+
+  const llmOutput = await composerCallFn({
     systemPrompt: [
-      "You are composing the Stage 1 (SCAN) analysis document from specialist reports.",
-      "This is an INVENTORY stage — observe and catalog, do NOT propose fixes or modernization plans.",
-      "Produce clean, well-structured markdown that a stakeholder can read in 5-10 minutes.",
+      "You are composing ANALYSIS sections for a Stage 1 (SCAN) codebase assessment.",
+      "The DATA sections (file counts, language breakdown, directory structure) are ALREADY generated with exact numbers. You do NOT produce those.",
       "",
-      "CRITICAL RULES:",
-      "1. CONSOLIDATE — never concatenate. Your output must be SHORTER than the sum of inputs.",
-      "2. Each file, technology, and finding appears in exactly ONE table row. No duplicates.",
-      "3. If two specialists mention the same thing, merge into one entry.",
-      "4. Use TABLES for data. One Mermaid diagram max per section.",
-      "5. Keep findings tables to top 10 items max, prioritized by severity.",
-      `6. HARD LIMIT: ${wordLimit} words total. Count before finalizing. If over, cut.`,
-      "7. Every finding must cite file:line evidence. No generic advice. No remediation steps.",
-      "8. Skip sections that have no data (e.g., no data-layer subtask ran → omit Data Layer section).",
-      "9. Do NOT reproduce specialist reports verbatim — synthesize.",
+      "CRITICAL RULES ABOUT DATA ACCURACY:",
+      "1. The Technology Stack section (dependency names + versions) is ALREADY generated programmatically from config files. Do NOT produce a '## Technology Stack' section — it will be merged in automatically.",
+      "2. When referencing versions, line counts, or file counts anywhere (Executive Summary, Legacy Patterns, etc.), use ONLY values from the VERIFIED PROGRAMMATIC DATA block. NEVER substitute training-data guesses.",
+      "3. If a technology is NOT listed in the verified data, do NOT mention it with a version number. Only reference technologies you can verify from specialist report citations.",
+      "4. For line counts (e.g. 'god class with X lines'), use ONLY verified largest-files data. NEVER estimate.",
+      "",
+      "Produce ONLY these analysis sections (in this exact order):",
+      "",
+      "## Executive Summary",
+      "200-400 words: system identity, purpose, users, current state, top 5 modernization concerns with severity.",
+      "Reference versions from VERIFIED DATA only.",
+      "",
+      "## Architecture",
+      "- System type (monolith/microservices) with evidence",
+      "- COMPLETE component inventory TABLE — list EVERY controller, service, model, middleware, job, event with path:",
+      "  | Component | Path | Type | Purpose |",
+      "- Describe the architecture layers and how they connect (DO NOT generate Mermaid diagrams in SCAN stage)",
+      "",
+      "## Data Layer",
+      "- Storage systems with config locations",
+      "- List key entities and their relationships",
+      "- Migration count and date range (count actual migration files, don't estimate)",
+      "",
+      "## Integration Points (REQUIRED — do NOT skip)",
+      "TABLE of every external service, API, queue, webhook, email, payment, auth provider used by this codebase:",
+      "| Integration | Type | Protocol | Direction | Config Location |",
+      "Even if there are few integrations, you MUST include this section with whatever you find (email, cache, queue, file storage, OAuth, etc.).",
+      "",
+      "## Legacy Patterns & Technical Debt",
+      "- Design patterns found with file examples",
+      "- Anti-patterns with file:line citations",
+      "- Dead code indicators",
+      "",
+      "## Security Posture",
+      "- Auth method and implementation",
+      "- Security findings TABLE:",
+      "  | Finding | Severity | File:Line | Category |",
+      "- ONLY report findings where you can cite a SPECIFIC file path that EXISTS.",
+      "- Do NOT generalize locations (e.g. 'across multiple files'). Each finding needs ONE specific file:line.",
+      "",
+      "## Key Risks & Blockers",
+      "| Risk | Severity | Category | Evidence (file:line) | Migration Impact |",
+      "",
+      "## Component Dependency Graph (REQUIRED — do NOT skip)",
+      "Describe how the major component groups depend on each other. Use a text table:",
+      "| Source Component | Depends On | Relationship | Evidence |",
+      "Example: Controllers → Repositories → Models → Database. Show the actual dependency directions found in this codebase.",
+      "",
+      "## Readiness for Stage 2 (DECODE)",
+      "Ready/Conditional/Not Ready with justification, prerequisites, focus areas.",
+      "",
+      "RULES:",
+      "- Do NOT produce a '## Technology Stack' section — it is generated programmatically",
+      "- Do NOT include Mermaid diagrams in SCAN stage",
+      "- EVERY finding must cite file:line",
+      "- Use | table | syntax for structured data",
+      "- Component inventory must be EXHAUSTIVE — list every individual file, not categories",
+      `- Target: ${wordLimit} words. COMPLETENESS over brevity.`,
+      "- NEVER override verified programmatic data with your own estimates or training data",
+      "- ALL sections listed above are REQUIRED. Do NOT skip any section. If you have limited data for a section, still include it with whatever you found.",
     ].join("\n"),
-    userPrompt: prompt,
+    userPrompt: groundTruthBlock + "\n\n" + prompt,
     onDelta: opts.onDelta,
     signal: opts.signal,
   });
+
+  // ════════════════════════════════════════════════════════════════
+  // STEP 3: MERGE — programmatic data + LLM analysis
+  // The final output has EXACT data sections that can't be wrong,
+  // followed by LLM analysis sections that add judgment.
+  // ════════════════════════════════════════════════════════════════
+
+  // Strip any LLM-generated Technology Stack section — it's programmatic only.
+  // This prevents hallucinated versions from appearing even if the LLM ignores instructions.
+  let cleanedLlmOutput = llmOutput;
+  const techStackRegex = /\n## Technology Stack[\s\S]*?(?=\n## |$)/;
+  if (techStackRegex.test(cleanedLlmOutput)) {
+    cleanedLlmOutput = cleanedLlmOutput.replace(techStackRegex, '');
+  }
+
+  // Also strip any "## Codebase Overview" that duplicates programmatic inventory
+  const codebaseOverviewRegex = /\n## Codebase Overview[\s\S]*?(?=\n## |$)/;
+  if (codebaseOverviewRegex.test(cleanedLlmOutput)) {
+    cleanedLlmOutput = cleanedLlmOutput.replace(codebaseOverviewRegex, '');
+  }
+
+  // Strip Mermaid code blocks from SCAN output — diagrams are generated in later stages
+  cleanedLlmOutput = cleanedLlmOutput.replace(/```mermaid[\s\S]*?```/g, '');
+
+  // Find where to insert data sections (after Executive Summary, before Architecture)
+  const archIdx = cleanedLlmOutput.indexOf("\n## Architecture");
+  const dataIdx = cleanedLlmOutput.indexOf("\n## Data Layer");
+  const insertPoint = archIdx > 0 ? archIdx : dataIdx > 0 ? dataIdx : -1;
+
+  if (insertPoint > 0) {
+    return cleanedLlmOutput.slice(0, insertPoint) + "\n\n" + programmaticContent + "\n" + cleanedLlmOutput.slice(insertPoint);
+  }
+
+  // Fallback: prepend data sections after a title
+  return "# Stage 1: SCAN — Codebase Analysis\n\n" + programmaticContent + "\n\n" + cleanedLlmOutput;
 }
 
 // ─── REFINEMENT ─────────────────────────────────────────────────
