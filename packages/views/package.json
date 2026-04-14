@@ -1,0 +1,23 @@
+{
+  "name": "@revamp/views",
+  "version": "1.0.0",
+  "description": "Shared business components — zero next/*, zero react-router, uses NavigationAdapter for routing",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./pipeline/*": "./src/pipeline/*.tsx"
+  },
+  "dependencies": {
+    "@revamp/core": "workspace:*",
+    "@revamp/shared-types": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "@tanstack/react-query": ">=5"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
