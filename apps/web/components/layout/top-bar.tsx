@@ -4,10 +4,12 @@ import { memo } from 'react';
 import { Search } from 'lucide-react';
 import { Button } from '@revamp/ui/components/button';
 import { useAuthStore } from '@revamp/core/stores/auth-store';
+import { useWSConnected } from '@revamp/core/hooks/use-ws';
 import { NotificationBell } from '@/components/layout/notification-bell';
 
 export const TopBar = memo(function TopBar() {
   const user = useAuthStore((s) => s.user);
+  const wsConnected = useWSConnected();
 
   return (
     <header className="h-14 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 flex items-center justify-between px-4 lg:px-6 shrink-0">
@@ -18,8 +20,12 @@ export const TopBar = memo(function TopBar() {
         </h2>
       </div>
 
-      {/* Right: Search + Notifications */}
+      {/* Right: Search + Notifications + WS indicator */}
       <div className="flex items-center gap-1 sm:gap-2">
+        <span
+          className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-red-500 animate-pulse'}`}
+          title={wsConnected ? 'Connected' : 'Disconnected — reconnecting...'}
+        />
         <Button
           variant="ghost"
           size="sm"
