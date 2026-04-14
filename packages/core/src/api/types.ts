@@ -38,11 +38,11 @@ export function setApiClient(client: ApiClient) {
 
 // No-op client for SSR — returns empty data, never throws
 const SSR_NOOP_CLIENT: ApiClient = {
-  get: async () => ({ data: null, status: 200 }),
-  post: async () => ({ data: null, status: 200 }),
-  put: async () => ({ data: null, status: 200 }),
-  patch: async () => ({ data: null, status: 200 }),
-  delete: async () => ({ data: null, status: 200 }),
+  get: async () => ({ data: null as any, status: 200 }),
+  post: async () => ({ data: null as any, status: 200 }),
+  put: async () => ({ data: null as any, status: 200 }),
+  patch: async () => ({ data: null as any, status: 200 }),
+  delete: async () => ({ data: null as any, status: 200 }),
 };
 
 export function getApiClient(): ApiClient {

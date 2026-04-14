@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils';
 import { Card, CardHeader, CardTitle, CardContent } from '@revamp/ui/components/card';
 import { Badge } from '@revamp/ui/components/badge';
 import { type AgentEvent, type AgentEventType } from '@revamp/core';
+import { useAgentEvents } from '@revamp/core/hooks/use-agent-events';
 import {
   Activity,
   CheckCircle2,

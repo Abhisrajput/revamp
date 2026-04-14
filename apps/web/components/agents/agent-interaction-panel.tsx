@@ -22,11 +22,8 @@ import {
   useRejectEscalation,
   useCreateSubtask,
 } from '@revamp/core';
-import {
-  useAgentEvents,
-  type AgentEvent,
-  type AgentEventType,
-} from '@revamp/core';
+import { useAgentEvents } from '@revamp/core/hooks/use-agent-events';
+import { type AgentEvent, type AgentEventType } from '@revamp/core';
 import {
   X,
   Brain,

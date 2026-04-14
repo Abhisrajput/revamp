@@ -17,6 +17,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { type AgentEvent, type AgentEventType } from '@revamp/core';
+import { useAgentEvents } from '@revamp/core/hooks/use-agent-events';
 import {
   CheckCircle2,
   XCircle,

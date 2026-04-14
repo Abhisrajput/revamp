@@ -16,7 +16,7 @@ export const apiClient = axios.create({
 apiClient.interceptors.request.use((config) => {
   if (typeof window === 'undefined') return config;
   try {
-    const { useAuthStore } = require('@revamp/core');
+    const { useAuthStore } = require('@revamp/core/stores/auth-store');
     const token = useAuthStore.getState().token;
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
