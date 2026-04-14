@@ -158,12 +158,18 @@ export default function PipelinePage() {
         if (gateStatus === 'approved' && stages[i].approvalStatus !== 'approved') {
           updates.approvalStatus = 'approved';
           updates.status = 'approved';
-        } else if (dbStatus === 'awaiting_approval' && stages[i].approvalStatus !== 'pending') {
-          updates.approvalStatus = 'pending';
-          // Use the DB timestamp (when status changed to awaiting_approval) so the
-          // auto-approval timer doesn't reset on page refresh. Only fall back to now()
-          // if no DB timestamp exists (shouldn't happen in practice).
-          updates.pendingApprovalSince = dbEntry.updatedAt || stages[i].pendingApprovalSince || new Date().toISOString();
+        } else if (dbStatus === 'awaiting_approval') {
+          if (stages[i].approvalStatus !== 'pending') {
+            updates.approvalStatus = 'pending';
+          }
+          // Use the approval gate's created_at timestamp (when the gate was created)
+          // so the auto-approval timer doesn't reset on page refresh.
+          const gate = gates.find((g: any) => g.stage_name === stages[i].name && g.status === 'pending');
+          const gateCreatedAt = (gate as any)?.created_at;
+          const approvalTimestamp = gateCreatedAt || dbEntry.updatedAt || stages[i].pendingApprovalSince;
+          if (approvalTimestamp && stages[i].pendingApprovalSince !== approvalTimestamp) {
+            updates.pendingApprovalSince = approvalTimestamp;
+          }
         }
 
         // Confidence score

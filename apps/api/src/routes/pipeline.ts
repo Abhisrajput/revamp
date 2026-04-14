@@ -542,6 +542,8 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           stage_name: g.stage_name,
           status: g.status,
           required_role: g.required_role,
+          created_at: g.created_at,
+          approved_at: g.approved_at,
         })),
       });
     },
