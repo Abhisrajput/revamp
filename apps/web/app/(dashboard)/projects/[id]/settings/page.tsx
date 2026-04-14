@@ -176,17 +176,17 @@ export default function ProjectSettingsPage() {
     if (!project) return;
     const settings = (project.settings ?? {}) as Record<string, unknown>;
 
-    const llmConfig = settings.llmModels || {};
+    const llmConfig = (settings.llmModels || {}) as Record<string, any>;
     if (llmConfig.defaultExecution) setDefaultExecutionModel(llmConfig.defaultExecution);
     if (llmConfig.defaultEvaluator) setDefaultEvaluatorModel(llmConfig.defaultEvaluator);
 
-    const savedProviders = settings.llmProviders || [];
-    const savedStageConfigs = settings.stageLlmConfigs || [];
+    const savedProviders = (settings.llmProviders || []) as any[];
+    const savedStageConfigs = (settings.stageLlmConfigs || []) as any[];
     setLlmProviders(savedProviders);
     setStageLlmConfigs(savedStageConfigs);
     setProvidersDirty(false);
 
-    const vw = settings.validationWeights || {};
+    const vw = (settings.validationWeights || {}) as Record<string, number>;
     setValidationWeights({
       deterministic: vw.deterministic ?? 35,
       contract: vw.contract ?? 30,
@@ -196,7 +196,7 @@ export default function ProjectSettingsPage() {
 
     setSelectedTemplateId(project.prompt_template_id || null);
 
-    const am = settings.approvalMatrix || {};
+    const am = (settings.approvalMatrix || {}) as Record<string, string>;
     setApprovalMatrix({
       BLUEPRINT: am.BLUEPRINT || 'architect',
       SPEC_LOCK: am.SPEC_LOCK || 'architect',
@@ -208,10 +208,10 @@ export default function ProjectSettingsPage() {
     setGeneralForm({
       name: project.name || '',
       description: project.description || '',
-      confidenceThreshold: settings.confidenceThreshold ?? 75,
-      maxTokens: settings.maxTokens ?? 16384,
-      autoApprovalEnabled: settings.autoApprovalEnabled ?? false,
-      autoApprovalTimeoutHours: settings.autoApprovalTimeoutHours ?? 3,
+      confidenceThreshold: (settings.confidenceThreshold as number) ?? 75,
+      maxTokens: (settings.maxTokens as number) ?? 16384,
+      autoApprovalEnabled: (settings.autoApprovalEnabled as boolean) ?? false,
+      autoApprovalTimeoutHours: (settings.autoApprovalTimeoutHours as number) ?? 3,
     });
     setCodebaseForm({
       target_stack: project.target_stack || '',

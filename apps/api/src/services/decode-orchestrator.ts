@@ -678,7 +678,7 @@ export async function orchestrateDecodeStage(
             metadata: { content: composedOutput, output: composedOutput },
           }).onConflictDoUpdate({
             target: [stageArtifacts.pipeline_run_id, stageArtifacts.stage_name, stageArtifacts.artifact_type],
-            set: { file_size: composedOutput.length, metadata: { content: composedOutput, output: composedOutput }, updated_at: new Date() },
+            set: { file_size: composedOutput.length, metadata: { content: composedOutput, output: composedOutput } },
           });
         } catch {
           // Non-fatal — original artifact still exists

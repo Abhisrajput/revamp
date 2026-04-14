@@ -458,17 +458,17 @@ export default function ProjectDetailPage() {
                 {project.members?.length || 0} member{(project.members?.length || 0) !== 1 ? 's' : ''}
               </DetailRow>
 
-              {settings.confidenceThreshold && (
+              {settings.confidenceThreshold ? (
                 <DetailRow label="Confidence" icon={<Shield className="w-3.5 h-3.5" />}>
-                  {settings.confidenceThreshold}%
+                  {String(settings.confidenceThreshold)}%
                 </DetailRow>
-              )}
+              ) : null}
 
-              {settings.bddFramework && (
+              {settings.bddFramework ? (
                 <DetailRow label="BDD Framework" icon={<Code2 className="w-3.5 h-3.5" />}>
-                  <span className="capitalize">{settings.bddFramework}</span>
+                  <span className="capitalize">{String(settings.bddFramework)}</span>
                 </DetailRow>
-              )}
+              ) : null}
 
               {hasDocs && (
                 <DetailRow label="Documents" icon={<FileText className="w-3.5 h-3.5" />}>

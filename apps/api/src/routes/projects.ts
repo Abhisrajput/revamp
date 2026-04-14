@@ -1320,7 +1320,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
             },
           });
           if (!res.ok) throw new Error(`Anthropic API error: ${res.status}`);
-          const data = await res.json();
+          const data: any = await res.json();
           const models = (data.data || []).map((m: any) => m.id).sort();
           return reply.send({ models, source: "anthropic-api" });
         }
@@ -1331,7 +1331,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
             headers: { "Authorization": `Bearer ${api_key}` },
           });
           if (!res.ok) throw new Error(`OpenAI API error: ${res.status}`);
-          const data = await res.json();
+          const data: any = await res.json();
           const models = (data.data || [])
             .map((m: any) => m.id)
             .filter((id: string) => id.includes('gpt') || id.includes('o1') || id.includes('o3'))
@@ -1342,7 +1342,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
         if (provider_type === "gemini" && api_key) {
           const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${api_key}`);
           if (!res.ok) throw new Error(`Gemini API error: ${res.status}`);
-          const data = await res.json();
+          const data: any = await res.json();
           const models = (data.models || [])
             .map((m: any) => (m.name || '').replace('models/', ''))
             .filter((id: string) => id.includes('gemini'))
@@ -1355,7 +1355,7 @@ export async function projectRoutes(fastify: FastifyInstance) {
             headers: { "Authorization": `Bearer ${api_key}` },
           });
           if (!res.ok) throw new Error(`xAI API error: ${res.status}`);
-          const data = await res.json();
+          const data: any = await res.json();
           const models = (data.data || []).map((m: any) => m.id).sort();
           return reply.send({ models, source: "xai-api" });
         }

@@ -882,15 +882,15 @@ function AuditSection() {
                         <div><span className="text-slate-400">Project:</span> <span className="ml-1 text-slate-600 dark:text-slate-300 font-medium">{log.project_name}</span></div>
                       )}
                       <div><span className="text-slate-400">IP Address:</span> <span className="ml-1 font-mono text-slate-600 dark:text-slate-300">{log.ip_address || '-'}</span></div>
-                      {log.changes?.stageName && (
-                        <div><span className="text-slate-400">Stage:</span> <span className="ml-1 text-slate-600 dark:text-slate-300 font-medium">{String(log.changes.stageName)}</span></div>
-                      )}
-                      {log.changes?.model && (
-                        <div><span className="text-slate-400">Model:</span> <span className="ml-1 font-mono text-slate-600 dark:text-slate-300">{String(log.changes.model)}</span></div>
-                      )}
-                      {log.changes?.comment && (
-                        <div className="col-span-2"><span className="text-slate-400">Comment:</span> <span className="ml-1 text-slate-600 dark:text-slate-300 italic">"{String(log.changes.comment)}"</span></div>
-                      )}
+                      {(log.changes as any)?.stageName ? (
+                        <div><span className="text-slate-400">Stage:</span> <span className="ml-1 text-slate-600 dark:text-slate-300 font-medium">{String((log.changes as any).stageName)}</span></div>
+                      ) : null}
+                      {(log.changes as any)?.model ? (
+                        <div><span className="text-slate-400">Model:</span> <span className="ml-1 font-mono text-slate-600 dark:text-slate-300">{String((log.changes as any).model)}</span></div>
+                      ) : null}
+                      {(log.changes as any)?.comment ? (
+                        <div className="col-span-2"><span className="text-slate-400">Comment:</span> <span className="ml-1 text-slate-600 dark:text-slate-300 italic">"{String((log.changes as any).comment)}"</span></div>
+                      ) : null}
                       {log.user_agent && (
                         <div className="col-span-2"><span className="text-slate-400">Browser:</span> <span className="ml-1 text-slate-500 dark:text-slate-400 text-[11px]">{log.user_agent.replace(/Mozilla\/5\.0\s*/, '').slice(0, 80)}</span></div>
                       )}
