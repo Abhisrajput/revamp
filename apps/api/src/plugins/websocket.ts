@@ -1,40 +1,90 @@
 import { FastifyInstance } from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fp from "fastify-plugin";
+import type { WebSocket } from "@fastify/websocket";
 
-// ─── Per-connection metadata ─────────────────────────────────────
+// ─── Topic Subscription Manager ─────────────────────────────────
 
-// Use a WeakMap to attach metadata to socket instances without extending the type.
-const socketMeta = new WeakMap<object, {
-  userId?: string;
-  organizationId?: string;
-  pipelineRunId?: string;
-}>();
-
-function getMeta(socket: object) {
-  let meta = socketMeta.get(socket);
-  if (!meta) { meta = {}; socketMeta.set(socket, meta); }
-  return meta;
+interface ClientMeta {
+  userId: string;
+  organizationId: string;
+  topics: Set<string>;
 }
 
-// Track pipeline-scoped connections so broadcasts only reach authorized clients.
-const pipelineClients = new Map<string, Set<object>>();
+const clients = new Map<WebSocket, ClientMeta>();
+const topicSubscribers = new Map<string, Set<WebSocket>>();
 
-/**
- * Broadcast a message only to clients subscribed to a specific pipeline run.
- * Falls back to no-op if nobody is listening.
- */
-export function broadcastToPipeline(pipelineRunId: string, message: Record<string, unknown>) {
-  const clients = pipelineClients.get(pipelineRunId);
-  if (!clients) return;
-  const payload = JSON.stringify(message);
-  for (const socket of clients) {
+/** Get all sockets subscribed to a topic */
+export function getTopicSubscribers(topic: string): Set<WebSocket> {
+  return topicSubscribers.get(topic) || new Set();
+}
+
+/** Publish an event to all subscribers of a topic (local instance only) */
+export function publishLocal(topic: string, event: string, data: unknown): void {
+  const subs = topicSubscribers.get(topic);
+  if (!subs || subs.size === 0) return;
+
+  const payload = JSON.stringify({ topic, event, data });
+  for (const socket of subs) {
     try {
-      const ws = socket as any;
-      if (ws.readyState === 1) ws.send(payload);
-    } catch { /* client gone */ }
+      if (socket.readyState === 1) socket.send(payload);
+    } catch {
+      // Dead socket — will be cleaned up on close
+    }
   }
 }
+
+/** Subscribe a socket to a topic */
+function subscribeTopic(socket: WebSocket, topic: string): void {
+  const meta = clients.get(socket);
+  if (!meta) return;
+
+  meta.topics.add(topic);
+  if (!topicSubscribers.has(topic)) {
+    topicSubscribers.set(topic, new Set());
+  }
+  topicSubscribers.get(topic)!.add(socket);
+}
+
+/** Unsubscribe a socket from a topic */
+function unsubscribeTopic(socket: WebSocket, topic: string): void {
+  const meta = clients.get(socket);
+  if (meta) meta.topics.delete(topic);
+
+  const subs = topicSubscribers.get(topic);
+  if (subs) {
+    subs.delete(socket);
+    if (subs.size === 0) topicSubscribers.delete(topic);
+  }
+}
+
+/** Clean up all subscriptions for a socket */
+function cleanupSocket(socket: WebSocket): void {
+  const meta = clients.get(socket);
+  if (!meta) return;
+
+  for (const topic of meta.topics) {
+    const subs = topicSubscribers.get(topic);
+    if (subs) {
+      subs.delete(socket);
+      if (subs.size === 0) topicSubscribers.delete(topic);
+    }
+  }
+  clients.delete(socket);
+}
+
+/** Number of connected WS clients */
+export function connectedWSClientCount(): number {
+  return clients.size;
+}
+
+// ─── Legacy compatibility ───────────────────────────────────────
+// broadcastToPipeline is still called by some routes during migration.
+export function broadcastToPipeline(pipelineRunId: string, message: Record<string, unknown>): void {
+  publishLocal(`pipeline:${pipelineRunId}`, message.type as string || 'update', message);
+}
+
+// ─── Plugin ─────────────────────────────────────────────────────
 
 export const websocketPlugin = fp(async function websocketPlugin(fastify: FastifyInstance) {
   await fastify.register(fastifyWebsocket, {
@@ -45,7 +95,6 @@ export const websocketPlugin = fp(async function websocketPlugin(fastify: Fastif
   });
 
   // Helper: verify JWT from query param or Authorization header.
-  // Returns decoded payload or null.
   async function verifyWsToken(request: { url: string; headers: Record<string, string | string[] | undefined> }): Promise<{
     sub: string;
     email: string;
@@ -58,131 +107,87 @@ export const websocketPlugin = fp(async function websocketPlugin(fastify: Fastif
       if (token) {
         return fastify.jwt.verify(token) as any;
       }
-
       const authHeader = request.headers.authorization;
       if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
         return fastify.jwt.verify(authHeader.slice(7)) as any;
       }
-
       return null;
     } catch {
       return null;
     }
   }
 
-  // General WebSocket endpoint for real-time notifications
+  // ─── Main WebSocket endpoint ────────────────────────────────
   fastify.get("/ws", { websocket: true }, async (socket, request) => {
     const user = await verifyWsToken(request);
     if (!user) {
-      socket.send(JSON.stringify({ type: "error", message: "Invalid or missing token" }));
+      socket.send(JSON.stringify({ event: "error", data: { message: "Invalid or missing token" } }));
       socket.close(4001, "Unauthorized");
       return;
     }
 
-    const meta = getMeta(socket);
-    meta.userId = user.sub;
-    meta.organizationId = user.organization_id;
-
-    socket.on("close", () => {
-      // Connection cleaned up automatically
+    // Register client
+    clients.set(socket, {
+      userId: user.sub,
+      organizationId: user.organization_id,
+      topics: new Set(),
     });
 
-    socket.send(
-      JSON.stringify({
-        type: "connected",
-        timestamp: new Date().toISOString(),
-      })
-    );
+    // Handle incoming messages (subscribe/unsubscribe/pong)
+    socket.on("message", (raw: Buffer | ArrayBuffer | Buffer[]) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+
+        if (msg.action === "subscribe" && typeof msg.topic === "string") {
+          subscribeTopic(socket, msg.topic);
+          socket.send(JSON.stringify({
+            event: "subscribed",
+            data: { topic: msg.topic },
+          }));
+        }
+
+        if (msg.action === "unsubscribe" && typeof msg.topic === "string") {
+          unsubscribeTopic(socket, msg.topic);
+        }
+
+        if (msg.action === "pong") {
+          // Client responded to heartbeat — connection is alive
+        }
+      } catch {
+        // Non-JSON message — ignore
+      }
+    });
+
+    // Cleanup on disconnect
+    socket.on("close", () => {
+      cleanupSocket(socket);
+    });
+
+    // Send connected confirmation
+    socket.send(JSON.stringify({
+      event: "connected",
+      data: { timestamp: new Date().toISOString() },
+    }));
   });
 
-  // WebSocket route for pipeline events — scoped to a specific pipeline run.
-  // Only allows connection if the user owns the pipeline's project.
-  fastify.get("/ws/pipeline/:pipelineRunId", { websocket: true }, async (socket, request) => {
-    const { pipelineRunId } = request.params as { pipelineRunId: string };
-
-    const user = await verifyWsToken(request);
-    if (!user) {
-      socket.send(JSON.stringify({ type: "error", message: "Invalid or missing token" }));
-      socket.close(4001, "Unauthorized");
-      return;
-    }
-
-    // Verify user has access to this pipeline's project
-    try {
-      const { db } = await import("@/db/index.js");
-      const { pipelineRuns, projectMembers, projects } = await import("@/db/schema.js");
-      const { eq, and } = await import("drizzle-orm");
-
-      const run = await db.query.pipelineRuns.findFirst({
-        where: eq(pipelineRuns.id, pipelineRunId),
-        columns: { project_id: true },
-      });
-
-      if (!run) {
-        socket.send(JSON.stringify({ type: "error", message: "Pipeline run not found" }));
-        socket.close(4004, "Not found");
-        return;
+  // ─── Heartbeat ────────────────────────────────────────────
+  const heartbeatInterval = setInterval(() => {
+    const payload = JSON.stringify({ event: "ping" });
+    for (const [socket] of clients) {
+      try {
+        if (socket.readyState === 1) socket.send(payload);
+      } catch {
+        // Will be cleaned up on close event
       }
-
-      // Check project membership (admins bypass)
-      if (user.role !== "admin") {
-        const project = await db.query.projects.findFirst({
-          where: eq(projects.id, run.project_id),
-          columns: { organization_id: true, visibility: true },
-        });
-
-        if (!project) {
-          socket.send(JSON.stringify({ type: "error", message: "Project not found" }));
-          socket.close(4004, "Not found");
-          return;
-        }
-
-        const isSameOrg = project.organization_id === user.organization_id;
-        const isMember = await db.query.projectMembers.findFirst({
-          where: and(
-            eq(projectMembers.project_id, run.project_id),
-            eq(projectMembers.user_id, user.sub),
-          ),
-        });
-
-        if (!isSameOrg && !isMember && project.visibility === "private") {
-          socket.send(JSON.stringify({ type: "error", message: "Access denied" }));
-          socket.close(4003, "Forbidden");
-          return;
-        }
-      }
-    } catch (error) {
-      console.error("WebSocket auth check failed:", error);
-      socket.send(JSON.stringify({ type: "error", message: "Authorization check failed" }));
-      socket.close(4500, "Internal error");
-      return;
     }
+  }, 30_000);
 
-    // Register in scoped client set
-    const meta = getMeta(socket);
-    meta.userId = user.sub;
-    meta.organizationId = user.organization_id;
-    meta.pipelineRunId = pipelineRunId;
-
-    if (!pipelineClients.has(pipelineRunId)) {
-      pipelineClients.set(pipelineRunId, new Set());
+  fastify.addHook("onClose", () => {
+    clearInterval(heartbeatInterval);
+    for (const [socket] of clients) {
+      try { socket.close(); } catch { /* ignore */ }
     }
-    pipelineClients.get(pipelineRunId)!.add(socket);
-
-    socket.on("close", () => {
-      const clients = pipelineClients.get(pipelineRunId);
-      if (clients) {
-        clients.delete(socket);
-        if (clients.size === 0) pipelineClients.delete(pipelineRunId);
-      }
-    });
-
-    socket.send(
-      JSON.stringify({
-        type: "connected",
-        pipelineRunId,
-        timestamp: new Date().toISOString(),
-      })
-    );
+    clients.clear();
+    topicSubscribers.clear();
   });
 });
