@@ -120,7 +120,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
             status: redisHealth.ok ? "ok" : "error",
             latency_ms: redisHealth.latency,
           },
-          llm_orchestrator: {
+          agent_worker: {
             status: orchestratorHealth.ok ? "ok" : "error",
             providers: orchestratorHealth.providers,
           },

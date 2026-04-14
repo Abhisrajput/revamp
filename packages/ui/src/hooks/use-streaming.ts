@@ -1,9 +1,12 @@
 /**
- * Hook for consuming Server-Sent Events (SSE) streams
- * Used to receive real-time updates from the Go orchestrator
+ * Hook for consuming real-time streaming updates over WebSocket.
+ *
+ * Replaces the former SSE (EventSource) implementation — all real-time
+ * pipeline events now flow through the Fastify WebSocket gateway
+ * (`/ws` endpoint) rather than text/event-stream SSE.
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { StreamUpdate } from '@revamp/shared-types/pipeline';
 
 export interface UseStreamingOptions {
@@ -40,8 +43,23 @@ export function useStreaming({
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [data, setData] = useState<StreamUpdate[]>([]);
-  const [eventSource, setEventSource] = useState<EventSource | null>(null);
-  const [retryCount, setRetryCount] = useState(0);
+  const wsRef = useRef<WebSocket | null>(null);
+  const retryCountRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const disconnect = useCallback(() => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.onclose = null; // prevent retry loop on manual close
+      wsRef.current.close();
+      wsRef.current = null;
+      setIsConnected(false);
+      onClose?.();
+    }
+  }, [onClose]);
 
   const connect = useCallback(() => {
     if (isConnected || isConnecting) return;
@@ -50,19 +68,20 @@ export function useStreaming({
     setError(null);
 
     try {
-      const es = new EventSource(url);
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
 
-      es.addEventListener('open', () => {
+      ws.onopen = () => {
         setIsConnected(true);
         setIsConnecting(false);
-        setRetryCount(0);
+        retryCountRef.current = 0;
         setError(null);
         onOpen?.();
-      });
+      };
 
-      es.addEventListener('message', (event: MessageEvent) => {
+      ws.onmessage = (event: MessageEvent) => {
         try {
-          const update: StreamUpdate = JSON.parse(event.data);
+          const update: StreamUpdate = JSON.parse(event.data as string);
           setData((prev) => [...prev, update]);
           onMessage?.(update);
         } catch (err) {
@@ -70,18 +89,22 @@ export function useStreaming({
           setError(parseError);
           onError?.(parseError);
         }
-      });
+      };
 
-      es.addEventListener('error', () => {
-        es.close();
+      ws.onerror = () => {
+        // onerror is always followed by onclose — handle retry there
+        setIsConnecting(false);
+      };
+
+      ws.onclose = () => {
+        wsRef.current = null;
         setIsConnected(false);
         setIsConnecting(false);
 
-        if (retryCount < retryAttempts) {
-          setTimeout(() => {
-            setRetryCount((c) => c + 1);
-            connect();
-          }, retryDelay * Math.pow(2, retryCount)); // Exponential backoff
+        if (retryCountRef.current < retryAttempts) {
+          const delay = retryDelay * Math.pow(2, retryCountRef.current);
+          retryCountRef.current += 1;
+          retryTimerRef.current = setTimeout(() => connect(), delay);
         } else {
           const retryError = new Error(
             `Stream connection failed after ${retryAttempts} attempts`,
@@ -89,25 +112,15 @@ export function useStreaming({
           setError(retryError);
           onError?.(retryError);
         }
-      });
-
-      setEventSource(es);
+      };
     } catch (err) {
       const connectError = new Error(`Failed to establish stream: ${err}`);
       setError(connectError);
       setIsConnecting(false);
       onError?.(connectError);
     }
-  }, [url, isConnected, isConnecting, retryCount, retryAttempts, retryDelay, onMessage, onError, onOpen]);
-
-  const disconnect = useCallback(() => {
-    if (eventSource) {
-      eventSource.close();
-      setEventSource(null);
-      setIsConnected(false);
-      onClose?.();
-    }
-  }, [eventSource, onClose]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url, isConnected, isConnecting, retryAttempts, retryDelay, onMessage, onError, onOpen]);
 
   // Auto-connect on mount
   useEffect(() => {
@@ -118,7 +131,8 @@ export function useStreaming({
     return () => {
       disconnect();
     };
-  }, [autoConnect, connect, disconnect]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoConnect]);
 
   return {
     isConnected,

@@ -30,7 +30,7 @@ interface HealthData {
   services: {
     database: { status: string };
     redis: { status: string; latency_ms?: number };
-    llm_orchestrator: { status: string; providers?: Record<string, string> };
+    agent_worker: { status: string; providers?: Record<string, string> };
     s3_storage: { status: string };
   };
 }

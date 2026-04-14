@@ -17,7 +17,7 @@
     "build:web": "turbo build --filter=@revamp/web",
     "build:api": "turbo build --filter=@revamp/api",
     "build:vscode": "turbo build --filter=@revamp/vscode",
-    "build:llm": "cd services/llm-orchestrator && go build -o bin/llm-orchestrator ./cmd/server",
+    "build:agent": "cd services/agent-worker && go build -o bin/agent-worker ./cmd/server",
     "db:generate": "turbo db:generate --filter=@revamp/api",
     "db:migrate": "turbo db:migrate --filter=@revamp/api",
     "db:studio": "turbo db:studio --filter=@revamp/api",

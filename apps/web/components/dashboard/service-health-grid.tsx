@@ -17,7 +17,7 @@ interface ServiceHealthGridProps {
 const SERVICE_META: Record<string, { label: string; icon: React.ElementType; description: string }> = {
   database: { label: 'PostgreSQL', icon: Database, description: 'Primary data store' },
   redis: { label: 'Redis', icon: Server, description: 'Cache & job queue' },
-  llm_orchestrator: { label: 'LLM Orchestrator', icon: Cpu, description: 'AI model routing' },
+  agent_worker: { label: 'Agent Worker', icon: Cpu, description: 'AI model routing' },
   s3_storage: { label: 'MinIO / S3', icon: HardDrive, description: 'Artifact storage' },
 };
 

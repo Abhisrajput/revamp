@@ -458,7 +458,7 @@ interface ServiceHealthData {
   services: {
     database: { status: string };
     redis: { status: string; latency_ms?: number };
-    llm_orchestrator: { status: string; providers?: Record<string, string> };
+    agent_worker: { status: string; providers?: Record<string, string> };
     s3_storage: { status: string };
   };
 }
@@ -602,7 +602,7 @@ function PerformanceTab() {
                 {[
                   { name: 'PostgreSQL', key: 'database' as const, detail: null },
                   { name: 'Redis', key: 'redis' as const, detail: health.services.redis.latency_ms != null ? `${health.services.redis.latency_ms}ms latency` : null },
-                  { name: 'LLM Orchestrator', key: 'llm_orchestrator' as const, detail: health.services.llm_orchestrator.providers ? Object.keys(health.services.llm_orchestrator.providers).join(', ') : null },
+                  { name: 'Agent Worker', key: 'agent_worker' as const, detail: health.services.agent_worker.providers ? Object.keys(health.services.agent_worker.providers).join(', ') : null },
                   { name: 'S3 Storage', key: 's3_storage' as const, detail: null },
                 ].map((svc) => {
                   const ok = health.services[svc.key]?.status === 'ok';

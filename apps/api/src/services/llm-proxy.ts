@@ -82,15 +82,9 @@ export interface CompletionResponse {
   cached_tokens?: number; // tokens served from cache
 }
 
-export interface SSEEvent {
-  event: "start" | "delta" | "done" | "error";
-  data: string;
-}
-
 export interface LLMProviderConfig {
-  apiKey: string;
   defaultModel: string;
-  evaluatorModel: string; // different model for validation (avoid self-bias)
+  evaluatorModel: string; // different model for validation (avoid self-validation bias)
   timeout: number;
 }
 
@@ -103,7 +97,6 @@ export class LLMProxyService {
 
   constructor(config?: Partial<LLMProviderConfig>) {
     this.config = {
-      apiKey: config?.apiKey || process.env.LLM_ORCHESTRATOR_API_KEY || "",
       defaultModel: config?.defaultModel || process.env.LLM_DEFAULT_MODEL || "",
       evaluatorModel: config?.evaluatorModel || process.env.LLM_EVALUATOR_MODEL || "",
       timeout: config?.timeout || 600000, // 10 min — composition and FORGE code generation need longer for large outputs
