@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@revamp/core": "workspace:*",
-    "@revamp/shared-types": "workspace:*"
+    "@revamp/shared-types": "workspace:*",
+    "@revamp/ui": "workspace:*"
   },
   "peerDependencies": {
     "react": ">=18",

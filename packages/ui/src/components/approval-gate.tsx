@@ -32,7 +32,7 @@ export const ApprovalGateComponent: React.FC<ApprovalGateComponentProps> = ({
   const [action, setAction] = useState<'approve' | 'reject' | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const styles = statusStyles[gate.status];
+  const styles = statusStyles[gate.status.toUpperCase() as keyof typeof statusStyles] || statusStyles.PENDING;
   const progressPercent = (gate.currentApprovals / gate.requiredApprovers) * 100;
 
   const handleAction = async (actionType: 'approve' | 'reject') => {
@@ -129,7 +129,7 @@ export const ApprovalGateComponent: React.FC<ApprovalGateComponentProps> = ({
       </div>
 
       {/* Actions */}
-      {gate.status === 'PENDING' && (
+      {gate.status.toUpperCase() === 'PENDING' && (
         <div className="flex gap-2 mt-4">
           <button
             onClick={() => handleAction('approve')}
