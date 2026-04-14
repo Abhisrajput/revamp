@@ -1105,6 +1105,12 @@ export default function PipelinePage() {
               pipelineRunId={currentPipelineRunId ?? undefined}
               confidenceThreshold={(project?.settings as any)?.confidenceThreshold}
               autoApprovalEnabled={(project?.settings as any)?.autoApprovalEnabled}
+              gateCreatedAt={(() => {
+                // Source gate timestamp directly from React Query (survives refresh, never resets)
+                const gates = pipelineStatusData?.approval_gates || [];
+                const gate = gates.find((g: any) => g.stage_name === activeStage?.name && g.status === 'pending');
+                return (gate as any)?.created_at || null;
+              })()}
               autoApprovalTimeoutHours={(project?.settings as any)?.autoApprovalTimeoutHours}
             />
           ) : (

@@ -55,6 +55,8 @@ interface InspectorPanelProps {
   /** Auto-approval settings from project */
   autoApprovalEnabled?: boolean;
   autoApprovalTimeoutHours?: number;
+  /** Approval gate created_at from API — authoritative timestamp for the countdown */
+  gateCreatedAt?: string | null;
   className?: string;
 }
 
@@ -68,6 +70,7 @@ export const InspectorPanel = memo(function InspectorPanel({
   confidenceThreshold,
   autoApprovalEnabled,
   autoApprovalTimeoutHours,
+  gateCreatedAt,
   className,
 }: InspectorPanelProps) {
   // Use individual selectors to avoid full-store re-renders
@@ -252,7 +255,7 @@ export const InspectorPanel = memo(function InspectorPanel({
                 approvalHistory={stage.approvalHistory}
                 autoApprovalEnabled={autoApprovalEnabled}
                 autoApprovalTimeoutHours={autoApprovalTimeoutHours}
-                pendingApprovalSince={stage.pendingApprovalSince}
+                pendingApprovalSince={gateCreatedAt || stage.pendingApprovalSince}
               />
             ) : stage.status === 'failed' ? (
               <div className="flex flex-col items-center justify-center py-6 text-slate-400 dark:text-slate-500">
