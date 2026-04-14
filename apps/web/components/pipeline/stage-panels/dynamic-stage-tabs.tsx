@@ -8,7 +8,7 @@ import {
   FlaskConical, Map as MapIcon, Maximize2,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { parseMarkdownSections } from '@/lib/utils/markdown-sections';
+import { parseMarkdownSections } from '@revamp/core/utils/markdown-sections';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { MermaidDiagram } from '@/components/pipeline/mermaid-diagram';
 import { RefinableMarkdown } from '@/components/pipeline/refinable-markdown';

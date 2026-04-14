@@ -26,7 +26,7 @@ import { usePipelineConfigStore } from '@revamp/core/stores/pipeline-config-stor
 import { usePipelineActivityStore } from '@revamp/core/stores/pipeline-activity-store';
 import { canExecuteStage, getStageBlockReason } from '@revamp/core';
 import { PIPELINE_STAGE_ORDER } from '@revamp/shared-types';
-import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
+import { useUIPreferencesStore } from '@revamp/core/stores/ui-preferences-store';
 import { useAuthStore } from '@revamp/core/stores/auth-store';
 import { useStageExecution } from '@revamp/core/hooks/use-stage-execution';
 import { usePipelineShortcuts } from '@revamp/core/hooks/use-keyboard-shortcuts';

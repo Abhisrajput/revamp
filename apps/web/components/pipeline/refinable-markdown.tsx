@@ -11,7 +11,7 @@ import {
   getPreSectionText,
   getPostSectionText,
   type MarkdownSection,
-} from '@/lib/utils/markdown-sections';
+} from '@revamp/core/utils/markdown-sections';
 import { StageOutput } from './stage-output';
 
 // --- Types ---

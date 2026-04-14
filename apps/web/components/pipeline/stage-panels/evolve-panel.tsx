@@ -17,7 +17,7 @@ import { usePipelineActivityStore } from '@revamp/core/stores/pipeline-activity-
 import { useStagePanel } from '@revamp/core/hooks/use-stage-panel';
 import { useEvolveChat } from '@revamp/core/hooks/use-evolve-chat';
 import { cn } from '@/lib/utils';
-import { inferLanguage, buildFileTree } from '@/lib/utils/file-tree';
+import { inferLanguage, buildFileTree } from '@revamp/core/utils/file-tree';
 import { DynamicStageTabs } from './dynamic-stage-tabs';
 import { getStageTabConfig } from './stage-tab-configs';
 import type { StageTabConfig, SpecialTab } from './dynamic-stage-tabs';

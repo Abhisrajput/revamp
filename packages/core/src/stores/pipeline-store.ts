@@ -111,14 +111,6 @@ export const usePipelineStore = create<PipelineStoreState>()(
       set((state) => {
         const stages = [...state.stages];
         stages[index] = { ...stages[index], output };
-
-        // Cache in IndexedDB (async, non-blocking)
-        if (output && state.currentPipelineRunId && typeof window !== 'undefined') {
-          import('@/lib/pipeline-cache').then(({ setCachedOutput }) => {
-            setCachedOutput(state.currentPipelineRunId!, stages[index].name, output);
-          }).catch(() => {});
-        }
-
         return { stages };
       });
     },

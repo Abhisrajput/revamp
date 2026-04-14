@@ -20,7 +20,7 @@ import { apiClient } from '@/lib/api-client';
 import type { StageState } from '@revamp/core';
 // Pipeline store removed — data flows via props from pipeline page
 import { shouldShowApprovalGate } from '@revamp/core';
-import { useUIPreferencesStore, type InspectorTab } from '@/lib/stores/ui-preferences-store';
+import { useUIPreferencesStore, type InspectorTab } from '@revamp/core/stores/ui-preferences-store';
 import { useStageTrajectory } from '@revamp/core';
 import type { RetrievalStep } from '@revamp/core';
 

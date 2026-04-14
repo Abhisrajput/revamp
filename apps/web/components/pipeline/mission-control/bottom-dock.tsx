@@ -19,7 +19,7 @@ import { AuditLog } from './audit-log';
 import {
   useUIPreferencesStore,
   type BottomDockTab,
-} from '@/lib/stores/ui-preferences-store';
+} from '@revamp/core/stores/ui-preferences-store';
 import type { LogEntry } from '@/components/pipeline/terminal-log';
 import type { ToolCall } from '@/components/pipeline/agent-activity';
 

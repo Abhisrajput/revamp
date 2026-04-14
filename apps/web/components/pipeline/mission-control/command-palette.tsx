@@ -31,7 +31,7 @@ import {
   RefreshCcw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
+import { useUIPreferencesStore } from '@revamp/core/stores/ui-preferences-store';
 
 // ─── Types ──────────────────────────────────────────────────────
 

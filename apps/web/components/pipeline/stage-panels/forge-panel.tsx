@@ -20,11 +20,11 @@ import { CodeEditor } from '@/components/editor/code-editor';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { usePipelineActivityStore } from '@revamp/core/stores/pipeline-activity-store';
 import { useStagePanel } from '@revamp/core/hooks/use-stage-panel';
-import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
+import { useUIPreferencesStore } from '@revamp/core/stores/ui-preferences-store';
 import { useAuthStore } from '@revamp/core/stores/auth-store';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
-import { inferLanguage, buildFileTree } from '@/lib/utils/file-tree';
+import { inferLanguage, buildFileTree } from '@revamp/core/utils/file-tree';
 import type { StagePanelProps } from './types';
 
 export default function ForgePanel({

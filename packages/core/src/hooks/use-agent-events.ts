@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuthStore } from '../stores/auth-store';
+import { getApiClient } from '../api/types';
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787';
+function getBaseUrl() { return (getApiClient() as any).getBaseUrl?.() || 'http://localhost:8787'; }
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -83,7 +84,7 @@ export function useAgentEvents(
     const path = agentId
       ? `/agents/${agentId}/events`
       : '/agents/events';
-    const url = `${BASE_URL}${path}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    const url = `${getBaseUrl()}${path}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
 
     const es = new EventSource(url);
     esRef.current = es;

@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { useAuthStore } from '../stores/auth-store';
+import { getApiClient } from '../api/types';
 
 export interface ChatMessage {
   id: string;
@@ -61,7 +62,7 @@ export function useEvolveChat(pipelineRunId: string | null): UseEvolveChatReturn
 
       try {
         const token = useAuthStore.getState().token;
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787';
+        const apiUrl = (getApiClient() as any).getBaseUrl?.() || 'http://localhost:8787';
 
         const response = await fetch(`${apiUrl}/pipeline/${pipelineRunId}/chat`, {
           method: 'POST',

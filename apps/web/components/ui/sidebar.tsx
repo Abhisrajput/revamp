@@ -34,7 +34,7 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '@revamp/core/stores/auth-store';
 import { useAuth } from '@revamp/core/hooks/use-auth';
-import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
+import { useUIPreferencesStore } from '@revamp/core/stores/ui-preferences-store';
 import { usePipelineStore } from '@revamp/core/stores/pipeline-store';
 import type { StageState } from '@revamp/core';
 import { cn } from '@/lib/utils';
