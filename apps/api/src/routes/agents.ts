@@ -3,7 +3,7 @@
  *
  * Endpoints:
  *   POST   /agents/execute       → Simple one-shot agent (legacy)
- *   POST   /agents/run           → Full agent loop with tool execution (SSE)
+ *   POST   /agents/run           → Full agent loop with tool execution (WS streaming)
  *   POST   /agents/workspace     → Initialize workspace for a project
  *   GET    /agents/tools         → List available tools for a stage
  *   GET    /agents/health        → Agent system health check
@@ -14,7 +14,7 @@
  *   3. For each tool_use, the sandbox executes the tool safely
  *   4. Tool results are fed back to the LLM
  *   5. Repeat until LLM produces a final text response (no more tool calls)
- *   6. All events are streamed via SSE to the client
+ *   6. Events are published to WebSocket topics via ws-publisher
  */
 
 import { FastifyInstance } from "fastify";
@@ -36,6 +36,7 @@ import {
   updatePersona,
   softDeletePersona,
 } from "@/services/agent-department.js";
+import { publish } from "@/services/ws-publisher.js";
 import {
   inspectShellCommand,
   inspectFilePath,
@@ -215,11 +216,9 @@ export async function agentRoutes(fastify: FastifyInstance) {
 
       try {
         if (stream) {
-          reply.raw.writeHead(200, {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
-          });
+          // Stream via WS publisher — clients subscribe to topic
+          const topicId = crypto.randomUUID();
+          const topic = `agent:execute:${topicId}`;
 
           const result = await llmProxyService.streamCompletion(
             {
@@ -232,12 +231,22 @@ export async function agentRoutes(fastify: FastifyInstance) {
               ],
             },
             (text: string) => {
-              reply.raw.write(`event: delta\ndata: ${JSON.stringify({ text })}\n\n`);
+              publish(topic, "delta", { text });
             },
           );
 
-          reply.raw.write(`event: done\ndata: ${JSON.stringify({ model: result.model })}\n\n`);
-          reply.raw.end();
+          publish(topic, "done", { model: result.model });
+
+          return reply.send({
+            agent_type,
+            output: result.content,
+            model: result.model,
+            stream_topic: topic,
+            tokens: {
+              input: result.input_tokens,
+              output: result.output_tokens,
+            },
+          });
         } else {
           const result = await llmProxyService.complete({
             messages: [
@@ -279,9 +288,9 @@ export async function agentRoutes(fastify: FastifyInstance) {
   );
 
   /**
-   * POST /agents/run — Full agent loop with tool execution (SSE streaming).
+   * POST /agents/run — Full agent loop with tool execution.
    *
-   * SSE Events:
+   * Events published to WebSocket topic `agent:run:<project_id>:<stage_index>`:
    *   event: start          → { iteration: 0 }
    *   event: thinking       → { iteration, message }
    *   event: text_delta     → { text } (accumulated LLM text output)
@@ -290,16 +299,18 @@ export async function agentRoutes(fastify: FastifyInstance) {
    *   event: iteration      → { iteration, tool_calls_count }
    *   event: done           → { output, iterations, model, tokens }
    *   event: error          → { message }
+   *
+   * Returns JSON response with final output and stream_topic for WS subscription.
    */
   fastify.post<{ Body: z.infer<typeof RunAgentSchema> }>(
     "/agents/run",
     {
       schema: buildRouteSchema({
         tags: ["Agents"],
-        summary: "Full agent loop with tool execution (SSE streaming)",
+        summary: "Full agent loop with tool execution (WebSocket streaming)",
         body: RunAgentSchema,
         response: {
-          200: { type: "string", description: "SSE event stream" },
+          200: { type: "object", properties: { output: { type: "string" }, iterations: { type: "number" }, model: { type: "string" }, tokens: { type: "object" }, stream_topic: { type: "string" } } },
           400: { type: "object", properties: { error: { type: "string" }, details: { type: "array" } } },
           404: { type: "object", properties: { error: { type: "string" } } },
         },
@@ -375,20 +386,11 @@ export async function agentRoutes(fastify: FastifyInstance) {
         content: `## Task — Stage: ${stage_name} (${stage_index}/7)\n\n${prompt}`,
       });
 
-      // SSE response
-      reply.raw.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-      });
+      // WS topic for streaming events to subscribers
+      const streamTopic = `agent:run:${project_id}:${stage_index}`;
 
-      const sendSSE = (event: string, data: unknown) => {
-        try {
-          reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-        } catch {
-          // Client disconnected
-        }
+      const sendEvent = (event: string, data: unknown) => {
+        publish(streamTopic, event, data);
       };
 
       const controller = new AbortController();
@@ -401,18 +403,18 @@ export async function agentRoutes(fastify: FastifyInstance) {
       let usedModel = model || "";
       let finalOutput = "";
 
-      sendSSE("start", { iteration: 0, stage_name, stage_index, tools: toolDefs.length });
+      sendEvent("start", { iteration: 0, stage_name, stage_index, tools: toolDefs.length });
 
       try {
         // Agent loop: call LLM, execute tools, repeat
         while (iteration < maxIter) {
           if (controller.signal.aborted) {
-            sendSSE("error", { message: "Aborted by client" });
+            sendEvent("error", { message: "Aborted by client" });
             break;
           }
 
           iteration++;
-          sendSSE("thinking", { iteration, message: `Iteration ${iteration}/${maxIter}...` });
+          sendEvent("thinking", { iteration, message: `Iteration ${iteration}/${maxIter}...` });
 
           // Call LLM (non-streaming for tool use, we stream the text deltas ourselves)
           let accumulatedText = "";
@@ -435,7 +437,7 @@ export async function agentRoutes(fastify: FastifyInstance) {
             },
             (text: string) => {
               accumulatedText = text;
-              sendSSE("text_delta", { text });
+              sendEvent("text_delta", { text });
             },
             controller.signal,
           );
@@ -456,7 +458,7 @@ export async function agentRoutes(fastify: FastifyInstance) {
           }
 
           // Execute each tool call
-          sendSSE("iteration", { iteration, tool_calls_count: toolCalls.length });
+          sendEvent("iteration", { iteration, tool_calls_count: toolCalls.length });
 
           // Add assistant message to conversation
           messages.push({ role: "assistant", content: llmOutput });
@@ -473,15 +475,15 @@ export async function agentRoutes(fastify: FastifyInstance) {
                 output: "",
                 error: `Tool '${call.name}' is not available in stage ${stage_name} (index ${stage_index}).`,
               };
-              sendSSE("tool_use", { id: call.id, name: call.name, input: call.input });
-              sendSSE("tool_result", result);
+              sendEvent("tool_use", { id: call.id, name: call.name, input: call.input });
+              sendEvent("tool_result", result);
               toolResults.push(
                 `<tool_result tool_use_id="${call.id}">\n<error>${result.error}</error>\n</tool_result>`,
               );
               continue;
             }
 
-            sendSSE("tool_use", { id: call.id, name: call.name, input: call.input });
+            sendEvent("tool_use", { id: call.id, name: call.name, input: call.input });
 
             // Execute in sandbox (async for LSP tools, sync for file/shell)
             const toolResult = await executeTool(workspace, call.name, call.input);
@@ -493,7 +495,7 @@ export async function agentRoutes(fastify: FastifyInstance) {
               output: toolResult.output.slice(0, 10_000), // Cap output for SSE
               error: toolResult.error,
             };
-            sendSSE("tool_result", result);
+            sendEvent("tool_result", result);
 
             // Format result for LLM
             if (toolResult.success) {
@@ -530,7 +532,7 @@ export async function agentRoutes(fastify: FastifyInstance) {
           }
         }
 
-        sendSSE("done", {
+        sendEvent("done", {
           output: finalOutput,
           iterations: iteration,
           model: usedModel,
@@ -539,12 +541,22 @@ export async function agentRoutes(fastify: FastifyInstance) {
             output: totalOutputTokens,
           },
         });
+
+        return reply.send({
+          output: finalOutput,
+          iterations: iteration,
+          model: usedModel,
+          tokens: {
+            input: totalInputTokens,
+            output: totalOutputTokens,
+          },
+          stream_topic: streamTopic,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Agent execution failed";
         console.error("Agent run error:", err);
-        sendSSE("error", { message });
-      } finally {
-        reply.raw.end();
+        sendEvent("error", { message });
+        return reply.status(500).send({ error: message });
       }
     },
   );
@@ -956,108 +968,6 @@ export async function agentRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // ─── SSE: /agents/events — real-time agent event stream ─────────
-  // EventSource can't set headers, so JWT is passed via ?token= query param.
-  // These endpoints register with the agent-events broadcast system so that
-  // events emitted by agent-department.ts flow to SSE clients in real time.
-  fastify.get<{ Querystring: { token?: string } }>(
-    "/agents/events",
-    {
-      schema: buildRouteSchema({
-        tags: ["Agents"],
-        summary: "Real-time agent event stream (SSE)",
-        querystring: z.object({ token: z.string().optional() }),
-        response: {
-          200: { type: "string", description: "SSE event stream" },
-          401: { type: "object", properties: { error: { type: "string" } } },
-        },
-      }),
-    },
-    async (request, reply) => {
-      const token = request.query.token;
-      if (!token) return reply.status(401).send({ error: "Unauthorized" });
-      try {
-        fastify.jwt.verify(token);
-      } catch {
-        return reply.status(401).send({ error: "Unauthorized" });
-      }
-
-      const { addSSEClient, removeSSEClient } = await import("@/services/agent-events.js");
-
-      reply.raw.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "Access-Control-Allow-Origin": "*",
-      });
-      reply.raw.write("data: {\"type\":\"connected\"}\n\n");
-
-      // Register with broadcast system — receives ALL agent events
-      const sseClient = {
-        write: (data: string) => reply.raw.write(data),
-        agentFilter: "",
-      };
-      addSSEClient(sseClient);
-
-      const heartbeat = setInterval(() => {
-        reply.raw.write(": heartbeat\n\n");
-      }, 15000);
-
-      request.raw.on("close", () => {
-        clearInterval(heartbeat);
-        removeSSEClient(sseClient);
-      });
-    }
-  );
-
-  fastify.get<{ Querystring: { token?: string }; Params: { id: string } }>(
-    "/agents/:id/events",
-    {
-      schema: buildRouteSchema({
-        tags: ["Agents"],
-        summary: "Real-time event stream for a specific agent (SSE)",
-        params: z.object({ id: z.string() }),
-        querystring: z.object({ token: z.string().optional() }),
-        response: {
-          200: { type: "string", description: "SSE event stream" },
-          401: { type: "object", properties: { error: { type: "string" } } },
-        },
-      }),
-    },
-    async (request, reply) => {
-      const token = request.query.token;
-      if (!token) return reply.status(401).send({ error: "Unauthorized" });
-      try {
-        fastify.jwt.verify(token);
-      } catch {
-        return reply.status(401).send({ error: "Unauthorized" });
-      }
-
-      const { addSSEClient, removeSSEClient } = await import("@/services/agent-events.js");
-
-      reply.raw.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "Access-Control-Allow-Origin": "*",
-      });
-      reply.raw.write(`data: ${JSON.stringify({ type: "connected", agentId: request.params.id })}\n\n`);
-
-      // Register with broadcast system — only events for this agent
-      const sseClient = {
-        write: (data: string) => reply.raw.write(data),
-        agentFilter: request.params.id,
-      };
-      addSSEClient(sseClient);
-
-      const heartbeat = setInterval(() => {
-        reply.raw.write(": heartbeat\n\n");
-      }, 15000);
-
-      request.raw.on("close", () => {
-        clearInterval(heartbeat);
-        removeSSEClient(sseClient);
-      });
-    }
-  );
+  // Agent events are now delivered via WebSocket (subscribe to topic "agent:events"
+  // or "agent:<agentId>" through the /ws endpoint). The SSE endpoints have been removed.
 }

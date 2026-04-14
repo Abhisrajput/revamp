@@ -10,6 +10,8 @@
  *   3. Per-agent subscriptions allow the frontend to filter noise.
  */
 
+import { publish } from "@/services/ws-publisher.js";
+
 // Use a minimal interface instead of importing 'ws' directly.
 // @fastify/websocket wraps the 'ws' library and provides the socket,
 // but we only need send() and readyState for broadcasting.
@@ -49,28 +51,6 @@ interface TrackedClient {
 
 const clients = new Set<TrackedClient>();
 
-// ─── SSE CLIENT TRACKING ────────────────────────────────────
-
-/** SSE client that receives events via HTTP text/event-stream. */
-export interface SSEClient {
-  /** Write function bound to the response stream. */
-  write: (data: string) => boolean;
-  /** Agent ID filter. Empty string = receive all events. */
-  agentFilter: string;
-}
-
-const sseClients = new Set<SSEClient>();
-
-/** Register an SSE client for agent events. */
-export function addSSEClient(client: SSEClient): void {
-  sseClients.add(client);
-}
-
-/** Remove an SSE client on disconnect. */
-export function removeSSEClient(client: SSEClient): void {
-  sseClients.delete(client);
-}
-
 // ─── PUBLIC API ──────────────────────────────────────────────
 
 /**
@@ -98,55 +78,38 @@ export function unsubscribeFromAgent(client: TrackedClient, agentId: string): vo
   client.subscriptions.delete(agentId);
 }
 
-/** Broadcast an event to ALL connected clients (WebSocket + SSE). */
+/** Broadcast an event to ALL connected clients. */
 export function broadcast(event: AgentEvent): void {
   const payload = JSON.stringify(event);
 
-  // WebSocket clients
+  // WebSocket clients (tracked by /agent-department/events route)
   for (const client of clients) {
     safeSend(client, payload, event.agentId);
   }
 
-  // SSE clients
-  const ssePayload = `data: ${payload}\n\n`;
-  for (const sse of sseClients) {
-    try {
-      if (sse.agentFilter === "" || sse.agentFilter === event.agentId) {
-        sse.write(ssePayload);
-      }
-    } catch {
-      sseClients.delete(sse);
-    }
-  }
+  // WS Publisher (topic-based, for general subscribers)
+  publish("agent:events", event.eventType, event);
+  publish(`agent:${event.agentId}`, event.eventType, event);
 }
 
 /** Broadcast an event only to clients subscribed to a specific agent. */
 export function broadcastToAgent(agentId: string, event: AgentEvent): void {
   const payload = JSON.stringify(event);
 
-  // WebSocket clients
+  // WebSocket clients (tracked by /agent-department/events route)
   for (const client of clients) {
     if (client.subscriptions.has(agentId)) {
       safeSend(client, payload, agentId);
     }
   }
 
-  // SSE clients filtered to this agent
-  const ssePayload = `data: ${payload}\n\n`;
-  for (const sse of sseClients) {
-    try {
-      if (sse.agentFilter === agentId) {
-        sse.write(ssePayload);
-      }
-    } catch {
-      sseClients.delete(sse);
-    }
-  }
+  // WS Publisher (topic-based)
+  publish(`agent:${agentId}`, event.eventType, event);
 }
 
 /** Number of currently connected clients (useful for health checks). */
 export function connectedClientCount(): number {
-  return clients.size + sseClients.size;
+  return clients.size;
 }
 
 // ─── EMIT HELPERS ────────────────────────────────────────────
