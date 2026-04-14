@@ -160,11 +160,10 @@ type SourceTab = 'git' | 'local';
 
 // --- Scan Output Loader (replaces infinite spinner with retry) ---
 
-function ScanOutputLoader({ stageIndex }: { stageIndex: number }) {
+function ScanOutputLoader({ stageIndex, pipelineRunId }: { stageIndex: number; pipelineRunId: string | null }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
-  const pipelineRunId = usePipelineStore((s) => s.currentPipelineRunId);
 
   useEffect(() => {
     if (!pipelineRunId) {
@@ -252,6 +251,7 @@ export default function ScanPanel({
   stageIndex,
   project,
   streamingText,
+  pipelineRunId,
   onExecute,
   isExecuting,
   currentPhase,
@@ -350,7 +350,7 @@ export default function ScanPanel({
 
     // Check preconditions before triggering execution
     const s = usePipelineStore.getState();
-    if (!s.currentPipelineRunId) {
+    if (!pipelineRunId) {
       setSaveError('Pipeline run not initialized. Please reload the page and try again.');
       setIsSaving(false);
       return;
@@ -1023,7 +1023,7 @@ export default function ScanPanel({
               {stage.output ? (
                 <StageOutput output={stage.output} isStreaming={false} />
               ) : wasExecuted ? (
-                <ScanOutputLoader stageIndex={stageIndex} />
+                <ScanOutputLoader stageIndex={stageIndex} pipelineRunId={pipelineRunId} />
               ) : null}
             </>
           )}

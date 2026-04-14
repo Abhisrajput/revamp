@@ -18,7 +18,7 @@ import { ValidationResults } from '@/components/pipeline/validation-results';
 import { ApprovalGate } from '@/components/pipeline/approval-gate';
 import { apiClient } from '@/lib/api-client';
 import type { StageState } from '@/lib/stores/pipeline-types';
-import { usePipelineStore } from '@/lib/stores/pipeline-store';
+// Pipeline store removed — data flows via props from pipeline page
 import { shouldShowApprovalGate } from '@/lib/stores/pipeline-types';
 import { useUIPreferencesStore, type InspectorTab } from '@/lib/stores/ui-preferences-store';
 import { useStageTrajectory } from '@/lib/hooks/use-agents';
@@ -280,7 +280,7 @@ export const InspectorPanel = memo(function InspectorPanel({
             )}
 
             {/* Execution History Timeline */}
-            <ExecutionTimeline stageName={stage.name} />
+            <ExecutionTimeline stageName={stage.name} pipelineRunId={pipelineRunId} />
           </div>
         )}
 
@@ -448,8 +448,7 @@ interface HistoryEntry {
   timestamp: string;
 }
 
-function ExecutionTimeline({ stageName }: { stageName: string }) {
-  const pipelineRunId = usePipelineStore((s) => s.currentPipelineRunId);
+function ExecutionTimeline({ stageName, pipelineRunId }: { stageName: string; pipelineRunId?: string }) {
 
   const { data } = useQuery<{ history: HistoryEntry[] }>({
     queryKey: ['pipeline-history', pipelineRunId],

@@ -11,18 +11,17 @@ import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
-import { usePipelineStore } from '@/lib/stores/pipeline-store';
 import { MermaidDiagram } from '@/components/ui/mermaid-diagram';
 
 // ─── Component ──────────────────────────────────────────────────
 
 interface BreeOutputTabProps {
   stageName: string;
+  pipelineRunId?: string | null;
   className?: string;
 }
 
-export const BreeOutputTab = memo(function BreeOutputTab({ stageName, className }: BreeOutputTabProps) {
-  const pipelineRunId = usePipelineStore((s) => s.currentPipelineRunId);
+export const BreeOutputTab = memo(function BreeOutputTab({ stageName, pipelineRunId, className }: BreeOutputTabProps) {
   const [deepData, setDeepData] = useState<any>(null);
 
   // Load basic BREE data from pipeline artifacts — falls back to SCAN if no stage-specific data

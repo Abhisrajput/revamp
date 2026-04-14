@@ -18,7 +18,6 @@ import { AgentActivity } from '@/components/pipeline/agent-activity';
 import { ConfidenceGauge } from '@/components/pipeline/confidence-gauge';
 import { CodeEditor } from '@/components/editor/code-editor';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
-import { usePipelineStore } from '@/lib/stores/pipeline-store';
 import { usePipelineActivityStore } from '@/lib/stores/pipeline-activity-store';
 import { useStagePanel } from '@/lib/hooks/use-stage-panel';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
@@ -42,7 +41,7 @@ export default function ForgePanel({
   const setGithubSyncOpen = useUIPreferencesStore((s) => s.setGithubSyncOpen);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [activePane, setActivePane] = useState<'code' | 'terminal' | 'agent' | 'traceability'>('code');
-  const currentPipelineRunId = usePipelineStore((s) => s.currentPipelineRunId);
+  const currentPipelineRunId = pipelineRunId;
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const [editorHeight, setEditorHeight] = useState(400);
 

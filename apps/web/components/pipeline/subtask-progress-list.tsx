@@ -1,6 +1,5 @@
 'use client';
 
-import { usePipelineStore } from '@/lib/stores/pipeline-store';
 import type { ScanSubtaskState } from '@/lib/stores/pipeline-types';
 import { CheckCircle2, Circle, Loader2, XCircle, Bot } from 'lucide-react';
 
@@ -40,8 +39,7 @@ function formatDuration(ms: number | undefined): string {
   return `${Math.round(ms / 1000)}s`;
 }
 
-export function SubtaskProgressList() {
-  const subtasks = usePipelineStore((s) => (s as any).scanSubtasks) ?? [];
+export function SubtaskProgressList({ subtasks = [] }: { subtasks?: ScanSubtaskState[] }) {
 
   if (!subtasks || subtasks.length === 0) return null;
 
