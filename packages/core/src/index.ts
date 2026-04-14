@@ -1,20 +1,8 @@
 // @revamp/core — Frontend business logic package
 //
-// This package follows the Multica pattern:
-//   - Zero react-dom imports
-//   - Zero next/* imports
-//   - Zero direct browser API usage (localStorage, window)
-//   - Platform-specific code injected via providers
-//
 // Boundary rules:
-//   ✓ React hooks (useQuery, useState, etc.)
-//   ✓ @tanstack/react-query
-//   ✓ zustand
-//   ✓ @revamp/shared-types
-//   ✗ next/*
-//   ✗ react-dom
-//   ✗ localStorage / sessionStorage / window directly
-//   ✗ process.env
+//   ✓ React hooks, @tanstack/react-query, zustand, @revamp/shared-types
+//   ✗ next/*, react-dom, localStorage, window, process.env
 
 // API
 export { setApiClient, getApiClient } from './api/types';
@@ -23,7 +11,7 @@ export type { ApiClient, ApiResponse, RequestConfig } from './api/types';
 // Query Keys
 export { pipelineKeys, projectKeys, agentKeys } from './hooks/pipeline-keys';
 
-// Types
+// Pipeline API Types
 export type {
   PipelineStatus,
   StageProgressEntry,
@@ -31,3 +19,34 @@ export type {
   SubtaskEntry,
   ValidationResult,
 } from './types/pipeline';
+
+// Stage Types, Constants & Helpers
+export {
+  STAGE_NAMES,
+  STAGE_LABELS,
+  DEFAULT_CONFIDENCE_THRESHOLD,
+  stageRequiresApproval,
+  createDefaultStage,
+  createDefaultStages,
+  canExecuteStage,
+  shouldShowApprovalGate,
+  getStageBlockReason,
+} from './types/stage';
+
+export type {
+  StageName,
+  StageStatus,
+  ApprovalStatus,
+  StageArtifact,
+  StageValidation,
+  ValidationDimensionScore,
+  ValidationFinding,
+  ApprovalHistoryEntry,
+  ScanSubtaskState,
+  StageState,
+  RunUsage,
+  UsageByModel,
+  UsageByStage,
+  ModernizedFile,
+  FeatureFile,
+} from './types/stage';

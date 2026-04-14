@@ -11,6 +11,9 @@
     "./hooks/*": "./src/hooks/*.ts",
     "./api/*": "./src/api/*.ts"
   },
+  "dependencies": {
+    "@revamp/shared-types": "workspace:*"
+  },
   "peerDependencies": {
     "react": ">=18"
   },
