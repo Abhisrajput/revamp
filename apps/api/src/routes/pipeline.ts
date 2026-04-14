@@ -4,7 +4,7 @@
  * Endpoints:
  *   POST   /pipeline/start              → Create pipeline run
  *   GET    /pipeline/:id/status         → Get pipeline status
- *   POST   /pipeline/:id/stage/:stage   → Execute a stage (SSE streaming)
+ *   POST   /pipeline/:id/stage/:stage   → Execute a stage (events via WebSocket)
  *   POST   /pipeline/:id/advance        → Advance to next stage
  *   GET    /pipeline/:id/artifacts      → List all artifacts
  *   GET    /pipeline/:id/artifacts/:stage → Get stage artifacts
@@ -25,6 +25,7 @@ import { PipelineStageName } from "@revamp/shared-types/pipeline";
 import { getStageOrder, classifyError } from "@revamp/core-engine";
 import { pipelineService } from "@/services/pipeline.js";
 import { broadcastToPipeline } from "@/plugins/websocket.js";
+import { publish } from "@/services/ws-publisher.js";
 import { recordRetrievalTrajectory } from "@/services/retrieval-observability.js";
 
 // ─── AUDIT LOG HELPER ───────────────────────────────────────────
@@ -549,12 +550,10 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
   /**
    * POST /pipeline/:pipelineRunId/stage/:stage — Execute a stage
    *
-   * Returns SSE stream for real-time progress.
-   * Events:
-   *   event: phase     → { phase, stageName, stageIndex }
-   *   event: delta     → { text } (incremental LLM text delta)
-   *   event: complete  → { output, validation, duration }
-   *   event: error     → { message }
+   * Returns JSON response. Real-time progress events are pushed to
+   * WebSocket topic 'pipeline:<runId>'.
+   * Events (via WS): phase, delta, trajectory, validation, validation_finding,
+   *   validation_result, complete, error
    */
   fastify.post<{
     Params: { pipelineRunId: string; stage: string };
@@ -566,10 +565,20 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         params: PipelineStageParamsSchema,
         body: ExecuteStageSchema,
         tags: ["Pipeline"],
-        summary: "Execute a pipeline stage (SSE streaming response)",
-        description: "Executes the specified stage and streams progress via Server-Sent Events (text/event-stream). Events: phase, delta, validation, validation_finding, validation_result, complete, error.",
+        summary: "Execute a pipeline stage (events via WebSocket)",
+        description: "Executes the specified stage. Progress events are pushed to WebSocket topic 'pipeline:<runId>'. Subscribe to the topic before calling this endpoint.",
         response: {
-          200: { type: "string", description: "SSE stream (text/event-stream)" },
+          200: {
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              stageName: { type: "string" },
+              output: { type: "string" },
+              validation: { type: "object", additionalProperties: true },
+              duration: { type: "number" },
+            },
+            additionalProperties: true,
+          },
           ...errorResponse,
         },
       }),
@@ -683,57 +692,25 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         return reply.status((lockAcquired as any).code || 409).send({ error: (lockAcquired as any).error });
       }
 
-      // SSE response — must set CORS headers manually since reply.raw bypasses Fastify plugins
-      const origin = request.headers.origin || process.env.CORS_ORIGIN || "http://localhost:3001";
+      // WebSocket topic for real-time event delivery
+      const topic = `pipeline:${pipelineRunId}`;
 
       // Prevent socket timeouts during long LLM calls (matches legacy-bridge pattern)
       request.raw.socket.setTimeout(0);
       request.raw.socket.setKeepAlive(true, 30_000);
 
-      reply.raw.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-        "Access-Control-Allow-Origin": origin,
-        "Access-Control-Allow-Credentials": "true",
-      });
-
-      let closed = false;
       let accumulatedOutput = "";
-      const sendSSE = (eventType: string, data: unknown) => {
-        if (closed) return;
-        try {
-          // Include `type` in the JSON payload — the frontend's raw fetch parser
-          // reads only `data:` lines (skips `event:` lines), so it needs `type`
-          // in the JSON to dispatch correctly via switch(event.type).
-          const payload = typeof data === 'object' && data !== null
-            ? { type: eventType, ...data as Record<string, unknown> }
-            : { type: eventType, data };
-          reply.raw.write(`event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`);
-        } catch {
-          closed = true;
-        }
-      };
-
-      // Keepalive heartbeat every 15s to prevent proxies/browsers closing the connection
-      const keepalive = setInterval(() => {
-        if (closed) { clearInterval(keepalive); return; }
-        try { reply.raw.write(": keepalive\n\n"); } catch { closed = true; }
-      }, 15_000);
 
       const controller = new AbortController();
-      request.raw.on("close", () => { closed = true; clearInterval(keepalive); controller.abort(); });
+      request.raw.on("close", () => { controller.abort(); });
 
       // Stage-level timeout: abort if stage takes longer than 30 minutes.
       // Individual LLM calls have their own timeout (5-10 min via llm-proxy config),
       // but the entire stage (with refinement loops) could exceed that.
       const STAGE_TIMEOUT_MS = 30 * 60 * 1000;
       const stageTimeout = setTimeout(() => {
-        if (!closed) {
-          sendSSE("error", { message: "Stage execution timed out after 30 minutes" });
-          controller.abort();
-        }
+        publish(topic, "error", { message: "Stage execution timed out after 30 minutes" });
+        controller.abort();
       }, STAGE_TIMEOUT_MS);
 
       // Audit: stage execution started
@@ -817,7 +794,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
             maxTokens: maxTokensOverride,
             validationFeedback,
             onEvent: (event: { phase: string; stageName: string; stageIndex: number; data?: unknown; timestamp?: string }) => {
-              sendSSE("phase", {
+              publish(topic, "phase", {
                 phase: event.phase,
                 stageName: event.stageName,
                 stageIndex: event.stageIndex,
@@ -827,7 +804,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
               // Emit dedicated trajectory event for context_retrieval phase
               if (event.phase === "context_retrieval" && event.data) {
                 const d = event.data as Record<string, unknown>;
-                sendSSE("trajectory", {
+                publish(topic, "trajectory", {
                   pipelineRunId,
                   stageName: event.stageName,
                   trajectory: d.trajectory ?? [],
@@ -864,7 +841,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
               });
             },
             onDelta: (text: string) => {
-              sendSSE("delta", { text });
+              publish(topic, "delta", { text });
               accumulatedOutput += text;
             },
             signal: controller.signal,
@@ -873,10 +850,10 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         );
 
         // Safety net: if result.output is empty but we streamed text via onDelta,
-        // use the accumulated SSE text. This handles cases where streamCompletion
+        // use the accumulated delta text. This handles cases where streamCompletion
         // loses the accumulated content (long streams, connection edge cases).
         if (!result.output && accumulatedOutput.length > 20) {
-          console.warn(`[Pipeline] result.output empty but ${accumulatedOutput.length} chars streamed — using accumulated SSE text`);
+          console.warn(`[Pipeline] result.output empty but ${accumulatedOutput.length} chars streamed — using accumulated delta text`);
           result = { ...result, output: accumulatedOutput };
         }
 
@@ -934,15 +911,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           };
         })() : null;
 
-        // Stream individual validation findings before the final result
+        // Publish individual validation findings before the final result
         if (validationPayload && validationPayload.criteria.length > 0) {
-          sendSSE("validation", {
+          publish(topic, "validation", {
             phase: "validating",
             stageName: result.stageName,
             stageIndex: result.stageIndex,
           });
           for (const criterion of validationPayload.criteria) {
-            sendSSE("validation_finding", {
+            publish(topic, "validation_finding", {
               stageName: result.stageName,
               name: criterion.name,
               passed: criterion.passed,
@@ -953,14 +930,14 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           }
         }
 
-        sendSSE("validation_result", validationPayload || {
+        publish(topic, "validation_result", validationPayload || {
           passed: true,
           confidenceScore: 100,
           criteria: [],
           summary: "No validation configured",
         });
 
-        sendSSE("complete", {
+        publish(topic, "complete", {
           stageName: result.stageName,
           stageIndex: result.stageIndex,
           outputLength: result.output.length,
@@ -1000,13 +977,23 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
             duration: result.duration,
           },
         });
+
+        return reply.status(200).send({
+          success: !result.aborted,
+          stageName: result.stageName,
+          output: result.output,
+          validation: validationPayload,
+          duration: result.duration,
+          refinementCount: result.refinementCount,
+          aborted: result.aborted,
+        });
       } catch (err) {
         const rawMessage = err instanceof Error ? err.message : "Unknown error";
         const classified = classifyError(err);
         const userMessage = ERROR_USER_MESSAGES[classified.category] || ERROR_USER_MESSAGES.unknown;
 
-        // Send rich error event to frontend
-        sendSSE("error", {
+        // Publish rich error event to WebSocket subscribers
+        publish(topic, "error", {
           message: userMessage,
           detail: rawMessage,
           category: classified.category,
@@ -1048,10 +1035,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         } catch {
           // Ignore DB errors during error handling
         }
+
+        return reply.status(500).send({
+          error: userMessage,
+          detail: rawMessage,
+          category: classified.category,
+          shouldRetry: classified.shouldRetry,
+        });
       } finally {
         clearTimeout(stageTimeout);
-        clearInterval(keepalive);
-        reply.raw.end();
       }
     },
   );
