@@ -179,8 +179,8 @@ function StageContractCard({
     },
   });
 
-  const requiredCount = local.requiredSections.filter((s) => s.required).length;
-  const patternCount = local.requiredPatterns.length;
+  const requiredCount = (local.requiredSections ?? []).filter((s) => s.required).length;
+  const patternCount = (local.requiredPatterns ?? []).length;
 
   return (
     <div className={cn(
