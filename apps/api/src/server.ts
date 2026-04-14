@@ -36,6 +36,7 @@ import { closeDatabaseConnection } from "@/db/index.js";
 // ESM module cache ensures this is a no-op if lsp-manager was already imported
 // by sandbox.ts during the session.
 import { startCleanupScheduler, stopCleanupScheduler } from "@/services/cleanup-scheduler.js";
+import { initWSPublisher, shutdownWSPublisher } from "@/services/ws-publisher.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -90,6 +91,9 @@ async function bootstrap() {
   await fastify.register(authPlugin);
   await fastify.register(rateLimitPlugin);
   await fastify.register(websocketPlugin);
+
+  // Initialize WebSocket pub/sub for cross-instance event delivery
+  initWSPublisher();
 
   // Swagger documentation
   await fastify.register(fastifySwagger, {
@@ -305,6 +309,10 @@ async function bootstrap() {
 
   // Start background cleanup scheduler (dev only)
   startCleanupScheduler(fastify.log);
+
+  fastify.addHook("onClose", async () => {
+    await shutdownWSPublisher();
+  });
 
   // Graceful shutdown
   const signals = ["SIGTERM", "SIGINT"];
