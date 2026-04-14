@@ -15,16 +15,12 @@ import { usePipelineStore } from '@/lib/stores/pipeline-store';
 import {
   usePipelineStatus,
   useAllStageOutputs,
-  useStageValidation,
   useInvalidatePipeline,
   type PipelineStatus,
-  type StageProgressEntry,
   type ApprovalGate,
 } from './use-pipeline-queries';
 import {
   type StageStatus,
-  type StageValidation,
-  type ScanSubtaskState,
   STAGE_NAMES,
   STAGE_LABELS,
   stageRequiresApproval,

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { ChevronRight, Command, Download, GitBranch, Settings2, PanelRight } from 'lucide-react';
 
@@ -32,7 +32,7 @@ import { useStageExecution } from '@/lib/hooks/use-stage-execution';
 import { usePipelineShortcuts } from '@/lib/hooks/use-keyboard-shortcuts';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
-import { setCachedOutput, getCachedOutputsForRun } from '@/lib/pipeline-cache';
+// IndexedDB caching handled by pipeline-store.setStageOutput (still uses pipeline-cache internally)
 import { useLatestPipelineRun, usePipelineStatus, useAllStageOutputs } from '@/lib/hooks/use-pipeline-queries';
 
 // ─── Page Component ─────────────────────────────────────────────
@@ -71,80 +71,111 @@ export default function PipelinePage() {
     // no explicit restore needed here.
   }, [effectiveRunId, projectId]);
 
-  // Sync stage statuses from API → store
-  // Maps backend statuses to frontend stage status:
-  //   in_progress → generating (shows "running" UI even after page refresh)
-  //   awaiting_approval → completed (with approval gate)
-  //   approved → approved
+  // ─── Unified sync: React Query → Zustand (single effect) ──────
+  // React Query owns the data (usePipelineStatus, useAllStageOutputs).
+  // This single effect bridges it to Zustand for components that still
+  // read from the store. As components migrate to usePipelineData,
+  // this effect shrinks and eventually disappears.
   useEffect(() => {
     if (!pipelineStatusData?.stage_progress) return;
     const sp = pipelineStatusData.stage_progress;
-    const store = usePipelineStore.getState();
-    for (let i = 0; i < store.stages.length; i++) {
-      const storeStage = store.stages[i];
-      const dbEntry = sp[storeStage.name];
-      const dbStatus = dbEntry?.status;
-      if (!dbStatus) continue;
-      const mapped = dbStatus === 'in_progress' ? 'generating'
-        : dbStatus === 'awaiting_approval' ? 'completed'
-        : dbStatus;
-      if (mapped !== storeStage.status) {
-        usePipelineStore.getState().setStageStatus(i, mapped as any);
-      }
-      // Restore the real server-side startedAt so the elapsed timer doesn't reset on refresh.
-      const dbStartedAt = (dbEntry as any)?.startedAt;
-      if (dbStartedAt && dbStartedAt !== usePipelineStore.getState().stages[i].startedAt) {
-        usePipelineStore.getState().setStageStartedAt(i, dbStartedAt);
-      }
-      // Timer management based on backend stage status
-      if (dbStatus === 'pending') {
-        // Stage hasn't run yet or was reset — clear timer completely
-        const current = usePipelineStore.getState().stages[i];
-        if (current.startedAt || current.completedAt) {
-          usePipelineStore.setState((s) => {
-            const stages = [...s.stages];
-            stages[i] = { ...stages[i], startedAt: null, completedAt: null };
-            return { stages };
-          });
+    const gates = pipelineStatusData.approval_gates || [];
+    const gateMap = new Map(gates.map((g: any) => [g.stage_name, g.status]));
+
+    usePipelineStore.setState((state) => {
+      const stages = [...state.stages];
+      let changed = false;
+
+      for (let i = 0; i < stages.length; i++) {
+        const dbEntry = sp[stages[i].name] as any;
+        if (!dbEntry?.status) continue;
+
+        const dbStatus = dbEntry.status;
+        const mapped = dbStatus === 'in_progress' ? 'generating'
+          : dbStatus === 'awaiting_approval' ? 'completed'
+          : dbStatus;
+
+        const updates: Record<string, any> = {};
+
+        // Status
+        if (mapped !== stages[i].status) updates.status = mapped;
+
+        // Timer: startedAt from server
+        if (dbEntry.startedAt && dbEntry.startedAt !== stages[i].startedAt) {
+          updates.startedAt = dbEntry.startedAt;
         }
-      } else if (dbStatus !== 'in_progress') {
-        // Stage finished (completed/approved/awaiting_approval/failed) — stop timer
-        const dbUpdatedAt = (dbEntry as any)?.updatedAt;
-        if (dbUpdatedAt) {
-          const current = usePipelineStore.getState().stages[i];
-          if (!current.completedAt || current.completedAt !== dbUpdatedAt) {
-            usePipelineStore.setState((s) => {
-              const stages = [...s.stages];
-              stages[i] = { ...stages[i], completedAt: dbUpdatedAt };
-              return { stages };
-            });
+        // Timer: pending clears, finished sets completedAt
+        if (dbStatus === 'pending') {
+          if (stages[i].startedAt || stages[i].completedAt) {
+            updates.startedAt = null;
+            updates.completedAt = null;
+          }
+        } else if (dbStatus !== 'in_progress' && dbEntry.updatedAt) {
+          if (stages[i].completedAt !== dbEntry.updatedAt) {
+            updates.completedAt = dbEntry.updatedAt;
           }
         }
-      }
-      if (dbStatus === 'approved' && storeStage.approvalStatus !== 'approved') {
-        usePipelineStore.getState().setStageApproval(i, 'approved');
-      } else if (dbStatus === 'awaiting_approval') {
-        usePipelineStore.getState().setStageApproval(i, 'pending');
-      }
-    }
-  }, [pipelineStatusData]);
 
-  // ─── Background execution detection ──────────────────────────
-  // React Query's refetchInterval on usePipelineStatus already polls every 10s.
-  // No additional setInterval needed — the sync effect below handles
-  // completion detection from the polled data.
+        // Approval from gate
+        const gateStatus = gateMap.get(stages[i].name);
+        if (gateStatus === 'approved' && stages[i].approvalStatus !== 'approved') {
+          updates.approvalStatus = 'approved';
+          updates.status = 'approved';
+        } else if (dbStatus === 'awaiting_approval' && stages[i].approvalStatus !== 'pending') {
+          updates.approvalStatus = 'pending';
+          updates.pendingApprovalSince = stages[i].pendingApprovalSince || new Date().toISOString();
+        }
+
+        // Confidence score
+        if (dbEntry.confidenceScore !== undefined) {
+          updates.confidenceScore = dbEntry.confidenceScore;
+        }
+
+        if (Object.keys(updates).length > 0) {
+          stages[i] = { ...stages[i], ...updates };
+          changed = true;
+        }
+      }
+
+      // Subtasks
+      const currentStage = pipelineStatusData.current_stage;
+      const subtaskRows = pipelineStatusData.current_stage_subtasks || [];
+      const overallProgress = pipelineStatusData.current_stage_progress;
+      if (currentStage && (subtaskRows.length > 0 || overallProgress)) {
+        const idx = stages.findIndex(s => s.name === currentStage);
+        if (idx >= 0) {
+          stages[idx] = {
+            ...stages[idx],
+            subtasks: (subtaskRows as any[]).map((r: any) => ({
+              id: r.id, type: r.type, label: r.title, title: r.title,
+              status: ['running', 'completed', 'failed', 'pending'].includes(r.status) ? r.status : 'pending',
+            })),
+            subtaskProgress: overallProgress,
+          };
+          changed = true;
+        }
+      }
+
+      return changed ? { stages, isGenerating: stages.some(s => s.status === 'generating' || s.status === 'validating') } : state;
+    });
+  }, [pipelineStatusData]);
 
   // Sync stage outputs from React Query → store
   useEffect(() => {
     if (!allOutputs) return;
-    const store = usePipelineStore.getState();
-    for (const [stageName, output] of Object.entries(allOutputs)) {
-      if (!output) continue;
-      const idx = store.stages.findIndex(s => s.name === stageName);
-      if (idx >= 0 && (!store.stages[idx].output || store.stages[idx].output.includes('Partial Result'))) {
-        usePipelineStore.getState().setStageOutput(idx, output);
+    usePipelineStore.setState((state) => {
+      const stages = [...state.stages];
+      let changed = false;
+      for (const [stageName, output] of Object.entries(allOutputs)) {
+        if (!output) continue;
+        const idx = stages.findIndex(s => s.name === stageName);
+        if (idx >= 0 && (!stages[idx].output || stages[idx].output.includes('Partial Result'))) {
+          stages[idx] = { ...stages[idx], output };
+          changed = true;
+        }
       }
-    }
+      return changed ? { stages } : state;
+    });
   }, [allOutputs]);
 
   // ─── Pipeline Store (granular selectors to avoid re-renders from streaming) ──
@@ -170,7 +201,6 @@ export default function PipelinePage() {
   }, [activeStageIndex, effectiveRunId]);
 
   const currentPipelineRunId = effectiveRunId; // Use React Query run ID, not Zustand
-  const currentProjectId = projectId;
   const streamingText = usePipelineStore((s) => s.streamingText);
 
   // Activity store (logs, toolCalls, usage, files)
@@ -301,340 +331,55 @@ export default function PipelinePage() {
     }).catch(() => {});
   }, [activeTemplateId, projectId]);
 
-  // ─── Sync stage statuses from backend ─────────────────────
-  const syncStagesFromBackend = async (runId: string) => {
+  // ─── Active stage restoration on mount ─────────────────────
+  // Restore which stage tab the user was on before page refresh.
+  // Uses: sessionStorage > backend current_stage > highest non-pending stage.
+  const activeStageRestoredRef = useRef(false);
+  useEffect(() => {
+    if (activeStageRestoredRef.current || !pipelineStatusData?.stage_progress || !effectiveRunId) return;
+    activeStageRestoredRef.current = true;
+
+    const store = usePipelineStore.getState();
+    if (store.activeStageIndex !== 0) return; // user already navigated
+
+    let targetIdx = -1;
+    // 1. Saved session navigation
     try {
-      const res = await apiClient.get(`/pipeline/${runId}/status`);
-      const runStatus = res.data?.status;
-      if (runStatus === 'cancelled') {
-        return false; // caller should create a new run
+      const saved = sessionStorage.getItem(`revamp:activeStage:${effectiveRunId}`);
+      if (saved) {
+        const parsed = parseInt(saved, 10);
+        if (!Number.isNaN(parsed) && parsed >= 0 && parsed < store.stages.length) targetIdx = parsed;
       }
-      // For failed runs: check if any stages completed — if so, reuse the run
-      // (a single stage failure shouldn't abandon all prior completed work)
-      if (runStatus === 'failed') {
-        const sp = res.data?.stage_progress || {};
-        const hasCompletedStages = Object.values(sp).some(
-          (s: any) => s?.status === 'approved' || s?.status === 'completed' || s?.status === 'awaiting_approval'
-        );
-        if (!hasCompletedStages) return false; // truly empty failed run — create new
-        // Otherwise continue with rehydration — reset run status via API
-        try { await apiClient.patch(`/pipeline/${runId}/status`, { status: 'running' }); } catch { /* non-fatal */ }
-      }
-
-      // Sync ALL stage statuses from DB — authoritative source of truth
-      const stageProgress = res.data?.stage_progress;
-      if (stageProgress) {
-        const s = usePipelineStore.getState();
-        for (let i = 0; i < s.stages.length; i++) {
-          const storeStage = s.stages[i];
-          const dbEntry = stageProgress[storeStage.name];
-          const dbStatus = dbEntry?.status;
-          if (dbStatus && dbStatus !== storeStage.status) {
-            // Map DB statuses to store-compatible statuses.
-            // 'in_progress' must become 'generating' (NOT 'pending') so the live
-            // running UI — including the elapsed timer — survives page refresh.
-            const mappedStatus = dbStatus === 'in_progress' ? 'generating'
-              : dbStatus === 'awaiting_approval' ? 'completed'
-              : dbStatus;
-            usePipelineStore.getState().setStageStatus(i, mappedStatus as any);
-          }
-          // Restore the real server-side startedAt so the elapsed timer survives refreshes.
-          const dbStartedAt = (dbEntry as any)?.startedAt;
-          if (dbStartedAt && dbStartedAt !== usePipelineStore.getState().stages[i].startedAt) {
-            usePipelineStore.getState().setStageStartedAt(i, dbStartedAt);
-          }
-          // Timer management based on backend stage status
-          if (dbStatus === 'pending') {
-            // Stage reset — clear timer
-            const current = usePipelineStore.getState().stages[i];
-            if (current.startedAt || current.completedAt) {
-              usePipelineStore.setState((s) => {
-                const stages = [...s.stages];
-                stages[i] = { ...stages[i], startedAt: null, completedAt: null };
-                return { stages };
-              });
-            }
-          } else if (dbStatus !== 'in_progress') {
-            // Stage finished — stop timer
-            const dbUpdatedAt = (dbEntry as any)?.updatedAt;
-            if (dbUpdatedAt) {
-              usePipelineStore.setState((s) => {
-                const stages = [...s.stages];
-                if (!stages[i].completedAt || stages[i].completedAt !== dbUpdatedAt) {
-                  stages[i] = { ...stages[i], completedAt: dbUpdatedAt };
-                }
-                return { stages };
-              });
-            }
-          }
-          // Sync approval status from stage progress — DB is authoritative
-          if (dbStatus === 'approved' && storeStage.approvalStatus !== 'approved') {
-            usePipelineStore.getState().setStageApproval(i, 'approved');
-          } else if (dbStatus === 'awaiting_approval') {
-            usePipelineStore.getState().setStageApproval(i, 'pending');
-          } else if (dbStatus === 'pending' || dbStatus === 'failed') {
-            // Stage is pending/failed in DB — clear stale approval without recording in history
-            // Use direct set() to avoid polluting approvalHistory with 'not_required'
-            if (storeStage.approvalStatus === 'pending' || storeStage.approvalStatus === 'rejected') {
-              usePipelineStore.setState((s) => {
-                const stages = [...s.stages];
-                stages[i] = { ...stages[i], approvalStatus: 'not_required', pendingApprovalSince: null };
-                return { stages };
-              });
-            }
-          }
-        }
-      }
-
-      // Restore the active stage on refresh. Priority order:
-      //   1. sessionStorage (where the user last navigated to in this run)
-      //   2. backend's current_stage (which the orchestrator updates on transitions)
-      //   3. the highest-index stage with any non-pending status
-      // We only auto-jump when the store is still at the default index 0 — never
-      // override an explicit user navigation that has already happened in this session.
-      const dbCurrentStage = res.data?.current_stage as string | undefined;
-      const storeNow = usePipelineStore.getState();
-      if (storeNow.activeStageIndex === 0) {
-        let targetIdx = -1;
-        // 1. Saved session navigation
-        try {
-          const saved = typeof window !== 'undefined'
-            ? sessionStorage.getItem(`revamp:activeStage:${runId}`)
-            : null;
-          if (saved) {
-            const parsed = parseInt(saved, 10);
-            if (!Number.isNaN(parsed) && parsed >= 0 && parsed < storeNow.stages.length) {
-              targetIdx = parsed;
-            }
-          }
-        } catch { /* sessionStorage unavailable — non-fatal */ }
-        // 2. Backend current_stage
-        if (targetIdx < 0 && dbCurrentStage) {
-          targetIdx = storeNow.stages.findIndex((st) => st.name === dbCurrentStage);
-        }
-        // 3. Highest non-pending stage
-        if (targetIdx < 0 && stageProgress) {
-          for (let i = storeNow.stages.length - 1; i >= 0; i--) {
-            const dbStatus = stageProgress[storeNow.stages[i].name]?.status;
-            if (dbStatus && dbStatus !== 'pending') {
-              targetIdx = i;
-              break;
-            }
-          }
-        }
-        if (targetIdx > 0) {
-          usePipelineStore.getState().setActiveStage(targetIdx);
-        }
-      }
-
-      // Hydrate the bot grid + progress bar from server-side subtasks. The
-      // SSE director_planning events that originally populated these don't
-      // replay across page refreshes, so without this the grid falls back to
-      // a single-bot placeholder and the new progress bar never renders.
-      const subtaskRows = (res.data?.current_stage_subtasks || []) as Array<{
-        id: string;
-        title: string;
-        status: string;
-        priority: number;
-        type: string;
-      }>;
-      const overallProgress = res.data?.current_stage_progress as
-        | { total: number; completed: number; running: number; failed: number; pending: number; rounds: number }
-        | undefined;
-      if ((subtaskRows.length > 0 || overallProgress) && dbCurrentStage) {
-        const stageIdx = usePipelineStore.getState().stages.findIndex((st) => st.name === dbCurrentStage);
-        if (stageIdx >= 0) {
-          // Replace any stale subtasks for this stage with the authoritative server list
-          usePipelineStore.setState((s) => {
-            const stages = [...s.stages];
-            stages[stageIdx] = {
-              ...stages[stageIdx],
-              subtasks: subtaskRows
-                .slice()
-                .sort((a, b) => a.priority - b.priority)
-                .map((r) => ({
-                  id: r.id,
-                  type: r.type,
-                  label: r.title,
-                  title: r.title,
-                  status: (r.status === 'running' || r.status === 'completed' || r.status === 'failed' || r.status === 'pending')
-                    ? r.status
-                    : 'pending',
-                })),
-              subtaskProgress: overallProgress,
-            };
-            return { stages };
-          });
-        }
-      }
-
-      // Sync approval gates — clear stale gates not present in DB
-      const approvalGates = res.data?.approval_gates || [];
-      const gateStageNames = new Set(approvalGates.map((g: any) => g.stage_name));
-      const s2 = usePipelineStore.getState();
-
-      for (let i = 0; i < s2.stages.length; i++) {
-        const storeStage = s2.stages[i];
-        if (gateStageNames.has(storeStage.name)) {
-          // Gate exists in DB — sync its status
-          const gate = approvalGates.find((g: any) => g.stage_name === storeStage.name);
-          if (gate && gate.status !== storeStage.approvalStatus) {
-            usePipelineStore.getState().setStageApproval(i, gate.status as any);
-          }
-        } else {
-          // No gate in DB — clear stale approval without recording in history
-          if (storeStage.approvalStatus === 'pending' || storeStage.approvalStatus === 'rejected') {
-            const dbStatus = stageProgress?.[storeStage.name]?.status;
-            if (dbStatus !== 'awaiting_approval') {
-              usePipelineStore.setState((s) => {
-                const stages = [...s.stages];
-                stages[i] = { ...stages[i], approvalStatus: 'not_required', pendingApprovalSince: null };
-                return { stages };
-              });
-            }
-          }
-        }
-      }
-
-      // Load stage outputs — IndexedDB first, then API fallback
-      const updatedStore = usePipelineStore.getState();
-      // Load output for ALL stages — the persisted store strips output, so always reload.
-      // Check stage_progress from DB to know which stages have been executed.
-      const allStageNames = Object.keys(stageProgress || {}).filter(
-        name => {
-          const sp = stageProgress[name];
-          const status = sp?.status;
-          return status && status !== 'pending' && status !== 'in_progress';
-        }
-      );
-      const freshStore = usePipelineStore.getState();
-      const stagesToLoad = allStageNames.filter(name => {
-        const st = freshStore.stages.find(s => s.name === name);
-        return !st?.output || st.output.includes('Partial Result');
-      });
-      if (stagesToLoad.length > 0) {
-        // Try IndexedDB cache first (instant, no network)
-        const cached = await getCachedOutputsForRun(runId);
-        for (const stageName of stagesToLoad) {
-          const idx = updatedStore.stages.findIndex((st) => st.name === stageName);
-          if (idx < 0) continue;
-
-          if (cached[stageName] && !cached[stageName].includes('Partial Result') && cached[stageName].length > 500) {
-            // Cache hit — instant load (skip stale partial results and tiny placeholders)
-            usePipelineStore.getState().setStageOutput(idx, cached[stageName]);
-          } else {
-            // Cache miss — fetch from API and store in IndexedDB
-            try {
-              const artRes = await apiClient.get(`/pipeline/${runId}/artifacts/${stageName}`);
-              const rawData = artRes.data;
-              const artifacts = Array.isArray(rawData) ? rawData : rawData?.artifacts || rawData?.data || [];
-              const outputArt = artifacts.find((a: any) => a.artifact_type === 'stage_output');
-              const content = outputArt?.metadata?.content || outputArt?.metadata?.output;
-              if (content) {
-                usePipelineStore.getState().setStageOutput(idx, content);
-                // Cache in IndexedDB for next visit
-                setCachedOutput(runId, stageName, content);
-              }
-            } catch {
-              // Non-fatal
-            }
-          }
-        }
-      }
-
-      return true;
-    } catch {
-      return false;
+    } catch { /* non-fatal */ }
+    // 2. Backend current_stage
+    if (targetIdx < 0 && pipelineStatusData.current_stage) {
+      targetIdx = store.stages.findIndex(st => st.name === pipelineStatusData.current_stage);
     }
-  };
-
-  // ─── Create pipeline run if needed ────────────────────────
-  const startPipeline = useMutation({
-    mutationFn: async () => {
-      const res = await apiClient.post('/pipeline/start', {
-        project_id: projectId,
-      });
-      return res.data as { pipeline_run_id: string };
-    },
-    onSuccess: async (data) => {
-      initPipeline(projectId, data.pipeline_run_id);
-      // Immediately sync stages from backend (the run may already have progress)
-      await syncStagesFromBackend(data.pipeline_run_id);
-    },
-    onError: () => {
-      if (!usePipelineStore.getState().currentPipelineRunId) {
-        initPipeline(projectId, `local-${crypto.randomUUID()}`);
-      }
-    },
-  });
-
-  // Wait for Zustand hydration before init — persisted preferences
-  // (model overrides, prompt overrides) need to load before we initialize.
-  const [hydrated, setHydrated] = useState(false);
-  useEffect(() => {
-    // Zustand persist hydrates synchronously after first render
-    const unsub = usePipelineConfigStore.persist.onFinishHydration(() => setHydrated(true));
-    // If already hydrated (hot reload), set immediately
-    if (usePipelineConfigStore.persist.hasHydrated()) setHydrated(true);
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    if (!projectId || !hydrated) return;
-
-    // If a specific run ID is provided via URL (?run=xxx), use it directly
-    if (runIdFromUrl) {
-      if (currentPipelineRunId !== runIdFromUrl) {
-        initPipeline(projectId, runIdFromUrl);
-      }
-      syncStagesFromBackend(runIdFromUrl).then((ok) => {
-        if (!ok) startPipeline.mutate();
-      });
-      return;
-    }
-
-    // Always reinitialize when switching to a different project
-    if (currentProjectId !== projectId) {
-      // Clear stale run ID from previous project before creating/fetching new one
-      usePipelineStore.getState().initPipeline(projectId, '');
-      startPipeline.mutate();
-      return;
-    }
-    if (!currentPipelineRunId) {
-      startPipeline.mutate();
-      return;
-    }
-    // Verify the persisted pipeline run still exists and sync stages
-    syncStagesFromBackend(currentPipelineRunId).then((ok) => {
-      if (!ok) startPipeline.mutate();
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, runIdFromUrl, hydrated]);
-
-  // ─── Poll for stuck stages (SSE drop recovery) ─────────────
-  // If a stage is stuck in 'generating', poll DB to check if it actually
-  // completed or was reset. Handles SSE drops, server restarts, and browser tab suspensions.
-  // ─── Stuck stage recovery ────────────────────────────────────
-  // Handled by the pipelineStatusData sync effect above — when React Query
-  // polls status every 10s, the sync detects stuck stages (store says
-  // 'generating' but DB says 'completed') and corrects them. No separate
-  // polling interval needed.
-  useEffect(() => {
-    if (!pipelineStatusData?.stage_progress) return;
-    const sp = pipelineStatusData.stage_progress as Record<string, { status?: string }>;
-    const s = usePipelineStore.getState();
-    for (let i = 0; i < s.stages.length; i++) {
-      const storeStage = s.stages[i];
-      const dbStatus = sp[storeStage.name]?.status;
-      if (
-        dbStatus &&
-        (storeStage.status === 'generating' || storeStage.status === 'validating') &&
-        (dbStatus === 'completed' || dbStatus === 'approved' || dbStatus === 'failed' || dbStatus === 'pending')
-      ) {
-        usePipelineStore.getState().setStageStatus(i, dbStatus as any);
+    // 3. Highest non-pending stage
+    if (targetIdx < 0) {
+      const sp = pipelineStatusData.stage_progress;
+      for (let i = store.stages.length - 1; i >= 0; i--) {
+        if (sp[store.stages[i].name]?.status && sp[store.stages[i].name]?.status !== 'pending') {
+          targetIdx = i; break;
+        }
       }
     }
-  }, [pipelineStatusData]);
+    if (targetIdx > 0) store.setActiveStage(targetIdx);
+  }, [pipelineStatusData, effectiveRunId]);
+
+  // Pipeline run creation handled by useLatestPipelineRun (React Query).
+  // It calls POST /pipeline/start and caches the run ID.
+
+  // Pipeline init now handled by React Query:
+  //   useLatestPipelineRun → POST /pipeline/start → returns run ID
+  //   usePipelineStatus → polls /pipeline/:id/status every 5-10s
+  //   useAllStageOutputs → batch-fetches all outputs
+  // The unified sync effect above bridges React Query → Zustand.
+  // No manual syncStagesFromBackend needed.
+
+  // Stuck stage recovery is handled by the unified sync effect above —
+  // React Query polls every 5-10s, the sync detects stuck stages
+  // (store says 'generating' but DB says 'completed') and corrects them.
 
   // ─── Refetch project data when SCAN completes (picks up folder_structure) ──
   const scanStatus = stages[0]?.status;
@@ -644,147 +389,77 @@ export default function PipelinePage() {
     }
   }, [scanStatus, projectId, queryClient]);
 
-  // ─── Rehydrate stage outputs from API after page refresh ──────
-  // The pipeline store strips outputs on persist (too large for localStorage).
-  // Fetch ALL stage outputs from API regardless of store status (store may be stale).
+  // Stage output + validation rehydration is now handled by:
+  //   useAllStageOutputs → React Query batch-fetches all outputs
+  //   Unified sync effect → bridges to Zustand
+  // Validation rehydration still needs a dedicated fetch per stage.
+  // TODO: Move to useStageValidation hook per stage (Phase 1 follow-up).
   useEffect(() => {
-    if (!currentPipelineRunId) return;
+    if (!effectiveRunId || !pipelineStatusData?.stage_progress) return;
+    const sp = pipelineStatusData.stage_progress;
+    const store = usePipelineStore.getState();
 
-    // Delay slightly to let syncStagesFromBackend run first
-    const timer = setTimeout(async () => {
-      // Fetch status from API to know which stages have outputs
-      let stageNames: string[] = [];
-      try {
-        const statusRes = await apiClient.get(`/pipeline/${currentPipelineRunId}/status`);
-        const sp = statusRes.data?.stage_progress || {};
-        stageNames = Object.keys(sp).filter(name => {
-          const status = sp[name]?.status;
-          return status && status !== 'pending' && status !== 'in_progress';
-        });
-      } catch {
-        // Fallback: use store statuses
-        const s = usePipelineStore.getState();
-        stageNames = s.stages
-          .filter((st) => (st.status === 'completed' || st.status === 'approved') && !st.output)
-          .map((st) => st.name);
-      }
+    // Fetch validation for stages that completed but have no validation in store
+    const stagesToValidate = store.stages.filter((st) => {
+      const dbStatus = (sp[st.name] as any)?.status;
+      return dbStatus && dbStatus !== 'pending' && dbStatus !== 'in_progress' && !st.validation;
+    });
 
-      // Filter out stages that already have output in the store
-      const s = usePipelineStore.getState();
-      stageNames = stageNames.filter(name => {
-        const st = s.stages.find(x => x.name === name);
-        return !st?.output || st.output.includes('Partial Result');
-      });
+    if (stagesToValidate.length === 0) return;
 
-      if (stageNames.length === 0) return;
-      for (const stageName of stageNames) {
-        try {
-          const stageRes = await apiClient.get(
-            `/pipeline/${currentPipelineRunId}/artifacts/${stageName}`,
-          );
-          const rawData = stageRes.data;
-          const artifacts = Array.isArray(rawData) ? rawData : rawData?.artifacts || rawData?.data || [];
-          const outputArtifact = artifacts.find((a: any) => a.artifact_type === 'stage_output');
-          const outputContent = outputArtifact?.metadata?.content || outputArtifact?.metadata?.output;
-          if (outputContent) {
-            const stageIndex = s.stages.findIndex((st) => st.name === stageName);
-            if (stageIndex >= 0) {
-              usePipelineStore.getState().setStageOutput(stageIndex, outputContent);
-            }
+    for (const st of stagesToValidate) {
+      apiClient.get(`/pipeline/${effectiveRunId}/artifacts/${st.name}`).then(res => {
+        const artifacts = Array.isArray(res.data) ? res.data : [];
+        const valArt = artifacts.find((a: any) => a.artifact_type === 'validation_result');
+        if (!valArt?.metadata) return;
+
+        const v = valArt.metadata;
+        const criteria: Array<{ name: string; passed: boolean; score: number; feedback: string }> = [];
+
+        if (Array.isArray(v.deterministicResults)) {
+          for (const cr of v.deterministicResults) {
+            criteria.push({
+              name: cr.name || cr.type || 'Check',
+              passed: cr.status === 'PASS',
+              score: Math.round((cr.score ?? 0) * 100),
+              feedback: cr.message || (cr.status === 'PASS' ? 'Passed' : 'Failed'),
+            });
           }
-          // Rehydrate validation — prefer the separate validation_result artifact
-          // which has full criteria, over the stage_output metadata which only
-          // has { passed, confidenceScore, issueCount } (no criteria/issues).
-          const stageIndex2 = s.stages.findIndex((st) => st.name === stageName);
-          if (stageIndex2 >= 0) {
-            const validationArtifact = artifacts.find((a: any) => a.artifact_type === 'validation_result');
-            if (validationArtifact?.metadata) {
-              const v = validationArtifact.metadata;
-              const criteria: Array<{ name: string; passed: boolean; score: number; feedback: string }> = [];
-
-              // Map deterministic check results
-              if (Array.isArray(v.deterministicResults)) {
-                for (const cr of v.deterministicResults) {
-                  criteria.push({
-                    name: cr.name || cr.type || 'Check',
-                    passed: cr.status === 'PASS',
-                    score: Math.round((cr.score ?? 0) * 100),
-                    feedback: cr.message || (cr.status === 'PASS' ? 'Passed' : 'Failed'),
-                  });
-                }
-              }
-
-              // Map LLM evaluation results
-              if (Array.isArray(v.llmResults)) {
-                for (const lr of v.llmResults) {
-                  criteria.push({
-                    name: lr.dimension || 'LLM Evaluation',
-                    passed: (lr.score ?? 0) >= 0.6,
-                    score: Math.round((lr.score ?? 0) * 100),
-                    feedback: lr.reasoning || '',
-                  });
-                }
-              }
-
-              // Fallback to issues array
-              if (criteria.length === 0 && Array.isArray(v.issues)) {
-                for (const issue of v.issues) {
-                  criteria.push({
-                    name: issue.title || issue.code || 'Issue',
-                    passed: issue.severity === 'INFO',
-                    score: issue.severity === 'ERROR' ? 0 : issue.severity === 'WARN' ? 50 : 80,
-                    feedback: issue.description || '',
-                  });
-                }
-              }
-
-              usePipelineStore.getState().setStageValidation(stageIndex2, {
-                passed: v.passed ?? false,
-                score: v.confidenceScore ?? 0,
-                criteria,
-                summary: Array.isArray(v.recommendations) ? v.recommendations.slice(0, 3).join('; ') : '',
-                validatedAt: validationArtifact.created_at ?? new Date().toISOString(),
-              });
-            } else {
-              // Fallback: use basic validation from stage_output metadata
-              const stageOutputMeta = outputArtifact?.metadata;
-              if (stageOutputMeta?.validation && stageOutputMeta.validation.passed !== undefined) {
-                const v = stageOutputMeta.validation;
-                usePipelineStore.getState().setStageValidation(stageIndex2, {
-                  passed: v.passed ?? false,
-                  score: v.confidenceScore ?? 0,
-                  criteria: [],
-                  summary: '',
-                  validatedAt: new Date().toISOString(),
-                });
-              }
-            }
-          }
-
-          // Rehydrate artifacts into the store for the Artifacts tab
-          const stageIndex = s.stages.findIndex((st) => st.name === stageName);
-          if (stageIndex >= 0) {
-            const store = usePipelineStore.getState();
-            const existing = store.stages[stageIndex].artifacts;
-            for (const a of artifacts) {
-              if (existing.some((e) => e.id === a.id)) continue; // skip duplicates
-              store.addStageArtifact(stageIndex, {
-                id: a.id,
-                name: a.artifact_type,
-                type: a.artifact_type,
-                url: a.storage_path ?? '',
-                size: a.file_size ?? 0,
-                createdAt: a.created_at ?? new Date().toISOString(),
-              });
-            }
-          }
-        } catch {
-          // Non-fatal — output will be fetched on next rehydration cycle
         }
-      }
-    }, 1000); // 1s delay to let syncStagesFromBackend run first
-    return () => clearTimeout(timer);
-  }, [currentPipelineRunId, activeStageIndex]);
+        if (Array.isArray(v.llmResults)) {
+          for (const lr of v.llmResults) {
+            criteria.push({
+              name: lr.dimension || 'LLM Evaluation',
+              passed: (lr.score ?? 0) >= 0.6,
+              score: Math.round((lr.score ?? 0) * 100),
+              feedback: lr.reasoning || '',
+            });
+          }
+        }
+        if (criteria.length === 0 && Array.isArray(v.issues)) {
+          for (const issue of v.issues) {
+            criteria.push({
+              name: issue.title || issue.code || 'Issue',
+              passed: issue.severity === 'INFO',
+              score: issue.severity === 'ERROR' ? 0 : issue.severity === 'WARN' ? 50 : 80,
+              feedback: issue.description || '',
+            });
+          }
+        }
+
+        const idx = usePipelineStore.getState().stages.findIndex(s => s.name === st.name);
+        if (idx >= 0) {
+          usePipelineStore.getState().setStageValidation(idx, {
+            passed: v.passed ?? false,
+            score: v.confidenceScore ?? 0,
+            criteria,
+            summary: Array.isArray(v.recommendations) ? v.recommendations.slice(0, 3).join('; ') : '',
+            validatedAt: valArt.created_at ?? new Date().toISOString(),
+          });
+        }
+      }).catch(() => { /* non-fatal */ });
+    }
+  }, [effectiveRunId, pipelineStatusData]);
 
   // Left rail stays open — stages moved to main sidebar, but settings/cost/docs remain here
 
@@ -948,23 +623,21 @@ export default function PipelinePage() {
       setActiveStage(currentStageIdx);
     }
 
-    // 3. Invalidate all React Query caches
+    // 3. Invalidate all React Query caches — triggers automatic refetch
     queryClient.invalidateQueries({ queryKey: ['pipeline'] });
+    queryClient.invalidateQueries({ queryKey: ['pipeline-status'] });
+    queryClient.invalidateQueries({ queryKey: ['all-stage-outputs'] });
     queryClient.invalidateQueries({ queryKey: ['stage-output'] });
+    queryClient.invalidateQueries({ queryKey: ['stage-validation'] });
     queryClient.invalidateQueries({ queryKey: ['project'] });
 
-    // 4. Re-sync stages from backend
-    if (effectiveRunId) {
-      syncStagesFromBackend(effectiveRunId);
-    }
-
-    // 5. Visual feedback
+    // 4. Visual feedback
     const el = document.createElement('div');
     el.textContent = 'Cache purged — data refreshed from server';
     el.className = 'fixed top-4 left-1/2 -translate-x-1/2 z-[9999] px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium shadow-lg animate-in fade-in slide-in-from-top-2 duration-300';
     document.body.appendChild(el);
     setTimeout(() => { el.classList.add('opacity-0', 'transition-opacity'); setTimeout(() => el.remove(), 300); }, 2500);
-  }, [projectId, effectiveRunId, initPipeline, setActiveStage, queryClient, syncStagesFromBackend]);
+  }, [projectId, effectiveRunId, initPipeline, setActiveStage, queryClient]);
 
   // ─── Pipeline Shortcuts ─────────────────────────────────────
   usePipelineShortcuts({
@@ -1200,7 +873,7 @@ export default function PipelinePage() {
 
   // ─── Loading State ────────────────────────────────────────
 
-  if (!currentPipelineRunId && startPipeline.isPending) {
+  if (!currentPipelineRunId) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary-600 border-t-transparent" />

@@ -2,7 +2,6 @@
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
-import type { StageValidation, ScanSubtaskState } from '@/lib/stores/pipeline-types';
 
 // ─── Types ──────────────────────────────────────────────────────
 
