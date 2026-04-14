@@ -11,6 +11,19 @@ export type { ApiClient, ApiResponse, RequestConfig } from './api/types';
 // Query Keys
 export { pipelineKeys, projectKeys, agentKeys } from './hooks/pipeline-keys';
 
+// Pipeline Hooks (platform-independent — uses injected API client)
+export {
+  useLatestPipelineRun,
+  usePipelineStatus,
+  useStageOutput,
+  useAllStageOutputs,
+  useStageValidation,
+  useStageStatus,
+  useApprovalGate,
+  useCurrentSubtasks,
+  useInvalidatePipeline,
+} from './hooks/use-pipeline-queries';
+
 // Pipeline API Types
 export type {
   PipelineStatus,
