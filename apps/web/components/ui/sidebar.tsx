@@ -36,7 +36,7 @@ import { useAuthStore } from '@/lib/stores/auth-store';
 import { useAuth } from '@/lib/hooks/use-auth';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
 import { usePipelineStore } from '@/lib/stores/pipeline-store';
-import type { StageState } from '@/lib/stores/pipeline-types';
+import type { StageState } from '@revamp/core';
 import { cn } from '@/lib/utils';
 
 // Stable empty array reference to avoid re-renders when not on pipeline page.

@@ -9,7 +9,7 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter,
-} from '@/components/ui/dialog';
+} from '@revamp/ui/components/dialog';
 
 interface ConfirmDeleteDialogProps {
   /** Whether the dialog is open */

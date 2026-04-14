@@ -8,9 +8,9 @@ import {
   Bot, Send, ChevronDown, ChevronRight, RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { Badge } from '@revamp/ui/components/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Card } from '@revamp/ui/components/card';
 import { apiClient } from '@/lib/api-client';
 
 // ─── Types ──────────────────────────────────────────────────────

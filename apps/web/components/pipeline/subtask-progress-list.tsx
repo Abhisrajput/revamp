@@ -1,6 +1,6 @@
 'use client';
 
-import type { ScanSubtaskState } from '@/lib/stores/pipeline-types';
+import type { ScanSubtaskState } from '@revamp/core';
 import { CheckCircle2, Circle, Loader2, XCircle, Bot } from 'lucide-react';
 
 const TYPE_LABELS: Record<string, string> = {

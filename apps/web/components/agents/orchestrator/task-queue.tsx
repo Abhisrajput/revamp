@@ -1,9 +1,9 @@
 'use client';
 
 import { cn } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
+import { Badge } from '@revamp/ui/components/badge';
 import { Clock, ArrowUpCircle, CheckCircle2, XCircle, Loader2, Zap, DollarSign } from 'lucide-react';
-import type { TaskQueueItem } from '@/lib/hooks/use-orchestrator';
+import type { TaskQueueItem } from '@revamp/core';
 
 // ─── CONSTANTS ──────────────────────────────────────────────────
 

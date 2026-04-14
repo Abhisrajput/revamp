@@ -2,7 +2,7 @@
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Download, ZoomIn, ZoomOut, Maximize2, AlertTriangle } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Button } from '@revamp/ui/components/button';
 import { cn } from '@/lib/utils';
 
 // --- Types ---

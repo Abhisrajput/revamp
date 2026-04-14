@@ -5,9 +5,9 @@ import {
   Play, BookOpen, FlaskConical, AlertTriangle, ClipboardList,
   FileText, Table2, FileCheck,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Card, CardContent } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';

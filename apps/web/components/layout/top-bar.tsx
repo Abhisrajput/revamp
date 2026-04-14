@@ -2,7 +2,7 @@
 
 import { memo } from 'react';
 import { Search } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Button } from '@revamp/ui/components/button';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { NotificationBell } from '@/components/layout/notification-bell';
 

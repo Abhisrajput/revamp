@@ -2,7 +2,7 @@
 
 import { useState, memo, useMemo } from 'react';
 import { ChevronDown, ChevronRight, Wrench, CheckCircle, XCircle, Loader2 } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
+import { Badge } from '@revamp/ui/components/badge';
 import { cn } from '@/lib/utils';
 
 // --- Types ---

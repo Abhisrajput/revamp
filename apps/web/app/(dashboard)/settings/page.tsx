@@ -2,10 +2,10 @@
 
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
+import { Card } from '@revamp/ui/components/card';
+import { Button } from '@revamp/ui/components/button';
+import { Input } from '@revamp/ui/components/input';
+import { Badge } from '@revamp/ui/components/badge';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { apiClient } from '@/lib/api-client';
 import {

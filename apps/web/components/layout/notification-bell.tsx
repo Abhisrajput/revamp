@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, memo } from 'react';
 import { Bell, X, CheckCheck, Trash2 } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
+import { Badge } from '@revamp/ui/components/badge';
 import { useNotificationStore, type Notification, type NotificationType } from '@/lib/stores/notification-store';
 // ─── HELPERS ────────────────────────────────────────────────────
 

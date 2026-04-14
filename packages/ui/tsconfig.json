@@ -6,7 +6,8 @@
     "jsx": "react-jsx",
     "declarationMap": true,
     "sourceMap": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"]
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "typeRoots": ["../../node_modules/@types", "../../apps/web/node_modules/@types"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
   "exclude": ["dist", "node_modules"]

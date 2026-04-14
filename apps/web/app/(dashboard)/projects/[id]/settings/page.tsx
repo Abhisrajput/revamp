@@ -9,13 +9,13 @@ import {
   Sparkles, Check, X, Plus, Trash2, Upload, ToggleLeft, ToggleRight,
   Zap, Brain, Shield, Eye, Code2,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Input } from '@revamp/ui/components/input';
+import { Badge } from '@revamp/ui/components/badge';
 import { apiClient } from '@/lib/api-client';
 import { LLMProviderSettings, type LLMProvider, type StageLLMConfig } from '@/components/settings/llm-provider-settings';
 import { StageContractsEditor } from '@/components/settings/stage-contracts-editor';
-import { STAGE_NAMES, STAGE_LABELS } from '@/lib/stores/pipeline-types';
+import { STAGE_NAMES, STAGE_LABELS } from '@revamp/core';
 import Link from 'next/link';
 
 // ─── Constants ────────────────────────────────────────────────

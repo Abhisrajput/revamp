@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Download, FileText, Code, Loader2, X, CheckCircle2 } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
+import { Badge } from '@revamp/ui/components/badge';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 

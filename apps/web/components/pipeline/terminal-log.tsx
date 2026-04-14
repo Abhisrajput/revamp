@@ -2,7 +2,7 @@
 
 import { useRef, useEffect, useState, memo, useCallback } from 'react';
 import { Terminal, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Button } from '@revamp/ui/components/button';
 import { cn } from '@/lib/utils';
 
 // --- Types ---

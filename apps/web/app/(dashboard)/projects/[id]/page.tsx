@@ -4,9 +4,9 @@ import { useState, useEffect, memo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import { ConfirmDeleteDialog } from '@/components/ui/confirm-delete-dialog';
 import { StageStepper } from '@/components/pipeline/stage-stepper';
 
@@ -25,7 +25,7 @@ import {
 import Link from 'next/link';
 import { apiClient } from '@/lib/api-client';
 import { usePipelineStore } from '@/lib/stores/pipeline-store';
-import { usePipelineActivityStore } from '@/lib/stores/pipeline-activity-store';
+import { usePipelineActivityStore } from '@revamp/core';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { STAGE_DISPLAY_LABELS } from '@revamp/shared-types';
 

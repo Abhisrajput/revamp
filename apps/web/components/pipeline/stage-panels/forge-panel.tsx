@@ -8,9 +8,9 @@ import {
   GitBranch, Download, FolderTree as FolderTreeIcon,
   CheckCircle, XCircle, Minus, Table2,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Card, CardContent } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
@@ -18,7 +18,7 @@ import { AgentActivity } from '@/components/pipeline/agent-activity';
 import { ConfidenceGauge } from '@/components/pipeline/confidence-gauge';
 import { CodeEditor } from '@/components/editor/code-editor';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
-import { usePipelineActivityStore } from '@/lib/stores/pipeline-activity-store';
+import { usePipelineActivityStore } from '@revamp/core';
 import { useStagePanel } from '@/lib/hooks/use-stage-panel';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
 import { useAuthStore } from '@/lib/stores/auth-store';

@@ -2,7 +2,7 @@
 
 import { useState, useMemo, memo } from 'react';
 import { Search, ArrowUpDown, CheckCircle2, Clock, Loader2, FileCheck } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
+import { Badge } from '@revamp/ui/components/badge';
 import { cn } from '@/lib/utils';
 
 // --- Types ---

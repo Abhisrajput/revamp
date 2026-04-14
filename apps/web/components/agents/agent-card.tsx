@@ -1,11 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import { Badge } from '@/components/ui/badge';
-import { Card } from '@/components/ui/card';
+import { Badge } from '@revamp/ui/components/badge';
+import { Card } from '@revamp/ui/components/card';
 import { BudgetBar } from './budget-bar';
 import { StatusIndicator } from './status-indicator';
-import type { AgentPersona } from '@/lib/hooks/use-agents';
+import type { AgentPersona } from '@revamp/core';
 import {
   Brain, Shield, Hammer, FileText, ChevronRight,
 } from 'lucide-react';

@@ -9,8 +9,8 @@
 
 import { useEffect, useRef } from 'react';
 import { cn } from '@/lib/utils';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Card, CardHeader, CardTitle, CardContent } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import { useAgentEvents, type AgentEvent, type AgentEventType } from '@/lib/hooks/use-agent-events';
 import {
   Activity,

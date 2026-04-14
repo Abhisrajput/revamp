@@ -2,7 +2,7 @@
 
 import { Activity, CheckCircle2, Clock, Cpu, Zap, DollarSign, Braces, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { OrchestratorStats, ActivityPeriod } from '@/lib/hooks/use-orchestrator';
+import type { OrchestratorStats, ActivityPeriod } from '@revamp/core';
 
 const PERIOD_OPTIONS: { value: ActivityPeriod; label: string }[] = [
   { value: '1h', label: '1H' },

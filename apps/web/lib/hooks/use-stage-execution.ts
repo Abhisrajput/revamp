@@ -3,8 +3,8 @@
 import { useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import { usePipelineStore } from '@/lib/stores/pipeline-store';
-import { usePipelineActivityStore } from '@/lib/stores/pipeline-activity-store';
-import { stageRequiresApproval } from '@/lib/stores/pipeline-types';
+import { usePipelineActivityStore } from '@revamp/core';
+import { stageRequiresApproval } from '@revamp/core';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { useNotificationStore } from '@/lib/stores/notification-store';
 

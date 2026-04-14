@@ -12,9 +12,9 @@ import {
   Eye,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { StageState } from '@/lib/stores/pipeline-types';
+import type { StageState } from '@revamp/core';
 import { usePipelineStore } from '@/lib/stores/pipeline-store';
-import { canExecuteStage, getStageBlockReason } from '@/lib/stores/pipeline-types';
+import { canExecuteStage, getStageBlockReason } from '@revamp/core';
 
 // ─── Types ──────────────────────────────────────────────────────
 

@@ -2,8 +2,8 @@
 
 import { useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useAgents, useAgentDashboard } from '@/lib/hooks/use-agents';
-import { useOrchestrator, type AgentOrchestratorState, type OrchestratorState } from '@/lib/hooks/use-orchestrator';
+import { useAgents, useAgentDashboard } from '@revamp/core';
+import { useOrchestrator, type AgentOrchestratorState, type OrchestratorState } from '@revamp/core';
 import { AgentCard } from '@/components/agents/agent-card';
 import { DepartmentCards } from '@/components/agents/department-cards';
 import { ControlsBar } from '@/components/agents/orchestrator/controls-bar';
@@ -12,8 +12,8 @@ import { OrchestratorCore } from '@/components/agents/orchestrator/orchestrator-
 import { TaskQueue } from '@/components/agents/orchestrator/task-queue';
 import { ExecutionLog } from '@/components/agents/orchestrator/execution-log';
 import { AgentGrid } from '@/components/agents/orchestrator/agent-grid';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Card } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import {
   Brain, Hammer, Shield, FileText, Users,
   DollarSign, Activity, AlertTriangle,

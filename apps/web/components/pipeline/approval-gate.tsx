@@ -8,15 +8,15 @@ import {
   ChevronDown, ChevronRight, Terminal,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Card, CardContent } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import { cn } from '@/lib/utils';
 import {
   type StageValidation,
   type ApprovalHistoryEntry,
   DEFAULT_CONFIDENCE_THRESHOLD,
-} from '@/lib/stores/pipeline-types';
+} from '@revamp/core';
 
 // --- Types ---
 

@@ -15,7 +15,7 @@ import {
   GitCompare,
   Wrench,
 } from 'lucide-react';
-import type { StageState } from '@/lib/stores/pipeline-types';
+import type { StageState } from '@revamp/core';
 import { StageContextMenu } from './stage-context-menu';
 
 // ─── Stage icons (unique per stage) ────────────────────────────

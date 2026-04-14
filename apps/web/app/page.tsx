@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { ArrowRight, Zap, BarChart3, Code2, Shield, Layers, Cpu, TrendingUp } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Button } from '@revamp/ui/components/button';
 
 export default function LandingPage() {
   return (

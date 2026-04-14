@@ -7,10 +7,10 @@ import {
   ArrowLeft, ArrowRight, Check, GitBranch, Upload, FolderOpen,
   Code2, FileText, Sparkles, Loader2,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardTitle, CardDescription } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Input } from '@revamp/ui/components/input';
+import { Card, CardContent, CardTitle, CardDescription } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import { apiClient } from '@/lib/api-client';
 import Link from 'next/link';
 

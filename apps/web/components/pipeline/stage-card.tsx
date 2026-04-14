@@ -2,8 +2,8 @@
 
 import { useState } from 'react';
 import { ChevronDown, CheckCircle, Clock, AlertCircle, Play } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { Button } from '@revamp/ui/components/button';
+import { Card } from '@revamp/ui/components/card';
 import { cn } from '@/lib/utils';
 
 interface StageCardProps {

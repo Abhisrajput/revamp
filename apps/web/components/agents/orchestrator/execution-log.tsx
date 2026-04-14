@@ -2,9 +2,9 @@
 
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
 import { cn } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
+import { Badge } from '@revamp/ui/components/badge';
 import { ChevronDown, ChevronRight, ExternalLink, Clock, User, Layers } from 'lucide-react';
-import type { ExecutionLogEntry } from '@/lib/hooks/use-orchestrator';
+import type { ExecutionLogEntry } from '@revamp/core';
 
 // ─── CONSTANTS ──────────────────────────────────────────────────
 

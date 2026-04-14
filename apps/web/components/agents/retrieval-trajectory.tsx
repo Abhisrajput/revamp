@@ -1,9 +1,9 @@
 'use client';
 
-import { useRetrievalTrajectories } from '@/lib/hooks/use-agents';
-import type { RetrievalTrajectory, RetrievalStep } from '@/lib/hooks/use-agents';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { useRetrievalTrajectories } from '@revamp/core';
+import type { RetrievalTrajectory, RetrievalStep } from '@revamp/core';
+import { Card } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import { Route, Clock, Layers } from 'lucide-react';
 
 const TIER_COLORS: Record<string, string> = {

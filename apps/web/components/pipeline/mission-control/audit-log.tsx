@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ClipboardList, Cpu, FileText, GitBranch, Shield, Settings, Users, Layers } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { apiClient } from '@/lib/api-client';
-import { Badge } from '@/components/ui/badge';
+import { Badge } from '@revamp/ui/components/badge';
 
 // ─── Types ──────────────────────────────────────────────────────
 

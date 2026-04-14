@@ -1,8 +1,8 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Card } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import { Coins, TrendingUp, Cpu, Zap } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 

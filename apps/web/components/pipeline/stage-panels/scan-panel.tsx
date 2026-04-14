@@ -6,17 +6,17 @@ import {
   Code2, GitBranch, CheckCircle2, Loader2,
   Eye, EyeOff, Trash2, Upload, FolderOpen, X, Cpu, RefreshCw,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Card, CardContent } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { BreeOutputTab } from '@/components/pipeline/bree-output-tab';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { usePipelineStore } from '@/lib/stores/pipeline-store';
-import { usePipelineActivityStore } from '@/lib/stores/pipeline-activity-store';
-import { canExecuteStage, getStageBlockReason, shouldShowApprovalGate } from '@/lib/stores/pipeline-types';
+import { usePipelineActivityStore } from '@revamp/core';
+import { canExecuteStage, getStageBlockReason, shouldShowApprovalGate } from '@revamp/core';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 import type { StagePanelProps } from './types';

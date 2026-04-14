@@ -24,7 +24,7 @@ import {
   STAGE_NAMES,
   STAGE_LABELS,
   stageRequiresApproval,
-} from '@/lib/stores/pipeline-types';
+} from '@revamp/core';
 
 // ─── Status mapping ─────────────────────────────────────────────
 // Backend uses different status names than frontend.

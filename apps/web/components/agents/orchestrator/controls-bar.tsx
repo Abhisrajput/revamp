@@ -2,7 +2,7 @@
 
 import { cn } from '@/lib/utils';
 import { Play, Pause, RotateCcw, Wifi, WifiOff } from 'lucide-react';
-import type { OrchestratorState } from '@/lib/hooks/use-orchestrator';
+import type { OrchestratorState } from '@revamp/core';
 
 const STATE_CONFIG: Record<string, { label: string; color: string; bg: string; dot: string }> = {
   running: { label: 'Running', color: 'text-cyan-600 dark:text-cyan-400', bg: 'bg-cyan-100 dark:bg-cyan-900/20', dot: 'bg-cyan-400' },

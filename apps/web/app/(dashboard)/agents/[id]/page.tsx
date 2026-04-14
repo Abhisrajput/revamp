@@ -2,7 +2,7 @@
 
 import { use, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { useAgent, useAgentCosts, useUpdateAgent, useDeleteAgent } from '@/lib/hooks/use-agents';
+import { useAgent, useAgentCosts, useUpdateAgent, useDeleteAgent } from '@revamp/core';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { BudgetBar } from '@/components/agents/budget-bar';
 import { StatusIndicator } from '@/components/agents/status-indicator';
@@ -10,10 +10,10 @@ import { ReportingChain, Subordinates } from '@/components/agents/reporting-chai
 import { RecentSessions } from '@/components/agents/recent-sessions';
 import { EvolutionMemoryPanel } from '@/components/agents/evolution-memory';
 import { CostHistoryChart } from '@/components/agents/cost-history-chart';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Card } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Input } from '@revamp/ui/components/input';
 import {
   ArrowLeft, Brain, Shield, Hammer, FileText,
   Pause, Play, Trash2, DollarSign, Clock,

@@ -1,10 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import { useEvolutionMemories } from '@/lib/hooks/use-agents';
-import type { EvolutionMemory } from '@/lib/hooks/use-agents';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { useEvolutionMemories } from '@revamp/core';
+import type { EvolutionMemory } from '@revamp/core';
+import { Card } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import { Lightbulb, Filter } from 'lucide-react';
 
 const CATEGORY_META: Record<string, { label: string; color: string }> = {

@@ -2,8 +2,8 @@
 
 import { useState, useMemo, memo } from 'react';
 import { Check, X, Copy, ChevronDown, ChevronUp } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Badge } from '@revamp/ui/components/badge';
 import { cn } from '@/lib/utils';
 
 // --- Types ---

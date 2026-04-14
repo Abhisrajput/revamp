@@ -6,7 +6,7 @@ import {
   Brain, Hammer, Shield, FileText, Crown, Merge,
   Bot, Lightbulb, AlertTriangle,
 } from 'lucide-react';
-import type { AgentOrchestratorState, OrchestratorState } from '@/lib/hooks/use-orchestrator';
+import type { AgentOrchestratorState, OrchestratorState } from '@revamp/core';
 
 const DEPT_ICONS: Record<string, { icon: typeof Brain; color: string }> = {
   discovery: { icon: Brain, color: '#a855f7' },

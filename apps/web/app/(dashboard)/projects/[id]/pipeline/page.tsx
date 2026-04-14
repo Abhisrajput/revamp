@@ -23,8 +23,8 @@ import { DiagnosticDialog } from '@/components/pipeline/diagnostic-dialog';
 
 import { usePipelineStore } from '@/lib/stores/pipeline-store';
 import { usePipelineConfigStore } from '@/lib/stores/pipeline-config-store';
-import { usePipelineActivityStore } from '@/lib/stores/pipeline-activity-store';
-import { canExecuteStage, getStageBlockReason } from '@/lib/stores/pipeline-types';
+import { usePipelineActivityStore } from '@revamp/core';
+import { canExecuteStage, getStageBlockReason } from '@revamp/core';
 import { PIPELINE_STAGE_ORDER } from '@revamp/shared-types';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
 import { useAuthStore } from '@/lib/stores/auth-store';
@@ -33,7 +33,7 @@ import { usePipelineShortcuts } from '@/lib/hooks/use-keyboard-shortcuts';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 // IndexedDB caching handled by pipeline-store.setStageOutput (still uses pipeline-cache internally)
-import { useLatestPipelineRun, usePipelineStatus, useAllStageOutputs } from '@/lib/hooks/use-pipeline-queries';
+import { useLatestPipelineRun, usePipelineStatus, useAllStageOutputs } from '@revamp/core';
 
 // ─── Page Component ─────────────────────────────────────────────
 

@@ -12,15 +12,15 @@
 import { useState, useCallback } from 'react';
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Card } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
+import { Button } from '@revamp/ui/components/button';
 import {
   useEscalatedAssignments,
   useApproveEscalation,
   useRejectEscalation,
   type EscalatedAssignment,
-} from '@/lib/hooks/use-agents';
+} from '@revamp/core';
 import {
   AlertTriangle,
   CheckCircle2,

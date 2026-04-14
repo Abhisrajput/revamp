@@ -4,8 +4,8 @@ import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { ArrowLeft, Clock, CheckCircle, XCircle, Play, RotateCcw, FileText, Cpu } from 'lucide-react';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Card } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import { apiClient } from '@/lib/api-client';
 import { PIPELINE_STAGE_ORDER, STAGE_DISPLAY_LABELS } from '@revamp/shared-types';
 

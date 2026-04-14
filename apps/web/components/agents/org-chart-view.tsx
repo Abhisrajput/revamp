@@ -4,8 +4,8 @@ import { memo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Brain, Hammer, Shield, FileText, Network, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
-import { Card } from '@/components/ui/card';
+import { Badge } from '@revamp/ui/components/badge';
+import { Card } from '@revamp/ui/components/card';
 import { apiClient } from '@/lib/api-client';
 
 interface OrgAgent {

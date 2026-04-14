@@ -2,11 +2,11 @@
 
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
-import { useDepartmentTree } from '@/lib/hooks/use-agents';
-import type { DelegationTarget } from '@/lib/hooks/use-agents';
+import { useDepartmentTree } from '@revamp/core';
+import type { DelegationTarget } from '@revamp/core';
 import { StatusIndicator } from './status-indicator';
-import { Badge } from '@/components/ui/badge';
-import { Card } from '@/components/ui/card';
+import { Badge } from '@revamp/ui/components/badge';
+import { Card } from '@revamp/ui/components/card';
 import {
   Brain, Hammer, Shield, FileText, Users,
 } from 'lucide-react';

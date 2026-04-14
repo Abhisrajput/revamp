@@ -2,9 +2,9 @@
 
 import { cn } from '@/lib/utils';
 import { StatusIndicator } from '@/components/agents/status-indicator';
-import { Badge } from '@/components/ui/badge';
+import { Badge } from '@revamp/ui/components/badge';
 import { Brain, Hammer, Shield, FileText, Zap, DollarSign, CheckCircle2, XCircle } from 'lucide-react';
-import type { AgentOrchestratorState } from '@/lib/hooks/use-orchestrator';
+import type { AgentOrchestratorState } from '@revamp/core';
 
 // ─── CONSTANTS ──────────────────────────────────────────────────
 

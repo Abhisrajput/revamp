@@ -1,9 +1,9 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
+import { Button } from '@revamp/ui/components/button';
 import {
   Cpu, GitBranch, Layers, Activity, CheckCircle2,
   Clock, AlertTriangle, ChevronDown, ChevronUp,

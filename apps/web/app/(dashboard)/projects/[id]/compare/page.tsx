@@ -8,9 +8,9 @@ import {
   Plus, Minus, Loader2,
 } from 'lucide-react';
 import Link from 'next/link';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Card, CardContent } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import { DiffReview } from '@/components/pipeline/diff-review';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';

@@ -9,8 +9,8 @@
 import { useState } from 'react';
 import { TypingBot } from '@/components/ui/typing-bot';
 import { CheckCircle2, XCircle, Loader2, Bot, FileText, Pencil, Eye, Clock, X } from 'lucide-react';
-import type { ScanSubtaskState } from '@/lib/stores/pipeline-types';
-import { usePipelineActivityStore } from '@/lib/stores/pipeline-activity-store';
+import type { ScanSubtaskState } from '@revamp/core';
+import { usePipelineActivityStore } from '@revamp/core';
 import { cn } from '@/lib/utils';
 
 interface AgentBotGridProps {

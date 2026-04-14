@@ -1,11 +1,11 @@
 'use client';
 
 import { cn } from '@/lib/utils';
-import { useAgentBudgetStatus, useResumeAgent } from '@/lib/hooks/use-agents';
-import type { AgentPersona } from '@/lib/hooks/use-agents';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { useAgentBudgetStatus, useResumeAgent } from '@revamp/core';
+import type { AgentPersona } from '@revamp/core';
+import { Card } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
+import { Button } from '@revamp/ui/components/button';
 import {
   DollarSign, AlertTriangle, XOctagon, TrendingUp, Play,
 } from 'lucide-react';

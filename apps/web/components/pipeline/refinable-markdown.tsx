@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef, useEffect, memo, useMemo } from 'react';
 import DOMPurify from 'dompurify';
 import { Pencil, X, Loader2, Send } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Button } from '@revamp/ui/components/button';
 import { cn } from '@/lib/utils';
 import {
   parseMarkdownSections,

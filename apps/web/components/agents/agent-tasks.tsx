@@ -11,14 +11,14 @@
 
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Card, CardHeader, CardTitle, CardContent } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import {
   useAgentSubtasks,
   useAgentSessions,
   type AgentPersona,
   type AgentSubtask,
-} from '@/lib/hooks/use-agents';
+} from '@revamp/core';
 import {
   Briefcase,
   GitBranch,

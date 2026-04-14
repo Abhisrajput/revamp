@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useCallback, useMemo } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Input } from '@revamp/ui/components/input';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import {
   Bot, Plus, X, Eye, EyeOff, Server, Zap, Cpu, ShieldCheck,
   KeyRound, ChevronDown, Star, RefreshCw, Loader2,

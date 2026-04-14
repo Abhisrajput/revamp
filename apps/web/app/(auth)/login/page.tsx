@@ -4,9 +4,9 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/lib/hooks/use-auth';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card } from '@/components/ui/card';
+import { Button } from '@revamp/ui/components/button';
+import { Input } from '@revamp/ui/components/input';
+import { Card } from '@revamp/ui/components/card';
 import { Loader2 } from 'lucide-react';
 
 export default function LoginPage() {

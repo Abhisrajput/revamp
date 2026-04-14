@@ -17,8 +17,8 @@ import {
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Badge } from '@revamp/ui/components/badge';
 
 interface DiagnosticReport {
   runId: string;

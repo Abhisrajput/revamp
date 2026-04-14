@@ -3,7 +3,7 @@
 import { memo } from 'react';
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
+import { Badge } from '@revamp/ui/components/badge';
 import { ChevronRight, Play, CheckCircle, XCircle, Clock } from 'lucide-react';
 import { PIPELINE_STAGE_ORDER, STAGE_DISPLAY_LABELS } from '@revamp/shared-types';
 

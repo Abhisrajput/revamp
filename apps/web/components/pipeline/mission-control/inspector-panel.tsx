@@ -17,12 +17,12 @@ import { ConfidenceGauge } from '@/components/pipeline/confidence-gauge';
 import { ValidationResults } from '@/components/pipeline/validation-results';
 import { ApprovalGate } from '@/components/pipeline/approval-gate';
 import { apiClient } from '@/lib/api-client';
-import type { StageState } from '@/lib/stores/pipeline-types';
+import type { StageState } from '@revamp/core';
 // Pipeline store removed — data flows via props from pipeline page
-import { shouldShowApprovalGate } from '@/lib/stores/pipeline-types';
+import { shouldShowApprovalGate } from '@revamp/core';
 import { useUIPreferencesStore, type InspectorTab } from '@/lib/stores/ui-preferences-store';
-import { useStageTrajectory } from '@/lib/hooks/use-agents';
-import type { RetrievalStep } from '@/lib/hooks/use-agents';
+import { useStageTrajectory } from '@revamp/core';
+import type { RetrievalStep } from '@revamp/core';
 
 // ─── Tab Config ─────────────────────────────────────────────────
 

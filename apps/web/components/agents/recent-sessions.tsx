@@ -1,10 +1,10 @@
 'use client';
 
 import { cn } from '@/lib/utils';
-import { useAgentSessions } from '@/lib/hooks/use-agents';
-import type { SessionChainEntry } from '@/lib/hooks/use-agents';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { useAgentSessions } from '@revamp/core';
+import type { SessionChainEntry } from '@revamp/core';
+import { Card } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import {
   MessageSquare, Hash, FileText, AlertTriangle, CheckCircle2,
 } from 'lucide-react';

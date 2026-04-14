@@ -2,11 +2,11 @@
 
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
-import { useAgentReportingChain, useAgentSubordinates } from '@/lib/hooks/use-agents';
-import type { DelegationTarget } from '@/lib/hooks/use-agents';
+import { useAgentReportingChain, useAgentSubordinates } from '@revamp/core';
+import type { DelegationTarget } from '@revamp/core';
 import { StatusIndicator } from './status-indicator';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Card } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import {
   ArrowUp, ArrowDown,
 } from 'lucide-react';

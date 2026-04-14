@@ -2,7 +2,7 @@
  * Shared types for all stage panel components.
  */
 
-import type { StageState } from '@/lib/stores/pipeline-types';
+import type { StageState } from '@revamp/core';
 
 export interface StagePanelProps {
   /** Current stage state from pipeline store */

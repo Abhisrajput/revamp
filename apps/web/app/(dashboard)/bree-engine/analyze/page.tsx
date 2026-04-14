@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Card, CardContent, CardHeader, CardTitle } from '@revamp/ui/components/card';
+import { Badge } from '@revamp/ui/components/badge';
 import {
   Play, CheckCircle2, XCircle,
   GitBranch, Skull, Gauge, FileSearch, Brain,

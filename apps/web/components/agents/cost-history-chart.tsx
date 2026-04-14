@@ -2,8 +2,8 @@
 
 import { useMemo } from 'react';
 import { cn } from '@/lib/utils';
-import { Card } from '@/components/ui/card';
-import type { CostEvent } from '@/lib/hooks/use-agents';
+import { Card } from '@revamp/ui/components/card';
+import type { CostEvent } from '@revamp/core';
 import { BarChart3 } from 'lucide-react';
 
 interface CostHistoryChartProps {

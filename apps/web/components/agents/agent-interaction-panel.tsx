@@ -12,16 +12,16 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { cn } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Badge } from '@revamp/ui/components/badge';
+import { Button } from '@revamp/ui/components/button';
+import { Input } from '@revamp/ui/components/input';
 import {
   useAgent,
   useEscalatedAssignments,
   useApproveEscalation,
   useRejectEscalation,
   useCreateSubtask,
-} from '@/lib/hooks/use-agents';
+} from '@revamp/core';
 import {
   useAgentEvents,
   type AgentEvent,

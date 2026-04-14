@@ -8,8 +8,8 @@ import {
   GitBranch, Database, Code2, Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Badge } from '@revamp/ui/components/badge';
+import { Button } from '@revamp/ui/components/button';
 import { apiClient } from '@/lib/api-client';
 import { MermaidDiagram } from '@/components/ui/mermaid-diagram';
 
