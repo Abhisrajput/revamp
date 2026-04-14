@@ -39,6 +39,7 @@ import {
   loadUserFeedback,
   updateProjectMetrics,
 } from "./pipeline-repository.js";
+import { finalizeStageResult } from "./pipeline-finalize.js";
 import {
   type StageConfig,
   PIPELINE_STAGES,
@@ -829,76 +830,13 @@ export class PipelineService {
         credentials: projectCredentials,
       });
 
-      // Store result + record agent completion (reuse existing flow below)
+      // Finalize: store output, record agent, track usage, update progress, emit events
+      await finalizeStageResult({
+        pipelineRunId, projectId: run.project.id, stageName, stageIndex: stageConfig.index,
+        result: scanResult, modelName, agentCtx, agentExec, onEvent: options?.onEvent,
+      });
+
       if (scanResult.output) {
-        await storeStageOutput(pipelineRunId, stageName, scanResult);
-      }
-
-      if (agentCtx && scanResult.output) {
-        try {
-          await recordAgentCompletion(
-            agentCtx,
-            {
-              costCents: 0,
-              tokensUsed: 0,
-              refinementCount: scanResult.refinementCount,
-              result: { orchestrated: true, subtaskCount: scanResult.phases.length },
-            },
-            pipelineRunId,
-            "auto",
-            modelName || "default",
-            0,
-            0,
-            PipelineStageName.SCAN,
-          );
-        } catch {
-          // Non-fatal
-        }
-        if (agentExec) {
-          try { await agentExec.complete(); } catch (e) { console.error("[PipelineService] Agent completion failed:", e); }
-        }
-      }
-
-      // Record token usage from SCAN orchestration (estimated from content sizes)
-      try {
-        const estimatedInputTokens = Math.round((scanResult.phases?.reduce((s: number, p: any) => s + (JSON.stringify(p.data || '').length), 0) || 4000) / 4);
-        const estimatedOutputTokens = Math.round((scanResult.output?.length || 0) / 4);
-        if (estimatedOutputTokens > 0) {
-          const cost = estimateCostCents(estimatedInputTokens, estimatedOutputTokens, modelName);
-          await recordPipelineSpend(pipelineRunId, cost);
-          await db.insert(llmUsage).values({
-            id: crypto.randomUUID(),
-            project_id: run.project.id,
-            pipeline_run_id: pipelineRunId,
-            model: modelName || "unknown",
-            input_tokens: estimatedInputTokens,
-            output_tokens: estimatedOutputTokens,
-            cost: Math.round(cost),
-          });
-          // Emit usage event for frontend
-          options?.onEvent?.({
-            phase: 'usage' as any,
-            stageName,
-            stageIndex: stageConfig.index,
-            timestamp: new Date().toISOString(),
-            data: { input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens, cost },
-          });
-        }
-      } catch { /* non-fatal */ }
-
-      // Update stage progress + create approval gate
-      if (scanResult.output) {
-        const scanScore = scanResult.validation?.confidenceScore ?? 70;
-        const scanConfig = getStageConfig(stageName);
-        await db.transaction(async (tx) => {
-          await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: scanScore });
-          if (scanConfig.requiresApproval) {
-            await createApprovalGate(pipelineRunId, stageName, scanConfig.requiredRole || "admin", tx);
-            await updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: scanScore });
-          }
-        });
-        emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: scanResult.duration, confidenceScore: scanScore });
-
         // Auto-populate tailored prompts for stages 2-8 based on SCAN + BREE output.
         // These prompts reference specific components, patterns, and risks found in SCAN,
         // making subsequent stages contextual to this codebase instead of generic.
@@ -923,9 +861,6 @@ export class PipelineService {
             data: { phase: 'prompts_generation_failed', message: `Prompt generation failed: ${err instanceof Error ? err.message : 'unknown error'}`, warning: true },
           });
         }
-      } else {
-        await updateStageProgress(pipelineRunId, stageName, "failed", 0);
-        emitStageFailed({ pipelineRunId, projectId: run.project.id, stageName, error: "SCAN produced no output" });
       }
 
       return scanResult;
@@ -1022,69 +957,11 @@ export class PipelineService {
         credentials: projectCredentials,
       });
 
-      // Store result
-      if (decodeResult.output) {
-        await storeStageOutput(pipelineRunId, stageName, decodeResult);
-      }
-
-      if (agentCtx && decodeResult.output) {
-        try {
-          await recordAgentCompletion(
-            agentCtx,
-            {
-              costCents: 0,
-              tokensUsed: 0,
-              refinementCount: decodeResult.refinementCount,
-              result: { orchestrated: true, subtaskCount: decodeResult.phases.length },
-            },
-            pipelineRunId,
-            "auto",
-            modelName || "default",
-            0,
-            0,
-            PipelineStageName.DECODE,
-          );
-        } catch {
-          // Non-fatal
-        }
-        if (agentExec) {
-          try { await agentExec.complete(); } catch (e) { console.error("[PipelineService] Agent completion failed:", e); }
-        }
-      }
-
-      // Record token usage from DECODE orchestration (estimated from content sizes)
-      try {
-        const estimatedInputTokens = Math.round((decodeResult.phases?.reduce((s: number, p: any) => s + (JSON.stringify(p.data || '').length), 0) || 4000) / 4);
-        const estimatedOutputTokens = Math.round((decodeResult.output?.length || 0) / 4);
-        if (estimatedOutputTokens > 0) {
-          const cost = estimateCostCents(estimatedInputTokens, estimatedOutputTokens, modelName);
-          await recordPipelineSpend(pipelineRunId, cost);
-          await db.insert(llmUsage).values({
-            id: crypto.randomUUID(), project_id: run.project.id, pipeline_run_id: pipelineRunId,
-            model: modelName || "unknown", input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens, cost: Math.round(cost),
-          });
-          options?.onEvent?.({ phase: 'usage' as any, stageName, stageIndex: stageConfig.index, timestamp: new Date().toISOString(),
-            data: { input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens, cost },
-          });
-        }
-      } catch { /* non-fatal */ }
-
-      // Update stage progress + create approval gate
-      if (decodeResult.output) {
-        const decodeScore = decodeResult.validation?.confidenceScore ?? 70;
-        const decodeConfig = getStageConfig(stageName);
-        await db.transaction(async (tx) => {
-          await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: decodeScore });
-          if (decodeConfig.requiresApproval) {
-            await createApprovalGate(pipelineRunId, stageName, decodeConfig.requiredRole || "admin", tx);
-            await updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: decodeScore });
-          }
-        });
-        emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: decodeResult.duration, confidenceScore: decodeScore });
-      } else {
-        await updateStageProgress(pipelineRunId, stageName, "failed", 0);
-        emitStageFailed({ pipelineRunId, projectId: run.project.id, stageName, error: "DECODE produced no output" });
-      }
+      // Finalize: store output, record agent, track usage, update progress, emit events
+      await finalizeStageResult({
+        pipelineRunId, projectId: run.project.id, stageName, stageIndex: stageConfig.index,
+        result: decodeResult, modelName, agentCtx, agentExec, onEvent: options?.onEvent,
+      });
 
       return decodeResult;
     }
@@ -1104,62 +981,11 @@ export class PipelineService {
         credentials: projectCredentials,
       });
 
-      if (forgeResult.output) {
-        await storeStageOutput(pipelineRunId, stageName, forgeResult);
-      }
-
-      if (agentCtx && forgeResult.output) {
-        try {
-          await recordAgentCompletion(
-            agentCtx,
-            {
-              costCents: 0,
-              tokensUsed: 0,
-              refinementCount: forgeResult.refinementCount,
-              result: { orchestrated: true },
-            },
-            pipelineRunId,
-            "auto",
-            modelName || "default",
-            0,
-            0,
-            PipelineStageName.FORGE,
-          );
-        } catch { /* non-fatal */ }
-      }
-
-      // Record token usage from FORGE orchestration (estimated from content sizes)
-      try {
-        const estimatedInputTokens = Math.round((forgeResult.phases?.reduce((s: number, p: any) => s + (JSON.stringify(p.data || '').length), 0) || 4000) / 4);
-        const estimatedOutputTokens = Math.round((forgeResult.output?.length || 0) / 4);
-        if (estimatedOutputTokens > 0) {
-          const cost = estimateCostCents(estimatedInputTokens, estimatedOutputTokens, modelName);
-          await recordPipelineSpend(pipelineRunId, cost);
-          await db.insert(llmUsage).values({
-            id: crypto.randomUUID(), project_id: run.project.id, pipeline_run_id: pipelineRunId,
-            model: modelName || "unknown", input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens, cost: Math.round(cost),
-          });
-          options?.onEvent?.({ phase: 'usage' as any, stageName, stageIndex: stageConfig.index, timestamp: new Date().toISOString(),
-            data: { input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens, cost },
-          });
-        }
-      } catch { /* non-fatal */ }
-
-      if (forgeResult.output) {
-        const forgeScore = forgeResult.validation?.confidenceScore ?? 70;
-        const forgeConfig = getStageConfig(stageName);
-        await db.transaction(async (tx) => {
-          await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: forgeScore });
-          if (forgeConfig.requiresApproval) {
-            await createApprovalGate(pipelineRunId, stageName, forgeConfig.requiredRole || "admin", tx);
-            await updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: forgeScore });
-          }
-        });
-        emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: forgeResult.duration, confidenceScore: forgeScore });
-      } else {
-        await updateStageProgress(pipelineRunId, stageName, "failed", 0);
-        emitStageFailed({ pipelineRunId, projectId: run.project.id, stageName, error: "FORGE produced no output" });
-      }
+      // Finalize: store output, record agent, track usage, update progress, emit events
+      await finalizeStageResult({
+        pipelineRunId, projectId: run.project.id, stageName, stageIndex: stageConfig.index,
+        result: forgeResult, modelName, agentCtx, agentExec, onEvent: options?.onEvent,
+      });
 
       return forgeResult;
     }
