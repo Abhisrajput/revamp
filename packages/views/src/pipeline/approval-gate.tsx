@@ -38,42 +38,53 @@ interface ApprovalGateProps {
 
 // ─── Countdown Hook ─────────────────────────────────────────────
 
+/**
+ * Countdown hook that NEVER restarts unexpectedly.
+ *
+ * Design: a single interval ticks every second and forces a re-render.
+ * `remaining` is computed inline from `deadline - Date.now()` — no state
+ * that can go stale or trigger effect re-runs. The interval only depends
+ * on `enabled` (boolean), so it survives prop changes, polling cycles,
+ * and parent re-renders without resetting.
+ */
 function useCountdown(
   enabled: boolean,
   pendingApprovalSince: string | null | undefined,
   timeoutHours: number,
   onExpire: () => void,
 ) {
-  const [remaining, setRemaining] = useState<number | null>(null);
-  // Use a ref for onExpire so the interval doesn't restart when the callback
-  // changes (e.g., when validation score updates recreate handleAutoApprove).
+  const [, setTick] = useState(0);
   const onExpireRef = useRef(onExpire);
   onExpireRef.current = onExpire;
+  const firedRef = useRef(false);
 
+  // Reset fired flag when the timestamp changes (new approval gate)
+  const prevTimestamp = useRef(pendingApprovalSince);
+  if (pendingApprovalSince !== prevTimestamp.current) {
+    prevTimestamp.current = pendingApprovalSince;
+    firedRef.current = false;
+  }
+
+  // Single interval — only restarts if enabled flips. NOT when props change.
   useEffect(() => {
-    if (!enabled || !pendingApprovalSince || timeoutHours <= 0) {
-      setRemaining(null);
-      return;
-    }
-
-    const deadline = new Date(pendingApprovalSince).getTime() + timeoutHours * 3600_000;
-
-    const tick = () => {
-      const diff = deadline - Date.now();
-      if (diff <= 0) {
-        setRemaining(0);
-        onExpireRef.current();
-        return;
-      }
-      setRemaining(diff);
-    };
-
-    tick();
-    const interval = setInterval(tick, 1000);
+    if (!enabled) return;
+    const interval = setInterval(() => setTick((n) => n + 1), 1000);
     return () => clearInterval(interval);
-  }, [enabled, pendingApprovalSince, timeoutHours]);
+  }, [enabled]);
 
-  return remaining;
+  // Compute remaining inline — no state, no effect, no restart
+  if (!enabled || !pendingApprovalSince || timeoutHours <= 0) return null;
+
+  const deadline = new Date(pendingApprovalSince).getTime() + timeoutHours * 3600_000;
+  const diff = deadline - Date.now();
+
+  if (diff <= 0 && !firedRef.current) {
+    firedRef.current = true;
+    setTimeout(() => onExpireRef.current(), 0);
+    return 0;
+  }
+
+  return diff > 0 ? diff : 0;
 }
 
 function formatCountdown(ms: number): string {
