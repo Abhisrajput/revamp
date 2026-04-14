@@ -38,7 +38,11 @@ export * from './hooks/use-orchestrator';
 export { useRefineSection } from './hooks/use-refine-section';
 
 // Stores (platform-independent — uses injected storage adapters)
+export { useAuthStore, useAuthHydrated } from './stores/auth-store';
+export type { User } from './stores/auth-store';
 export { usePipelineActivityStore } from './stores/pipeline-activity-store';
+export { usePipelineConfigStore } from './stores/pipeline-config-store';
+export { usePipelineStore } from './stores/pipeline-store';
 
 // Pipeline API Types
 export type {

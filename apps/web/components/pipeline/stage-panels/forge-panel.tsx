@@ -21,7 +21,7 @@ import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { usePipelineActivityStore } from '@revamp/core';
 import { useStagePanel } from '@/lib/hooks/use-stage-panel';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
-import { useAuthStore } from '@/lib/stores/auth-store';
+import { useAuthStore } from '@revamp/core';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 import { inferLanguage, buildFileTree } from '@/lib/utils/file-tree';

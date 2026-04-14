@@ -12,7 +12,7 @@ import { parseMarkdownSections } from '@/lib/utils/markdown-sections';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { MermaidDiagram } from '@/components/pipeline/mermaid-diagram';
 import { RefinableMarkdown } from '@/components/pipeline/refinable-markdown';
-import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import { usePipelineStore } from '@revamp/core';
 import { cn } from '@/lib/utils';
 
 // ─── Types ────────────────────────────────────────────────────

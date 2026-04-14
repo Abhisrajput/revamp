@@ -12,7 +12,7 @@ import {
   ArrowUpRight, ArrowDownRight, TrendingUp,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
-import { useAuthStore } from '@/lib/stores/auth-store';
+import { useAuthStore } from '@revamp/core';
 import Link from 'next/link';
 // Link is used in User Management (project badges) and LivePipelineFeed
 import { MetricCard } from '@/components/dashboard/metric-card';

@@ -14,7 +14,7 @@ import { BreeOutputTab } from '@/components/pipeline/bree-output-tab';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
-import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import { usePipelineStore } from '@revamp/core';
 import { usePipelineActivityStore } from '@revamp/core';
 import { canExecuteStage, getStageBlockReason, shouldShowApprovalGate } from '@revamp/core';
 import { apiClient } from '@/lib/api-client';

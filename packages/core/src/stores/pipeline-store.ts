@@ -9,7 +9,7 @@ import {
   type StageState,
   createDefaultStage,
   createDefaultStages,
-} from '@revamp/core';
+} from '../types/stage';
 
 // ─── Types ─────────────────────────────────────────────────────────
 

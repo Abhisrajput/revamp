@@ -21,13 +21,13 @@ import { ExportDialog } from '@/components/pipeline/export-dialog';
 import { GitHubSyncDialog } from '@/components/pipeline/github-sync-dialog';
 import { DiagnosticDialog } from '@/components/pipeline/diagnostic-dialog';
 
-import { usePipelineStore } from '@/lib/stores/pipeline-store';
-import { usePipelineConfigStore } from '@/lib/stores/pipeline-config-store';
+import { usePipelineStore } from '@revamp/core';
+import { usePipelineConfigStore } from '@revamp/core';
 import { usePipelineActivityStore } from '@revamp/core';
 import { canExecuteStage, getStageBlockReason } from '@revamp/core';
 import { PIPELINE_STAGE_ORDER } from '@revamp/shared-types';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
-import { useAuthStore } from '@/lib/stores/auth-store';
+import { useAuthStore } from '@revamp/core';
 import { useStageExecution } from '@/lib/hooks/use-stage-execution';
 import { usePipelineShortcuts } from '@/lib/hooks/use-keyboard-shortcuts';
 import { apiClient } from '@/lib/api-client';

@@ -11,7 +11,7 @@
  */
 
 import { useMemo } from 'react';
-import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import { usePipelineStore } from '@revamp/core';
 import {
   usePipelineStatus,
   useAllStageOutputs,

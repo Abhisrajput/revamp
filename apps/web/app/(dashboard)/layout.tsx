@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { useAuthStore, useAuthHydrated } from '@/lib/stores/auth-store';
+import { useAuthStore, useAuthHydrated } from '@revamp/core';
 import { Sidebar } from '@/components/ui/sidebar';
 import { TopBar } from '@/components/layout/top-bar';
 import { AgentNotifications } from '@/components/agents/agent-notification';

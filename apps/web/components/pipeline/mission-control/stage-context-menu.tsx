@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { StageState } from '@revamp/core';
-import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import { usePipelineStore } from '@revamp/core';
 import { canExecuteStage, getStageBlockReason } from '@revamp/core';
 
 // ─── Types ──────────────────────────────────────────────────────

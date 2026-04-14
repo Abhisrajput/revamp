@@ -32,10 +32,10 @@ import {
   Moon,
   Monitor,
 } from 'lucide-react';
-import { useAuthStore } from '@/lib/stores/auth-store';
+import { useAuthStore } from '@revamp/core';
 import { useAuth } from '@/lib/hooks/use-auth';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
-import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import { usePipelineStore } from '@revamp/core';
 import type { StageState } from '@revamp/core';
 import { cn } from '@/lib/utils';
 

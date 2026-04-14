@@ -2,10 +2,10 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
-import { usePipelineStore } from '@/lib/stores/pipeline-store';
+import { usePipelineStore } from '@revamp/core';
 import { usePipelineActivityStore } from '@revamp/core';
 import { stageRequiresApproval } from '@revamp/core';
-import { useAuthStore } from '@/lib/stores/auth-store';
+import { useAuthStore } from '@revamp/core';
 import { useNotificationStore } from '@/lib/stores/notification-store';
 
 /** Flash an error to toast + notification bell */
