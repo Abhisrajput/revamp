@@ -15,7 +15,7 @@ revamp-platform/
 ├── apps/web/                    → Next.js 16 (App Router, React 19, Tailwind v4)
 ├── apps/api/                    → Fastify 5 API Gateway (Drizzle ORM, PostgreSQL)
 ├── apps/vscode/                 → VS Code Extension (TypeScript, Webview UI)
-├── services/llm-orchestrator/   → Go LLM Engine (Chi router, multi-provider, streaming)
+├── services/agent-worker/       → Go Agent Worker (sandbox, LSP, tool execution)
 ├── packages/core/               → Frontend business logic (hooks, types, API client) ← NEW
 ├── packages/core-engine/        → Backend: validation, prompts, stage orchestration
 ├── packages/shared-types/       → Shared TypeScript type definitions
@@ -73,7 +73,7 @@ LLM-generated stage outputs hallucinate versions, component counts, and dependen
 ### Common Footguns
 
 - **Restarting the API kills running stages.** Stages get stuck in `in_progress`. The server auto-recovers on startup, but avoid restarting mid-execution.
-- **SSO tokens expire every ~1 hour.** Run `aws sso login --profile tavant-bedrock` then restart the Go orchestrator.
+- **SSO tokens expire every ~1 hour.** Run `aws sso login --profile tavant-bedrock` then restart the API to pick up fresh credentials.
 - **core-engine changes need `pnpm --filter @revamp/core-engine build`** — the API imports from the compiled `dist/`, not source.
 - **Fastify 5 response schemas must include `additionalProperties: true`** — otherwise the response body gets stripped to empty.
 - **sessionStorage for activity data, NOT localStorage** — survives page refresh within the tab, but doesn't leak between tabs.
@@ -82,7 +82,7 @@ LLM-generated stage outputs hallucinate versions, component counts, and dependen
 
 - **Web Frontend**: Next.js 15, React 19, Tailwind CSS v4, Zustand + React Query, Monaco Editor
 - **API Gateway**: Fastify 4, Drizzle ORM, PostgreSQL, Redis, BullMQ, JWT+RBAC, WebSocket
-- **LLM Orchestrator**: Go 1.23, Chi router, multi-provider (OpenAI/Claude/Gemini/Bedrock), circuit breakers, load balancing, streaming SSE, Redis job queue, Prometheus metrics
+- **Agent Worker**: Go 1.23, Chi router, sandbox execution, LSP server, tool runner (port 9090)
 - **VS Code Extension**: TypeScript, VS Code Extension API, Webview, SSE streaming
 - **Database**: PostgreSQL (13 tables via Drizzle), Redis (cache + queues)
 - **Storage**: S3/MinIO for artifacts
@@ -113,10 +113,10 @@ pnpm dev:web          # Next.js at localhost:3000
 pnpm dev:api          # Fastify at localhost:8787
 pnpm dev:vscode       # VS Code extension dev
 
-# Go LLM orchestrator
-cd services/llm-orchestrator
-go build -o bin/llm-orchestrator ./cmd/server
-./bin/llm-orchestrator    # runs on :8080
+# Go Agent Worker
+cd services/agent-worker
+go build -o bin/agent-worker ./cmd/server
+./bin/agent-worker    # runs on :9090
 
 # Database
 pnpm db:generate      # Generate Drizzle migrations
@@ -137,37 +137,30 @@ turbo build --filter=@revamp/web
 
 Auth: JWT + bcrypt + OTP, RBAC roles: `admin`, `architect`, `developer`, `sme`
 
-## Go LLM Orchestrator (services/llm-orchestrator/)
+## Go Agent Worker (services/agent-worker/)
 
-The core engine. Key interfaces:
+Handles sandbox execution, LSP integration, and tool running for the Co-Create stage. The Node API handles all LLM calls directly (no Go proxy layer).
 
-```go
-type LLMProvider interface {
-    Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
-    Stream(ctx context.Context, req *ChatRequest) (<-chan StreamChunk, error)
-    Health() HealthStatus
-    Models() []ModelInfo
-}
-```
+Runs on port **9090**. Key responsibilities:
+- Sandboxed code execution (Docker-in-Docker or gVisor)
+- Language Server Protocol (LSP) bridging for IDE features
+- Tool execution (file I/O, shell commands, test runners)
 
-Providers: OpenAI, Anthropic Claude, Google Gemini, AWS Bedrock
-Features: Circuit breaker per provider, weighted round-robin load balancing, SSE streaming, Redis job queue with priority, semantic caching, Prometheus metrics, token/cost tracking
-
-API: `POST /api/v1/chat/completions`, `POST /api/v1/chat/stream`, `POST /api/v1/batch`, `GET /api/v1/models`, `GET /api/v1/usage`, `GET /metrics`
+API: `POST /api/v1/execute`, `POST /api/v1/lsp`, `GET /health`
 
 ## Legacy Bridge Reference
 
 The original codebase at `/Users/abhisheksingh/Documents/legacy-bridge` contains:
 
 - `src/lib/stageAI.ts` (59 KB) — Stage-specific AI logic (port to core-engine)
-- `src/lib/aiClient.ts` (42 KB) — Multi-provider LLM interface (now replaced by Go service)
+- `src/lib/aiClient.ts` (42 KB) — Multi-provider LLM interface (now replaced by Node llm-proxy.ts)
 - `src/components/stages/` — 8 stage UI implementations (port to apps/web)
 - `src/store/useProjectStore.ts` (44 KB) — State management (port to Zustand stores)
 - `src/lib/validation/` — Validation rubrics and checks (port to core-engine)
 - `src/data/promptTemplates.ts` — Prompt templates (port to core-engine)
 - `src/data/{aws,gcp,azure}KnowledgeBase.ts` — Cloud knowledge (port to core-engine)
 - `backend/src/server.ts` (82 KB) — Monolithic API (now decomposed into Fastify routes)
-- `backend/src/agent/` — Agent runners per LLM (now in Go orchestrator)
+- `backend/src/agent/` — Agent runners per LLM (now in Node diagnostic-agent.ts + llm-proxy.ts)
 - `backend/src/agent/sandbox.ts` (20 KB) — Tool execution sandbox
 
 ## Code Style
@@ -187,4 +180,4 @@ See `.env.example` at root and in each app directory. Key vars:
 - `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_AI_API_KEY` — LLM provider keys
 - `JWT_SECRET` — Auth signing key
 - `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` — Object storage
-- `LLM_ORCHESTRATOR_URL` — Go service URL (default: http://localhost:8080)
+- `AGENT_WORKER_URL` — Go agent worker URL (default: http://localhost:9090)

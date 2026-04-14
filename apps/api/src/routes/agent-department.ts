@@ -970,7 +970,7 @@ export async function agentDepartmentRoutes(fastify: FastifyInstance) {
       onRequest: [
         // Allow both internal service calls and admin users
         async (request, reply) => {
-          const isInternal = request.headers["x-internal-service"] === "llm-orchestrator";
+          const isInternal = request.headers["x-internal-service"] === "agent-worker";
           if (isInternal) return; // Internal service bypass
           return fastify.authorize(["admin"])(request, reply);
         },

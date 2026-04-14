@@ -88,7 +88,6 @@ export interface SSEEvent {
 }
 
 export interface LLMProviderConfig {
-  orchestratorUrl: string; // kept for backward compat — no longer used
   apiKey: string;
   defaultModel: string;
   evaluatorModel: string; // different model for validation (avoid self-bias)
@@ -104,7 +103,6 @@ export class LLMProxyService {
 
   constructor(config?: Partial<LLMProviderConfig>) {
     this.config = {
-      orchestratorUrl: config?.orchestratorUrl || process.env.LLM_ORCHESTRATOR_URL || "http://localhost:8080",
       apiKey: config?.apiKey || process.env.LLM_ORCHESTRATOR_API_KEY || "",
       defaultModel: config?.defaultModel || process.env.LLM_DEFAULT_MODEL || "",
       evaluatorModel: config?.evaluatorModel || process.env.LLM_EVALUATOR_MODEL || "",

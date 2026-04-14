@@ -1,11 +1,11 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: revamp-llm-orchestrator
+  name: revamp-agent-worker
   namespace: revamp
   labels:
-    app: revamp-llm-orchestrator
-    component: orchestrator
+    app: revamp-agent-worker
+    component: agent-worker
     version: v1
 spec:
   replicas: 3
@@ -16,24 +16,24 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      app: revamp-llm-orchestrator
+      app: revamp-agent-worker
   template:
     metadata:
       labels:
-        app: revamp-llm-orchestrator
-        component: orchestrator
+        app: revamp-agent-worker
+        component: agent-worker
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
+        prometheus.io/port: "9090"
         prometheus.io/path: "/metrics"
     spec:
-      serviceAccountName: revamp-llm-orchestrator
+      serviceAccountName: revamp-agent-worker
       securityContext:
         fsGroup: 1000
         runAsNonRoot: true
       containers:
       - name: orchestrator
-        image: revamp-llm-orchestrator:latest
+        image: revamp-agent-worker:latest
         imagePullPolicy: Always
         securityContext:
           runAsUser: 1000
@@ -44,14 +44,11 @@ spec:
               - ALL
         ports:
         - name: http
-          containerPort: 8080
-          protocol: TCP
-        - name: metrics
           containerPort: 9090
           protocol: TCP
         env:
         - name: PORT
-          value: "8080"
+          value: "9090"
         - name: ENV
           value: "production"
         - name: LOG_LEVEL
@@ -66,41 +63,6 @@ spec:
             secretKeyRef:
               name: revamp-secrets
               key: redis-url
-        - name: OPENAI_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: revamp-llm-secrets
-              key: openai-api-key
-              optional: true
-        - name: ANTHROPIC_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: revamp-llm-secrets
-              key: anthropic-api-key
-              optional: true
-        - name: GOOGLE_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: revamp-llm-secrets
-              key: google-api-key
-              optional: true
-        - name: AWS_REGION
-          valueFrom:
-            configMapKeyRef:
-              name: revamp-config
-              key: aws-region
-        - name: AWS_ACCESS_KEY_ID
-          valueFrom:
-            secretKeyRef:
-              name: revamp-aws-secrets
-              key: access-key-id
-              optional: true
-        - name: AWS_SECRET_ACCESS_KEY
-          valueFrom:
-            secretKeyRef:
-              name: revamp-aws-secrets
-              key: secret-access-key
-              optional: true
         resources:
           requests:
             memory: "1Gi"
@@ -111,7 +73,7 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 9090
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
@@ -119,7 +81,7 @@ spec:
         readinessProbe:
           httpGet:
             path: /ready
-            port: 8080
+            port: 9090
           initialDelaySeconds: 10
           periodSeconds: 5
           timeoutSeconds: 3
@@ -145,7 +107,7 @@ spec:
                 - key: app
                   operator: In
                   values:
-                  - revamp-llm-orchestrator
+                  - revamp-agent-worker
               topologyKey: kubernetes.io/hostname
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -160,34 +122,30 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: revamp-llm-orchestrator
+  name: revamp-agent-worker
   namespace: revamp
   labels:
-    app: revamp-llm-orchestrator
+    app: revamp-agent-worker
 spec:
   type: ClusterIP
   ports:
   - port: 80
-    targetPort: 8080
-    protocol: TCP
-    name: http
-  - port: 9090
     targetPort: 9090
     protocol: TCP
-    name: metrics
+    name: http
   selector:
-    app: revamp-llm-orchestrator
+    app: revamp-agent-worker
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: revamp-llm-orchestrator-hpa
+  name: revamp-agent-worker-hpa
   namespace: revamp
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: revamp-llm-orchestrator
+    name: revamp-agent-worker
   minReplicas: 2
   maxReplicas: 20
   metrics:

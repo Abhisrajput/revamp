@@ -98,14 +98,14 @@ spec:
             name: revamp-api
             port:
               number: 80
-  - host: orchestrator.revamp.example.com
+  - host: agent-worker.revamp.example.com
     http:
       paths:
       - path: /
         pathType: Prefix
         backend:
           service:
-            name: revamp-llm-orchestrator
+            name: revamp-agent-worker
             port:
               number: 80
 ---
@@ -134,10 +134,10 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: revamp-llm-pdb
+  name: revamp-agent-worker-pdb
   namespace: revamp
 spec:
   minAvailable: 1
   selector:
     matchLabels:
-      app: revamp-llm-orchestrator
+      app: revamp-agent-worker

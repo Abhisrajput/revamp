@@ -114,31 +114,24 @@ services:
       - revamp-network
     command: npm run dev
 
-  # LLM Orchestrator (Go service)
-  llm-orchestrator:
+  # Agent Worker (Go service — sandbox, LSP, tool execution)
+  agent-worker:
     build:
-      context: ../../services/llm-orchestrator
+      context: ../../services/agent-worker
       dockerfile: Dockerfile
-    container_name: revamp-llm-orchestrator
+    container_name: revamp-agent-worker
     environment:
-      PORT: 8080
+      PORT: 9090
       DATABASE_URL: postgresql://revamp:${POSTGRES_PASSWORD}@postgres:5432/revamp
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       LOG_LEVEL: debug
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
     ports:
-      - "8080:8080"
+      - "9090:9090"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    volumes:
-      - ../../services/llm-orchestrator/src:/app/src
     networks:
       - revamp-network
 
