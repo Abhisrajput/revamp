@@ -43,7 +43,10 @@
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.28.1",
     "@anthropic-ai/sdk": "^0.86.1",
+    "@google-cloud/vertexai": "^1.11.0",
+    "@google/generative-ai": "^0.24.1",
     "@revamp/shared-types": "workspace:*",
+    "openai": "^6.34.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {
