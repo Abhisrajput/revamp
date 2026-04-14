@@ -3,7 +3,7 @@
 import { use, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAgent, useAgentCosts, useUpdateAgent, useDeleteAgent } from '@revamp/core';
-import { useAuthStore } from '@revamp/core';
+import { useAuthStore } from '@revamp/core/stores/auth-store';
 import { BudgetBar } from '@/components/agents/budget-bar';
 import { StatusIndicator } from '@/components/agents/status-indicator';
 import { ReportingChain, Subordinates } from '@/components/agents/reporting-chain';

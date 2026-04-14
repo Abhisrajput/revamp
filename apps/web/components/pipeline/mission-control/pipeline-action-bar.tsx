@@ -4,7 +4,7 @@ import { memo } from 'react';
 import { Play, Square, SkipForward, RotateCcw, Undo2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { StageState } from '@revamp/core';
-import { usePipelineStore } from '@revamp/core';
+import { usePipelineStore } from '@revamp/core/stores/pipeline-store';
 import { canExecuteStage, getStageBlockReason } from '@revamp/core';
 
 // ─── Component ──────────────────────────────────────────────────

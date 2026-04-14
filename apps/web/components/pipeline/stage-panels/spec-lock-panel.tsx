@@ -13,7 +13,7 @@ import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
 import { buildFileTree } from '@/lib/utils/file-tree';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
-import { useStagePanel } from '@revamp/core';
+import { useStagePanel } from '@revamp/core/hooks/use-stage-panel';
 import { cn } from '@/lib/utils';
 import { TabFallback } from './tab-fallback';
 import type { StagePanelProps } from './types';

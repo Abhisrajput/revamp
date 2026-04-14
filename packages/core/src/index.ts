@@ -41,35 +41,30 @@ export * from './hooks/use-orchestrator';
 // Refine Section Hook
 export { useRefineSection } from './hooks/use-refine-section';
 
-// Auth Hook
-export { useAuth } from './hooks/use-auth';
-
-// Agent Events Hook
-export { useAgentEvents } from './hooks/use-agent-events';
+// Hooks that import Zustand stores — NOT exported from barrel (same SSR issue).
+// Import from specific files:
+//   import { useAuth } from '@revamp/core/hooks/use-auth'
+//   import { useAgentEvents } from '@revamp/core/hooks/use-agent-events'
+//   import { useEvolveChat } from '@revamp/core/hooks/use-evolve-chat'
+//   import { usePipelineShortcuts } from '@revamp/core/hooks/use-keyboard-shortcuts'
+//   import { usePipelineData } from '@revamp/core/hooks/use-pipeline-data'
+//   import { useStagePanel } from '@revamp/core/hooks/use-stage-panel'
+//   import { useStageExecution } from '@revamp/core/hooks/use-stage-execution'
 export type { AgentEvent, AgentEventType } from './hooks/use-agent-events';
-
-// Evolve Chat Hook
-export { useEvolveChat } from './hooks/use-evolve-chat';
-
-// Keyboard Shortcuts Hook
-export { usePipelineShortcuts } from './hooks/use-keyboard-shortcuts';
-
-// Pipeline Data Bridge Hook
-export { usePipelineData } from './hooks/use-pipeline-data';
 export type { MergedStageState, PipelineData } from './hooks/use-pipeline-data';
 
-// Stage Panel Hook
-export { useStagePanel } from './hooks/use-stage-panel';
-
-// Stage Execution Hook (SSE streaming)
-export { useStageExecution } from './hooks/use-stage-execution';
-
-// Stores (platform-independent — uses injected storage adapters)
-export { useAuthStore, useAuthHydrated } from './stores/auth-store';
+// Stores — NOT exported from barrel to prevent SSR store creation.
+// Import stores from their specific files:
+//   import { useAuthStore } from '@revamp/core/stores/auth-store'
+//   import { usePipelineStore } from '@revamp/core/stores/pipeline-store'
+//   import { usePipelineConfigStore } from '@revamp/core/stores/pipeline-config-store'
+//   import { usePipelineActivityStore } from '@revamp/core/stores/pipeline-activity-store'
+//
+// Zustand stores with persist() create side effects at import time
+// (they call getPersistStorage() which needs browser localStorage).
+// Exporting them from the barrel causes ALL stores to initialize
+// when ANY file imports from @revamp/core — breaking SSR.
 export type { User } from './stores/auth-store';
-export { usePipelineActivityStore } from './stores/pipeline-activity-store';
-export { usePipelineConfigStore } from './stores/pipeline-config-store';
-export { usePipelineStore } from './stores/pipeline-store';
 
 // Utilities
 export { parseMarkdownSections, replaceSectionContent, getPreSectionText, getPostSectionText } from './utils/markdown-sections';

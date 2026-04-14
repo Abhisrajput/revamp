@@ -21,15 +21,15 @@ import { ExportDialog } from '@/components/pipeline/export-dialog';
 import { GitHubSyncDialog } from '@/components/pipeline/github-sync-dialog';
 import { DiagnosticDialog } from '@/components/pipeline/diagnostic-dialog';
 
-import { usePipelineStore } from '@revamp/core';
-import { usePipelineConfigStore } from '@revamp/core';
-import { usePipelineActivityStore } from '@revamp/core';
+import { usePipelineStore } from '@revamp/core/stores/pipeline-store';
+import { usePipelineConfigStore } from '@revamp/core/stores/pipeline-config-store';
+import { usePipelineActivityStore } from '@revamp/core/stores/pipeline-activity-store';
 import { canExecuteStage, getStageBlockReason } from '@revamp/core';
 import { PIPELINE_STAGE_ORDER } from '@revamp/shared-types';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
-import { useAuthStore } from '@revamp/core';
-import { useStageExecution } from '@revamp/core';
-import { usePipelineShortcuts } from '@revamp/core';
+import { useAuthStore } from '@revamp/core/stores/auth-store';
+import { useStageExecution } from '@revamp/core/hooks/use-stage-execution';
+import { usePipelineShortcuts } from '@revamp/core/hooks/use-keyboard-shortcuts';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 // IndexedDB caching handled by pipeline-store.setStageOutput (still uses pipeline-cache internally)

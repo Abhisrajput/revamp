@@ -6,7 +6,7 @@ import { Card } from '@revamp/ui/components/card';
 import { Button } from '@revamp/ui/components/button';
 import { Input } from '@revamp/ui/components/input';
 import { Badge } from '@revamp/ui/components/badge';
-import { useAuthStore } from '@revamp/core';
+import { useAuthStore } from '@revamp/core/stores/auth-store';
 import { apiClient } from '@/lib/api-client';
 import {
   Save, Bell, Shield, Cpu,

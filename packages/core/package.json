@@ -9,7 +9,9 @@
     ".": "./src/index.ts",
     "./types/*": "./src/types/*.ts",
     "./hooks/*": "./src/hooks/*.ts",
-    "./api/*": "./src/api/*.ts"
+    "./api/*": "./src/api/*.ts",
+    "./stores/*": "./src/stores/*.ts",
+    "./utils/*": "./src/utils/*.ts"
   },
   "dependencies": {
     "@revamp/shared-types": "workspace:*"

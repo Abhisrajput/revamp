@@ -24,9 +24,9 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { apiClient } from '@/lib/api-client';
-import { usePipelineStore } from '@revamp/core';
-import { usePipelineActivityStore } from '@revamp/core';
-import { useAuthStore } from '@revamp/core';
+import { usePipelineStore } from '@revamp/core/stores/pipeline-store';
+import { usePipelineActivityStore } from '@revamp/core/stores/pipeline-activity-store';
+import { useAuthStore } from '@revamp/core/stores/auth-store';
 import { STAGE_DISPLAY_LABELS } from '@revamp/shared-types';
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────

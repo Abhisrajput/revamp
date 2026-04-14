@@ -3,7 +3,7 @@
 import { memo } from 'react';
 import { Search } from 'lucide-react';
 import { Button } from '@revamp/ui/components/button';
-import { useAuthStore } from '@revamp/core';
+import { useAuthStore } from '@revamp/core/stores/auth-store';
 import { NotificationBell } from '@/components/layout/notification-bell';
 
 export const TopBar = memo(function TopBar() {
