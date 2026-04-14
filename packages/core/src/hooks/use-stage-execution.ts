@@ -22,6 +22,59 @@ function getBaseUrl(): string {
   return (client as any).getBaseUrl?.() || 'http://localhost:8787';
 }
 
+/**
+ * Classify a raw error message into an actionable user-facing message.
+ * Covers all LLM providers, network errors, and common failure modes.
+ * One function, all stages — no hardcoded phase-name checks needed.
+ */
+function classifyStageError(raw: string): string {
+  // Auth / credentials
+  if (/403|401|unauthorized|forbidden|security.?token.*invalid|credentials.*invalid|access.?denied/i.test(raw)) {
+    if (/bedrock|aws|sso/i.test(raw)) {
+      return 'AWS credentials expired — run "aws sso login --profile tavant-bedrock" and retry';
+    }
+    if (/anthropic/i.test(raw)) return 'Anthropic API key invalid or expired — check Settings';
+    if (/openai/i.test(raw)) return 'OpenAI API key invalid or expired — check Settings';
+    if (/google|gemini|vertex/i.test(raw)) return 'Google API key invalid or expired — check Settings';
+    if (/azure/i.test(raw)) return 'Azure credentials invalid or expired — check Settings';
+    return 'Authentication failed — check your API credentials in Settings';
+  }
+
+  // Rate limits
+  if (/429|rate.?limit|too many requests|throttl|quota/i.test(raw)) {
+    return 'Rate limit hit — wait a moment and retry, or switch to a different model';
+  }
+
+  // Overloaded / server errors
+  if (/529|overloaded|503|service.?unavailable|502|bad.?gateway/i.test(raw)) {
+    return 'LLM provider is temporarily overloaded — retry in a few minutes';
+  }
+
+  // Timeout
+  if (/timeout|timed?.?out|econnaborted|deadline/i.test(raw)) {
+    return 'Request timed out — the model may be overloaded. Try again or use a faster model';
+  }
+
+  // Network / connection
+  if (/econnrefused|enotfound|enetunreach|network|socket|connection.*reset/i.test(raw)) {
+    return 'Network error — check your internet connection and retry';
+  }
+
+  // Budget
+  if (/budget.*exceeded|spending.*limit/i.test(raw)) {
+    return 'Project budget exceeded — increase the budget in Settings or contact your admin';
+  }
+
+  // Model not found
+  if (/model.*not.?found|invalid.*model|unknown.*model/i.test(raw)) {
+    return 'Model not available — check model configuration in Settings';
+  }
+
+  // Fallback — show the raw error but keep it concise
+  const concise = raw.length > 120 ? raw.slice(0, 120) + '...' : raw;
+  return concise;
+}
+
 interface ExecuteOptions {
   skipLlmEval?: boolean;
   promptOverride?: string;
@@ -93,16 +146,17 @@ export function useStageExecution(): UseStageExecutionReturn {
           handleSSEEvent({ type: 'completed', data: wsEvent.data }, stageName, stageIndex);
           cleanup();
         } else if (wsEvent.event === 'error') {
-          const msg = (wsEvent.data as any)?.message ?? 'Stage execution failed';
+          const rawMsg = (wsEvent.data as any)?.message ?? 'Stage execution failed';
           const aborted = (wsEvent.data as any)?.aborted;
           if (aborted) {
             cleanup();
             return;
           }
+          const userMsg = classifyStageError(rawMsg);
           if (stageIndex >= 0) {
             store.getState().setStageStatus(stageIndex, 'failed');
-            activityStore.getState().addLog({ type: 'error', message: msg, timestamp: new Date().toISOString() });
-            flashError(stageName, msg);
+            activityStore.getState().addLog({ type: 'error', message: rawMsg, timestamp: new Date().toISOString() });
+            flashError(stageName, userMsg);
           }
           cleanup();
         } else {
@@ -148,11 +202,12 @@ export function useStageExecution(): UseStageExecutionReturn {
           cleanup();
           return;
         }
-        const msg = err.message ?? 'Stage execution failed';
+        const rawMsg = err.message ?? 'Stage execution failed';
+        const userMsg = classifyStageError(rawMsg);
         if (stageIndex >= 0) {
           store.getState().setStageStatus(stageIndex, 'failed');
-          activityStore.getState().addLog({ type: 'error', message: msg, timestamp: new Date().toISOString() });
-          flashError(stageName, msg);
+          activityStore.getState().addLog({ type: 'error', message: rawMsg, timestamp: new Date().toISOString() });
+          flashError(stageName, userMsg);
         }
         cleanup();
       });
@@ -205,24 +260,17 @@ export function useStageExecution(): UseStageExecutionReturn {
           }
         }
 
-        // Critical failure events — surface as prominent error banner + fail the stage
-        // These indicate the stage cannot proceed (auth failure, provider down, etc.)
-        if ((phase === 'scout_failed' || phase === 'composition_failed' || phase === 'director_failed') && idx >= 0) {
+        // ─── Generic failure detection ────────────────────────────
+        // Any phase event whose name contains "failed" or "error" is a
+        // stage-level failure. Classify the root cause from the error
+        // message and surface an actionable banner to the user.
+        if (phase && typeof phase === 'string' && /_failed|^failed$|_error|^error$/i.test(phase) && idx >= 0) {
           const errorData = event.data?.data as Record<string, unknown> | undefined;
-          const errorMsg = (errorData?.error as string) || (errorData?.message as string) || `${phase}: Stage execution failed`;
-          s.setStageStatus(idx, 'failed');
-          flashError(stageName, errorMsg);
-          a.addLog({ type: 'error', message: errorMsg, timestamp: new Date().toISOString() });
-        }
+          const rawError = (errorData?.error as string) || (errorData?.message as string) || `${phase.replace(/_/g, ' ')}`;
+          const userMessage = classifyStageError(rawError);
 
-        // Provider/auth errors surfaced as phase events — show banner immediately
-        if (phase && typeof phase === 'string' && /fail|error|denied|unauthorized|forbidden/i.test(phase) && idx >= 0) {
-          const errorData = event.data?.data as Record<string, unknown> | undefined;
-          const errorMsg = (errorData?.error as string) || (errorData?.message as string) || '';
-          if (errorMsg && /403|401|auth|credential|token.*invalid|security.*token/i.test(errorMsg)) {
-            s.setStageStatus(idx, 'failed');
-            flashError(stageName, `Authentication failed — run "aws sso login" and retry`);
-          }
+          s.setStageStatus(idx, 'failed');
+          flashError(stageName, userMessage);
         }
 
         // Director planning event — populate the subtasks list with planned bots
