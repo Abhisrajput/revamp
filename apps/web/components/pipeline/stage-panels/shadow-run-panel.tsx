@@ -6,7 +6,7 @@ import { Card, CardContent } from '@revamp/ui/components/card';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
-import { useStagePanel } from '@/lib/hooks/use-stage-panel';
+import { useStagePanel } from '@revamp/core';
 import { DynamicStageTabs } from './dynamic-stage-tabs';
 import { getStageTabConfig } from './stage-tab-configs';
 import type { StagePanelProps } from './types';

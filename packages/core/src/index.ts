@@ -37,12 +37,36 @@ export * from './hooks/use-orchestrator';
 // Refine Section Hook
 export { useRefineSection } from './hooks/use-refine-section';
 
+// Auth Hook
+export { useAuth } from './hooks/use-auth';
+
+// Agent Events Hook
+export { useAgentEvents } from './hooks/use-agent-events';
+export type { AgentEvent, AgentEventType } from './hooks/use-agent-events';
+
+// Evolve Chat Hook
+export { useEvolveChat } from './hooks/use-evolve-chat';
+
+// Keyboard Shortcuts Hook
+export { usePipelineShortcuts } from './hooks/use-keyboard-shortcuts';
+
+// Pipeline Data Bridge Hook
+export { usePipelineData } from './hooks/use-pipeline-data';
+export type { MergedStageState, PipelineData } from './hooks/use-pipeline-data';
+
+// Stage Panel Hook
+export { useStagePanel } from './hooks/use-stage-panel';
+
 // Stores (platform-independent — uses injected storage adapters)
 export { useAuthStore, useAuthHydrated } from './stores/auth-store';
 export type { User } from './stores/auth-store';
 export { usePipelineActivityStore } from './stores/pipeline-activity-store';
 export { usePipelineConfigStore } from './stores/pipeline-config-store';
 export { usePipelineStore } from './stores/pipeline-store';
+
+// Utilities
+export { parseMarkdownSections, replaceSectionContent, getPreSectionText, getPostSectionText } from './utils/markdown-sections';
+export type { MarkdownSection } from './utils/markdown-sections';
 
 // Pipeline API Types
 export type {

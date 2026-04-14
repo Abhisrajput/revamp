@@ -33,7 +33,7 @@ import {
   Monitor,
 } from 'lucide-react';
 import { useAuthStore } from '@revamp/core';
-import { useAuth } from '@/lib/hooks/use-auth';
+import { useAuth } from '@revamp/core';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
 import { usePipelineStore } from '@revamp/core';
 import type { StageState } from '@revamp/core';

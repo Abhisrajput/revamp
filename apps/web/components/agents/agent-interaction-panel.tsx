@@ -26,7 +26,7 @@ import {
   useAgentEvents,
   type AgentEvent,
   type AgentEventType,
-} from '@/lib/hooks/use-agent-events';
+} from '@revamp/core';
 import {
   X,
   Brain,

@@ -11,7 +11,7 @@ import { useEffect, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import { Card, CardHeader, CardTitle, CardContent } from '@revamp/ui/components/card';
 import { Badge } from '@revamp/ui/components/badge';
-import { useAgentEvents, type AgentEvent, type AgentEventType } from '@/lib/hooks/use-agent-events';
+import { useAgentEvents, type AgentEvent, type AgentEventType } from '@revamp/core';
 import {
   Activity,
   CheckCircle2,

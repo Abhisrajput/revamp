@@ -1,7 +1,7 @@
-'use client';
+
 
 import { useState, useCallback, useRef } from 'react';
-import { useAuthStore } from '@revamp/core';
+import { useAuthStore } from '../stores/auth-store';
 
 export interface ChatMessage {
   id: string;
@@ -55,7 +55,7 @@ export function useEvolveChat(pipelineRunId: string | null): UseEvolveChatReturn
         timestamp: new Date().toISOString(),
       };
 
-      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      setMessages((prev: ChatMessage[]) => [...prev, userMsg, assistantMsg]);
       setIsStreaming(true);
       setError(null);
 
@@ -71,7 +71,7 @@ export function useEvolveChat(pipelineRunId: string | null): UseEvolveChatReturn
           },
           body: JSON.stringify({
             message: text,
-            history: messages.slice(-10).map((m) => ({
+            history: messages.slice(-10).map((m: ChatMessage) => ({
               role: m.role,
               content: m.content,
             })),
@@ -116,16 +116,16 @@ export function useEvolveChat(pipelineRunId: string | null): UseEvolveChatReturn
                   const deltaText = parsed.text || '';
                   accumulated += deltaText;
                   // Update assistant message content in place
-                  setMessages((prev) =>
-                    prev.map((m) =>
+                  setMessages((prev: ChatMessage[]) =>
+                    prev.map((m: ChatMessage) =>
                       m.id === assistantId ? { ...m, content: accumulated } : m
                     )
                   );
                 } catch {
                   // Non-JSON delta — treat as raw text
                   accumulated += data;
-                  setMessages((prev) =>
-                    prev.map((m) =>
+                  setMessages((prev: ChatMessage[]) =>
+                    prev.map((m: ChatMessage) =>
                       m.id === assistantId ? { ...m, content: accumulated } : m
                     )
                   );
@@ -134,8 +134,8 @@ export function useEvolveChat(pipelineRunId: string | null): UseEvolveChatReturn
                 try {
                   const parsed = JSON.parse(data);
                   const finalContent = parsed.content || accumulated;
-                  setMessages((prev) =>
-                    prev.map((m) =>
+                  setMessages((prev: ChatMessage[]) =>
+                    prev.map((m: ChatMessage) =>
                       m.id === assistantId ? { ...m, content: finalContent } : m
                     )
                   );
@@ -158,7 +158,7 @@ export function useEvolveChat(pipelineRunId: string | null): UseEvolveChatReturn
 
         // If we got no content from streaming, remove the empty assistant message
         if (!accumulated) {
-          setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+          setMessages((prev: ChatMessage[]) => prev.filter((m: ChatMessage) => m.id !== assistantId));
         }
       } catch (err: unknown) {
         if (err instanceof Error && err.name === 'AbortError') {
@@ -168,7 +168,7 @@ export function useEvolveChat(pipelineRunId: string | null): UseEvolveChatReturn
         const message = err instanceof Error ? err.message : 'Chat request failed';
         setError(message);
         // Remove empty assistant message on error
-        setMessages((prev) => {
+        setMessages((prev: ChatMessage[]) => {
           const last = prev[prev.length - 1];
           if (last?.id === assistantId && !last.content) {
             return prev.slice(0, -1);

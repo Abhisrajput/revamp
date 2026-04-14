@@ -19,7 +19,7 @@ import { ConfidenceGauge } from '@/components/pipeline/confidence-gauge';
 import { CodeEditor } from '@/components/editor/code-editor';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { usePipelineActivityStore } from '@revamp/core';
-import { useStagePanel } from '@/lib/hooks/use-stage-panel';
+import { useStagePanel } from '@revamp/core';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
 import { useAuthStore } from '@revamp/core';
 import { apiClient } from '@/lib/api-client';

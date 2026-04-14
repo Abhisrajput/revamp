@@ -29,7 +29,7 @@ import { PIPELINE_STAGE_ORDER } from '@revamp/shared-types';
 import { useUIPreferencesStore } from '@/lib/stores/ui-preferences-store';
 import { useAuthStore } from '@revamp/core';
 import { useStageExecution } from '@/lib/hooks/use-stage-execution';
-import { usePipelineShortcuts } from '@/lib/hooks/use-keyboard-shortcuts';
+import { usePipelineShortcuts } from '@revamp/core';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 // IndexedDB caching handled by pipeline-store.setStageOutput (still uses pipeline-cache internally)

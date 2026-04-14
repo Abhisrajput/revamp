@@ -1,4 +1,4 @@
-'use client';
+
 
 /**
  * usePipelineData — unified hook for pipeline state.
@@ -11,18 +11,14 @@
  */
 
 import { useMemo } from 'react';
-import { usePipelineStore } from '@revamp/core';
+import { usePipelineStore } from '../stores/pipeline-store';
 import {
   usePipelineStatus,
   useAllStageOutputs,
   useInvalidatePipeline,
-  type PipelineStatus,
-  type ApprovalGate,
-  type StageStatus,
-  STAGE_NAMES,
-  STAGE_LABELS,
-  stageRequiresApproval,
-} from '@revamp/core';
+} from './use-pipeline-queries';
+import type { PipelineStatus, ApprovalGate } from '../types/pipeline';
+import { type StageStatus, STAGE_NAMES, STAGE_LABELS, stageRequiresApproval } from '../types/stage';
 
 // ─── Status mapping ─────────────────────────────────────────────
 // Backend uses different status names than frontend.
