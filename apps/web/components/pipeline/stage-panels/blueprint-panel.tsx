@@ -68,6 +68,7 @@ export default function BlueprintPanel({
           <AgentBotGrid
             subtasks={stage.subtasks}
             overallProgress={stage.subtaskProgress}
+            isExecuting={isExecuting}
             message="Mapping bounded contexts..."
             subtitle="Building capability map and migration waves"
           />

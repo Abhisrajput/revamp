@@ -361,6 +361,10 @@ export function useStageExecution(): UseStageExecutionReturn {
             input: phaseData ? { details: phaseMessage } : undefined,
             output: phaseData?.subtasks ? JSON.stringify(phaseData.subtasks) : undefined,
             startedAt: new Date().toISOString(),
+            // Carry subtask identity so the bot popover can filter
+            subtaskId: (phaseData?.subtaskId as string) || undefined,
+            subtaskType: (phaseData?.type as string) || undefined,
+            agentName: (phaseData?.agentName as string) || undefined,
           });
         }
         break;

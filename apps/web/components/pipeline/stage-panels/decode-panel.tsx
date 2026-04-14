@@ -109,6 +109,7 @@ export default function DecodePanel({
           <AgentBotGrid
             subtasks={stage.subtasks}
             overallProgress={stage.subtaskProgress}
+            isExecuting={isExecuting}
             message="Extracting business intent..."
             subtitle="Director and specialists are analyzing the codebase"
           />

@@ -399,11 +399,10 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         rounds: 0,
       };
       const currentStageStatus = enrichedStageProgress[run.current_stage ?? ""]?.status;
-      const isStageRunning = currentStageStatus === "in_progress";
-      if (run.current_stage && isStageRunning) { try {
-        // Only fetch subtasks when the stage is actively in_progress — not when
-        // it's pending/completed/failed, to avoid leaking stale subtask data
-        // from prior aborted runs into the UI.
+      const isStageActive = currentStageStatus && currentStageStatus !== "pending";
+      if (run.current_stage && isStageActive) { try {
+        // Fetch subtasks for any non-pending stage (in_progress, completed, approved,
+        // awaiting_approval) so the bot grid persists after page refresh.
         // Use a single SQL query that joins stage_runs to scope subtasks to the
         // CURRENT attempt only. All comparisons stay in DB time (no JS Date
         // round-trip) to avoid the timestamp-without-timezone offset bug.

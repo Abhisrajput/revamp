@@ -164,6 +164,7 @@ export default function ForgePanel({
           <AgentBotGrid
             subtasks={stage.subtasks}
             overallProgress={stage.subtaskProgress}
+            isExecuting={isExecuting}
             message="Generating modernized code..."
             subtitle="Writing files, tests, and configuration"
           />

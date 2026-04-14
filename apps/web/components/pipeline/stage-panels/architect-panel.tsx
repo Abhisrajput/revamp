@@ -68,6 +68,7 @@ export default function ArchitectPanel({
           <AgentBotGrid
             subtasks={stage.subtasks}
             overallProgress={stage.subtaskProgress}
+            isExecuting={isExecuting}
             message="Designing target architecture..."
             subtitle="Choosing patterns and infrastructure"
           />

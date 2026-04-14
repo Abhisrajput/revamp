@@ -137,11 +137,11 @@ export default function PipelinePage() {
         }
       }
 
-      // Subtasks
+      // Subtasks — only update if API returned data (don't wipe existing on empty response)
       const currentStage = pipelineStatusData.current_stage;
       const subtaskRows = pipelineStatusData.current_stage_subtasks || [];
       const overallProgress = pipelineStatusData.current_stage_progress;
-      if (currentStage && (subtaskRows.length > 0 || overallProgress)) {
+      if (currentStage && subtaskRows.length > 0) {
         const idx = stages.findIndex(s => s.name === currentStage);
         if (idx >= 0) {
           stages[idx] = {
@@ -149,8 +149,9 @@ export default function PipelinePage() {
             subtasks: (subtaskRows as any[]).map((r: any) => ({
               id: r.id, type: r.type, label: r.title, title: r.title,
               status: ['running', 'completed', 'failed', 'pending'].includes(r.status) ? r.status : 'pending',
+              agentName: r.agent_name,
             })),
-            subtaskProgress: overallProgress,
+            subtaskProgress: overallProgress || stages[idx].subtaskProgress,
           };
           changed = true;
         }

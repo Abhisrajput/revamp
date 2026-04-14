@@ -320,6 +320,7 @@ export default function EvolvePanel({
           <AgentBotGrid
             subtasks={stage.subtasks}
             overallProgress={stage.subtaskProgress}
+            isExecuting={isExecuting}
             message="Building evolution framework..."
             subtitle="Designing the continuous modernization plan"
           />

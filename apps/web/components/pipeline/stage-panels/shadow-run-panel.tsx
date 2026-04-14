@@ -73,6 +73,7 @@ export default function ShadowRunPanel({
           <AgentBotGrid
             subtasks={stage.subtasks}
             overallProgress={stage.subtaskProgress}
+            isExecuting={isExecuting}
             message="Running parallel validation..."
             subtitle="Comparing legacy vs modern outputs"
           />

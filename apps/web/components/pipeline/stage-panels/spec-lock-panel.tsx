@@ -183,6 +183,7 @@ export default function SpecLockPanel({
           <AgentBotGrid
             subtasks={stage.subtasks}
             overallProgress={stage.subtaskProgress}
+            isExecuting={isExecuting}
             message="Locking behavioral contracts..."
             subtitle="Generating BDD scenarios from business rules"
           />

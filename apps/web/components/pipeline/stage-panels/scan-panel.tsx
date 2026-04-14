@@ -837,6 +837,8 @@ export default function ScanPanel({
           <AgentBotGrid
             subtasks={stage.subtasks}
             overallProgress={stage.subtaskProgress}
+            currentPhase={currentPhase}
+            isExecuting={isExecuting}
             message={currentPhase
               ? currentPhase.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
               : 'Analyzing codebase...'}
