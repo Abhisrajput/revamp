@@ -5,7 +5,6 @@ import { Play, Brain, Eye, Target, Sparkles, AlertTriangle } from 'lucide-react'
 import { Button } from '@revamp/ui/components/button';
 import { Card, CardContent } from '@revamp/ui/components/card';
 import { StageOutput } from '@/components/pipeline/stage-output';
-import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { useStagePanel } from '@revamp/core/hooks/use-stage-panel';
 import { cn } from '@/lib/utils';
@@ -33,7 +32,7 @@ export default function DecodePanel({
   isExecuting,
   onRefineRequest,
 }: StagePanelProps) {
-  const { logs, isRunning, hasOutput, canRun } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
+  const { isRunning, hasOutput, canRun } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
   const [deepAnalysis, setDeepAnalysis] = useState(project?.deep_analysis ?? false);
 
   const tabConfig = getStageTabConfig('DECODE');
@@ -114,7 +113,7 @@ export default function DecodePanel({
             subtitle="Director and specialists are analyzing the codebase"
           />
           {streamingText && <StageOutput output={streamingText} isStreaming />}
-          {logs.length > 0 && <TerminalLog logs={logs} title="Decode Activity" />}
+          {/* Activity logs shown in Bottom Dock Terminal tab */}
         </>
       )}
 

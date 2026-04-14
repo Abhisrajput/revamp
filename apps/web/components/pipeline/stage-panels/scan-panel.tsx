@@ -12,7 +12,6 @@ import { Badge } from '@revamp/ui/components/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
 import { BreeOutputTab } from '@/components/pipeline/bree-output-tab';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
-import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { usePipelineStore } from '@revamp/core/stores/pipeline-store';
 import { usePipelineActivityStore } from '@revamp/core/stores/pipeline-activity-store';
@@ -151,7 +150,7 @@ function buildFileNodesFromFolderStructure(folders: any[]): FileNode[] {
   if (!folders || !Array.isArray(folders)) return [];
   return folders.map((f) => ({
     name: f.name?.replace(/\/$/, '') || 'unknown',
-    type: f.type === 'dir' ? 'dir' as const : 'file' as const,
+    type: f.type === 'dir' ? 'directory' as const : 'file' as const,
     children: f.children ? buildFileNodesFromFolderStructure(f.children) : undefined,
   }));
 }
@@ -257,7 +256,6 @@ export default function ScanPanel({
   currentPhase,
   onRefineRequest: _onRefineRequest,
 }: StagePanelProps) {
-  const logs = usePipelineActivityStore((s) => s.logs);
   const stages = usePipelineStore((s) => s.stages);
   const isRunning = stage.status === 'generating' || stage.status === 'validating';
   const hasOutput = !!(stage.output || streamingText);
@@ -848,9 +846,7 @@ export default function ScanPanel({
           {streamingText && (
             <StageOutput output={streamingText} isStreaming />
           )}
-          {logs.length > 0 && (
-            <TerminalLog logs={logs} title="Scan Activity" />
-          )}
+          {/* Scan activity logs shown in Bottom Dock Terminal tab — no duplicate here */}
         </>
       )}
 

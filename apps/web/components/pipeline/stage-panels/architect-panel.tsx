@@ -5,7 +5,6 @@ import { Button } from '@revamp/ui/components/button';
 import { Card, CardContent } from '@revamp/ui/components/card';
 import { Badge } from '@revamp/ui/components/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
-import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { useStagePanel } from '@revamp/core/hooks/use-stage-panel';
 import { DynamicStageTabs } from './dynamic-stage-tabs';
@@ -21,7 +20,7 @@ export default function ArchitectPanel({
   onRefineRequest,
   project,
 }: StagePanelProps) {
-  const { logs, isRunning, hasOutput, canRun: canExecute } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
+  const { isRunning, hasOutput, canRun: canExecute } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -73,7 +72,7 @@ export default function ArchitectPanel({
             subtitle="Choosing patterns and infrastructure"
           />
           {streamingText && <StageOutput output={streamingText} isStreaming />}
-          {logs.length > 0 && <TerminalLog logs={logs} title="Architect Activity" />}
+          {/* Activity logs shown in Bottom Dock Terminal tab */}
         </>
       )}
 

@@ -9,7 +9,6 @@ import { Button } from '@revamp/ui/components/button';
 import { Card, CardContent } from '@revamp/ui/components/card';
 import { Badge } from '@revamp/ui/components/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
-import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
 import { CodeEditor } from '@/components/editor/code-editor';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
@@ -254,7 +253,7 @@ export default function EvolvePanel({
   onRefineRequest,
   pipelineRunId,
 }: StagePanelProps) {
-  const { logs, isRunning, hasOutput, canRun: canExecute } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
+  const { isRunning, hasOutput, canRun: canExecute } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
 
   // Build tab config with IDE as a special "before" tab
   const tabConfig = useMemo((): StageTabConfig => {
@@ -325,7 +324,7 @@ export default function EvolvePanel({
             subtitle="Designing the continuous modernization plan"
           />
           {streamingText && <StageOutput output={streamingText} isStreaming />}
-          {logs.length > 0 && <TerminalLog logs={logs} title="Evolve Activity" />}
+          {/* Activity logs shown in Bottom Dock Terminal tab */}
         </>
       )}
 

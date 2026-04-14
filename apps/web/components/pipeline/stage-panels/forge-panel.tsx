@@ -170,7 +170,7 @@ export default function ForgePanel({
           />
           {streamingText && <StageOutput output={streamingText} isStreaming />}
           {toolCalls.length > 0 && <AgentActivity toolCalls={toolCalls} />}
-          {logs.length > 0 && <TerminalLog logs={logs} title="Forge Activity" />}
+          {/* Activity logs shown in Bottom Dock Terminal tab */}
         </>
       )}
 

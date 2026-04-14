@@ -9,7 +9,6 @@ import { Button } from '@revamp/ui/components/button';
 import { Card, CardContent } from '@revamp/ui/components/card';
 import { Badge } from '@revamp/ui/components/badge';
 import { StageOutput } from '@/components/pipeline/stage-output';
-import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { FileTree, type FileNode } from '@/components/pipeline/file-tree';
 import { buildFileTree } from '@revamp/core/utils/file-tree';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
@@ -112,7 +111,7 @@ export default function SpecLockPanel({
   isExecuting,
   onRefineRequest: _onRefineRequest,
 }: StagePanelProps) {
-  const { logs, isRunning, hasOutput, canRun } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
+  const { isRunning, hasOutput, canRun } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
   const [activeTab, setActiveTab] = useState<TabKey>('features');
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
@@ -188,7 +187,7 @@ export default function SpecLockPanel({
             subtitle="Generating BDD scenarios from business rules"
           />
           {streamingText && <StageOutput output={streamingText} isStreaming />}
-          {logs.length > 0 && <TerminalLog logs={logs} title="Spec Lock Activity" />}
+          {/* Activity logs shown in Bottom Dock Terminal tab */}
         </>
       )}
 

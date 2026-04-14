@@ -4,7 +4,6 @@ import { Play, Eye, ArrowLeftRight, Timer, Shield } from 'lucide-react';
 import { Button } from '@revamp/ui/components/button';
 import { Card, CardContent } from '@revamp/ui/components/card';
 import { StageOutput } from '@/components/pipeline/stage-output';
-import { TerminalLog } from '@/components/pipeline/terminal-log';
 import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { useStagePanel } from '@revamp/core/hooks/use-stage-panel';
 import { DynamicStageTabs } from './dynamic-stage-tabs';
@@ -19,7 +18,7 @@ export default function ShadowRunPanel({
   isExecuting,
   onRefineRequest,
 }: StagePanelProps) {
-  const { logs, isRunning, hasOutput, canRun: canExecute } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
+  const { isRunning, hasOutput, canRun: canExecute } = useStagePanel(stage, stageIndex, streamingText, isExecuting);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -78,7 +77,7 @@ export default function ShadowRunPanel({
             subtitle="Comparing legacy vs modern outputs"
           />
           {streamingText && <StageOutput output={streamingText} isStreaming />}
-          {logs.length > 0 && <TerminalLog logs={logs} title="Shadow Run Activity" />}
+          {/* Activity logs shown in Bottom Dock Terminal tab */}
         </>
       )}
 
