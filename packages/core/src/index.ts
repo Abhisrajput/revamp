@@ -24,6 +24,15 @@ export {
   useInvalidatePipeline,
 } from './hooks/use-pipeline-queries';
 
+// Agent Hooks (all exports)
+export * from './hooks/use-agents';
+
+// Orchestrator Hook (all exports)
+export * from './hooks/use-orchestrator';
+
+// Refine Section Hook
+export { useRefineSection } from './hooks/use-refine-section';
+
 // Pipeline API Types
 export type {
   PipelineStatus,
