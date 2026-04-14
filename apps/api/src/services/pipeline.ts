@@ -39,6 +39,15 @@ import {
   loadUserFeedback,
   updateProjectMetrics,
 } from "./pipeline-repository.js";
+import {
+  type StageConfig,
+  PIPELINE_STAGES,
+  getStageConfig,
+  getNextStage,
+  getPreviousStage,
+  getPipelineRun,
+  isStageDisabled,
+} from "./pipeline-config.js";
 import { llmProxyService } from "./llm-proxy.js";
 import {
   matchAndAssignAgent,
@@ -95,98 +104,20 @@ interface ProjectRow {
   [key: string]: unknown; // allow additional fields
 }
 
-// ─── STAGE CONFIGURATION ────────────────────────────────────────
-
-export interface StageConfig {
-  name: PipelineStageName;
-  index: number;
-  requiresApproval: boolean;
-  requiredRole?: "architect" | "admin" | "sme";
-  timeout: number; // ms
-}
-
-// Every stage requires human review and approval before the next stage can execute.
-// This ensures quality gates are enforced — no auto-progression.
-const PIPELINE_STAGES: StageConfig[] = [
-  { name: PipelineStageName.SCAN, index: 0, requiresApproval: true, timeout: 1800000 },
-  { name: PipelineStageName.DECODE, index: 1, requiresApproval: true, timeout: 2400000 },
-  { name: PipelineStageName.BLUEPRINT, index: 2, requiresApproval: true, requiredRole: "architect", timeout: 2400000 },
-  { name: PipelineStageName.SPEC_LOCK, index: 3, requiresApproval: true, requiredRole: "architect", timeout: 3600000 },
-  { name: PipelineStageName.ARCHITECT, index: 4, requiresApproval: true, requiredRole: "architect", timeout: 3600000 },
-  { name: PipelineStageName.FORGE, index: 5, requiresApproval: true, timeout: 7200000 },
-  { name: PipelineStageName.SHADOW_RUN, index: 6, requiresApproval: true, requiredRole: "admin", timeout: 3600000 },
-  { name: PipelineStageName.EVOLVE, index: 7, requiresApproval: true, timeout: 1800000 },
-];
-
-// ─── STAGE DISABLE/SKIP ──────────────────────────────────────────
-//
-// Ported from legacy-bridge isStageDisabled() / skipStage() in useProjectStore.ts.
-// Allows projects to skip specific pipeline stages via configuration.
-
-export interface ProjectStageConfig {
-  /** Map of stage name to enabled/disabled status. Missing = enabled. */
-  disabled_stages?: Record<string, boolean>;
-  /** Per-stage model overrides */
-  stage_models?: Record<string, string>;
-}
-
-/**
- * Check if a pipeline stage is disabled for a project.
- * Reads from project.config.disabled_stages or project.settings.disabled_stages.
- */
-export function isStageDisabled(
-  stageName: PipelineStageName,
-  projectConfig: Record<string, unknown> | null | undefined,
-): boolean {
-  if (!projectConfig) return false;
-
-  // Check config.disabled_stages
-  const disabledStages = (projectConfig.disabled_stages as Record<string, boolean>) ?? {};
-  if (disabledStages[stageName] === true) return true;
-
-  // Also check nested settings for backward compat
-  const settings = projectConfig.settings as Record<string, unknown> | undefined;
-  if (settings) {
-    const settingsDisabled = (settings.disabled_stages as Record<string, boolean>) ?? {};
-    if (settingsDisabled[stageName] === true) return true;
-  }
-
-  return false;
-}
+// Stage configuration, utilities, and isStageDisabled now in pipeline-config.ts
+export type { StageConfig, ProjectStageConfig } from "./pipeline-config.js";
+export { isStageDisabled } from "./pipeline-config.js";
 
 // ─── SERVICE ────────────────────────────────────────────────────
 
 export class PipelineService {
-  getStageConfig(stage: PipelineStageName): StageConfig {
-    const config = PIPELINE_STAGES.find((s) => s.name === stage);
-    if (!config) throw new ValidationError(`Unknown stage: ${stage}`);
-    return config;
-  }
-
-  getNextStage(currentStage: PipelineStageName): PipelineStageName | null {
-    const order = getStageOrder();
-    const idx = order.indexOf(currentStage);
-    if (idx === -1 || idx === order.length - 1) return null;
-    return order[idx + 1];
-  }
-
-  getPreviousStage(currentStage: PipelineStageName): PipelineStageName | null {
-    const order = getStageOrder();
-    const idx = order.indexOf(currentStage);
-    if (idx <= 0) return null;
-    return order[idx - 1];
-  }
-
-  async getPipelineRun(pipelineRunId: string) {
-    return db.query.pipelineRuns.findFirst({
-      where: eq(pipelineRuns.id, pipelineRunId),
-      with: {
-        project: true,
-        artifacts: true,
-        approvalGates: true,
-      },
-    });
-  }
+  // Config/lookup methods delegated to pipeline-config.ts standalone functions.
+  // Routes that call pipelineService.getPipelineRun() etc. should migrate to
+  // importing from pipeline-config.ts directly.
+  getStageConfig = getStageConfig;
+  getNextStage = getNextStage;
+  getPreviousStage = getPreviousStage;
+  getPipelineRun = getPipelineRun;
 
   /**
    * Create a new pipeline run for a project, or return existing active run.
@@ -309,11 +240,11 @@ export class PipelineService {
       validationFeedback?: Array<{ name: string; passed: boolean; score: number; feedback: string; severity?: string }>;
     },
   ): Promise<StageRunResult> {
-    const run = await this.getPipelineRun(pipelineRunId);
+    const run = await getPipelineRun(pipelineRunId);
     if (!run) throw new NotFoundError("Pipeline run not found");
     if (!run.project) throw new NotFoundError("Project not found for pipeline run");
 
-    const stageConfig = this.getStageConfig(stageName);
+    const stageConfig = getStageConfig(stageName);
 
     // Check if stage is disabled in project config
     const proj = run.project as ProjectRow;
@@ -958,7 +889,7 @@ export class PipelineService {
       // Update stage progress + create approval gate
       if (scanResult.output) {
         const scanScore = scanResult.validation?.confidenceScore ?? 70;
-        const scanConfig = this.getStageConfig(stageName);
+        const scanConfig = getStageConfig(stageName);
         await db.transaction(async (tx) => {
           await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: scanScore });
           if (scanConfig.requiresApproval) {
@@ -1141,7 +1072,7 @@ export class PipelineService {
       // Update stage progress + create approval gate
       if (decodeResult.output) {
         const decodeScore = decodeResult.validation?.confidenceScore ?? 70;
-        const decodeConfig = this.getStageConfig(stageName);
+        const decodeConfig = getStageConfig(stageName);
         await db.transaction(async (tx) => {
           await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: decodeScore });
           if (decodeConfig.requiresApproval) {
@@ -1216,7 +1147,7 @@ export class PipelineService {
 
       if (forgeResult.output) {
         const forgeScore = forgeResult.validation?.confidenceScore ?? 70;
-        const forgeConfig = this.getStageConfig(stageName);
+        const forgeConfig = getStageConfig(stageName);
         await db.transaction(async (tx) => {
           await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: forgeScore });
           if (forgeConfig.requiresApproval) {
@@ -1354,7 +1285,7 @@ export class PipelineService {
       // Update stage progress
       if (result.output) {
         const score = chunkedResult.coverage.percentage;
-        const config = this.getStageConfig(stageName);
+        const config = getStageConfig(stageName);
         await db.transaction(async (tx) => {
           await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: score });
           if (config.requiresApproval) {
@@ -1688,8 +1619,8 @@ export class PipelineService {
     } else {
       // Stage completed — create approval gate regardless of confidence score.
       // Low confidence = reviewer must scrutinize. High confidence = routine approval.
-      const currentConfig = this.getStageConfig(stageName);
-      const nextStage = this.getNextStage(stageName);
+      const currentConfig = getStageConfig(stageName);
+      const nextStage = getNextStage(stageName);
 
       await db.transaction(async (tx) => {
         await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore });
@@ -1751,12 +1682,12 @@ export class PipelineService {
    * Advance pipeline to the next stage.
    */
   async advanceStage(pipelineRunId: string): Promise<void> {
-    const run = await this.getPipelineRun(pipelineRunId);
+    const run = await getPipelineRun(pipelineRunId);
     if (!run) throw new NotFoundError("Pipeline run not found");
     if (run.status !== "running") throw new ValidationError(`Cannot advance pipeline in ${run.status} state`);
 
     const currentStage = run.current_stage as PipelineStageName;
-    const nextStage = this.getNextStage(currentStage);
+    const nextStage = getNextStage(currentStage);
 
     await db.transaction(async (tx) => {
       if (!nextStage) {
@@ -1848,7 +1779,7 @@ export class PipelineService {
 
       await updateStageProgress(pipelineRunId, stageName, "approved", 100, { conn: tx });
 
-      const nextStage = this.getNextStage(stageName);
+      const nextStage = getNextStage(stageName);
       if (nextStage) {
         await tx.update(pipelineRuns).set({
           current_stage: nextStage,
@@ -2001,7 +1932,7 @@ Please provide the refined version of the "${sectionTitle}" section only.`;
     onDelta?: (text: string) => void,
     signal?: AbortSignal,
   ): Promise<string> {
-    const run = await this.getPipelineRun(pipelineRunId);
+    const run = await getPipelineRun(pipelineRunId);
     if (!run) throw new NotFoundError("Pipeline run not found");
 
     // Load prior stage outputs using tiered context (L0/L1/L2)
