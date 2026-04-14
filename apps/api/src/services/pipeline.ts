@@ -40,6 +40,7 @@ import {
   updateProjectMetrics,
 } from "./pipeline-repository.js";
 import { finalizeStageResult } from "./pipeline-finalize.js";
+import { resolveProjectCredentials } from "./pipeline-credentials.js";
 import {
   type StageConfig,
   PIPELINE_STAGES,
@@ -594,104 +595,8 @@ export class PipelineService {
     const projectSettings = (run.project as any).settings as Record<string, unknown> | null;
     const configuredMaxTokens = options?.maxTokens || (projectSettings?.maxTokens as number) || 32768;
 
-    // BYOK: extract per-project LLM provider credentials.
-    // The frontend saves providers under camelCase key "llmProviders" with credentials
-    // in the "api_key_encrypted" field. For Bedrock, this is a JSON string containing
-    // {accessKeyId, secretAccessKey, sessionToken, region}.
-    let projectCredentials: import("@/services/llm-proxy.js").ProjectCredentials | undefined;
-    const llmProviders = (
-      (projectSettings?.llmProviders as Record<string, unknown>[])
-      || (projectSettings?.llm_providers as Record<string, unknown>[])
-      || []
-    );
-    if (llmProviders.length > 0) {
-      // Find the default provider, or the first one
-      const defaultProvider = llmProviders.find((p: any) => p.is_default) || llmProviders[0];
-      const ptype = (defaultProvider as any).provider_type as string;
-      const apiKeyField = (defaultProvider as any).api_key_encrypted as string || "";
-
-      projectCredentials = { provider: ptype };
-      if (ptype === "bedrock") {
-        // Bedrock credentials can be:
-        //   1. Bearer token as JSON: {"bearerToken":"...", "region":"us-east-2"}
-        //   2. IAM keys JSON: {accessKeyId, secretAccessKey, region}
-        //   3. SSO profile JSON: {"ssoProfile":"my-profile", "region":"us-east-2"}
-        //   4. Empty/none — uses AWS default credential chain (SSO, instance role, env)
-        let bearerToken: string | undefined;
-        let parsed: Record<string, string> | undefined;
-
-        if (typeof apiKeyField === "string" && apiKeyField.startsWith("{")) {
-          try {
-            parsed = JSON.parse(apiKeyField);
-            bearerToken = parsed?.bearerToken || parsed?.bearer_token || parsed?.apiKey || parsed?.api_key;
-          } catch {
-            console.warn("[Pipeline] Failed to parse Bedrock credentials from api_key_encrypted");
-          }
-        } else if (typeof apiKeyField === "string" && apiKeyField.length > 10) {
-          bearerToken = apiKeyField;
-        }
-
-        if (bearerToken) {
-          projectCredentials.aws_bearer_token = bearerToken;
-          projectCredentials.aws_region = parsed?.region || parsed?.aws_region || "us-east-2";
-        } else if (parsed?.ssoProfile || parsed?.sso_profile) {
-          // SSO profile — Go orchestrator uses AWS default credential chain with this profile
-          projectCredentials.aws_sso_profile = parsed.ssoProfile || parsed.sso_profile || "";
-          projectCredentials.aws_region = parsed.region || parsed.aws_region || "us-east-2";
-        } else if (parsed?.accessKeyId || parsed?.aws_access_key_id) {
-          projectCredentials.aws_access_key_id = parsed.accessKeyId || parsed.aws_access_key_id || "";
-          projectCredentials.aws_secret_access_key = parsed.secretAccessKey || parsed.aws_secret_access_key || "";
-          projectCredentials.aws_session_token = parsed.sessionToken || parsed.aws_session_token || "";
-          projectCredentials.aws_region = parsed.region || parsed.aws_region || "us-east-2";
-        } else {
-          // No explicit credentials — let Go orchestrator use default credential chain
-          projectCredentials.aws_region = parsed?.region || parsed?.aws_region || "us-east-2";
-        }
-      } else if (ptype === "anthropic") {
-        projectCredentials.anthropic_api_key = apiKeyField;
-      } else if (ptype === "openai") {
-        projectCredentials.openai_api_key = apiKeyField;
-        const baseUrl = (defaultProvider as any).base_url as string;
-        if (baseUrl) projectCredentials.openai_endpoint = baseUrl;
-      } else if (ptype === "gemini") {
-        projectCredentials.gemini_api_key = apiKeyField;
-      } else if (ptype === "vertexai") {
-        try {
-          const parsed = JSON.parse(apiKeyField);
-          projectCredentials.vertex_ai_project_id = parsed.projectId || parsed.project_id || "";
-          projectCredentials.vertex_ai_location = parsed.location || "us-central1";
-          if (parsed.serviceAccountJson || parsed.service_account_json) {
-            const saJson = parsed.serviceAccountJson || parsed.service_account_json;
-            projectCredentials.vertex_ai_service_account_json =
-              typeof saJson === "string" ? saJson : JSON.stringify(saJson);
-          }
-          if (parsed.accessToken || parsed.access_token) {
-            projectCredentials.vertex_ai_access_token = parsed.accessToken || parsed.access_token;
-          }
-        } catch {
-          // Non-JSON — treat as access token
-          projectCredentials.vertex_ai_access_token = apiKeyField;
-        }
-      } else if (ptype === "azure") {
-        try {
-          const parsed = JSON.parse(apiKeyField);
-          projectCredentials.azure_endpoint = parsed.endpoint || "";
-          projectCredentials.azure_api_version = parsed.apiVersion || parsed.api_version || "2024-12-01-preview";
-          projectCredentials.azure_deployments = parsed.deployments || "";
-          if (parsed.apiKey || parsed.api_key) {
-            projectCredentials.azure_api_key = parsed.apiKey || parsed.api_key;
-          }
-          if (parsed.adToken || parsed.ad_token) {
-            projectCredentials.azure_ad_token = parsed.adToken || parsed.ad_token;
-          }
-        } catch {
-          // Non-JSON — treat as API key (endpoint must be in base_url)
-          projectCredentials.azure_api_key = apiKeyField;
-          const baseUrl = (defaultProvider as any).base_url as string;
-          if (baseUrl) projectCredentials.azure_endpoint = baseUrl;
-        }
-      }
-    }
+    // BYOK: extract per-project LLM provider credentials
+    const projectCredentials = resolveProjectCredentials(projectSettings);
 
     // ─── ADVISOR TOOL (Anthropic-only; Bedrock/OpenAI silently ignore) ──
     // Per-stage config: enable Opus advisor for strategic/synthesis phases.
