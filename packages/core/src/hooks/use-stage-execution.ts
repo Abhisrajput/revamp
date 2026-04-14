@@ -100,6 +100,7 @@ interface UseStageExecutionReturn {
 }
 
 const EXECUTING_KEY = 'revamp:executing_stage';
+const SUBTASKS_KEY = 'revamp:executing_subtasks';
 
 /** Persist running stage info to sessionStorage so we can reconnect after refresh */
 function saveExecutingState(pipelineRunId: string, stageName: string, stageIndex: number) {
@@ -111,7 +112,23 @@ function saveExecutingState(pipelineRunId: string, stageName: string, stageIndex
 function clearExecutingState() {
   try {
     getSessionStorage().removeItem(EXECUTING_KEY);
+    getSessionStorage().removeItem(SUBTASKS_KEY);
   } catch { /* non-fatal */ }
+}
+
+/** Save subtasks to sessionStorage so bot grid survives refresh */
+function saveSubtasks(subtasks: any[]) {
+  try {
+    getSessionStorage().setItem(SUBTASKS_KEY, JSON.stringify(subtasks));
+  } catch { /* non-fatal */ }
+}
+
+function loadSubtasks(): any[] | null {
+  try {
+    const raw = getSessionStorage().getItem(SUBTASKS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
 }
 
 function loadExecutingState(): { pipelineRunId: string; stageName: string; stageIndex: number; startedAt: number } | null {
@@ -122,6 +139,7 @@ function loadExecutingState(): { pipelineRunId: string; stageName: string; stage
     // Expire after 35 minutes (stage timeout is 30 min + buffer)
     if (Date.now() - parsed.startedAt > 35 * 60 * 1000) {
       getSessionStorage().removeItem(EXECUTING_KEY);
+      getSessionStorage().removeItem(SUBTASKS_KEY);
       return null;
     }
     return parsed;
@@ -162,6 +180,18 @@ export function useStageExecution(): UseStageExecutionReturn {
     isExecutingRef.current = true;
     setIsExecuting(true);
     setCurrentPhase('reconnecting');
+
+    // Restore subtasks (bot grid) from sessionStorage
+    const savedSubtasks = loadSubtasks();
+    if (savedSubtasks && savedSubtasks.length > 0 && idx >= 0) {
+      const currentSubtasks = stages[idx].subtasks;
+      if (currentSubtasks.length === 0) {
+        // Restore subtasks that were lost on refresh
+        for (const st of savedSubtasks) {
+          store.getState().addScanSubtask(idx, st);
+        }
+      }
+    }
 
     activityStore.getState().addLog({
       type: 'info',
@@ -235,6 +265,16 @@ export function useStageExecution(): UseStageExecutionReturn {
       // Persist to sessionStorage so we can reconnect after page refresh
       saveExecutingState(pipelineRunId, stageName, stageIndex);
 
+      // Watch subtask changes and persist to sessionStorage (debounced)
+      let subtaskSaveTimer: ReturnType<typeof setTimeout> | null = null;
+      const unsubSubtasks = store.subscribe((state) => {
+        const stage = state.stages[stageIndex];
+        if (stage?.subtasks?.length > 0) {
+          if (subtaskSaveTimer) clearTimeout(subtaskSaveTimer);
+          subtaskSaveTimer = setTimeout(() => saveSubtasks(stage.subtasks), 500);
+        }
+      });
+
       const authToken = useAuthStore.getState().token;
 
       // Subscribe to pipeline events via WebSocket BEFORE starting execution
@@ -274,6 +314,8 @@ export function useStageExecution(): UseStageExecutionReturn {
       function cleanup() {
         unsubscribed = true;
         unsubscribe();
+        unsubSubtasks();
+        if (subtaskSaveTimer) clearTimeout(subtaskSaveTimer);
         isExecutingRef.current = false;
         setIsExecuting(false);
         setCurrentPhase(null);
