@@ -21,36 +21,30 @@ function formatElapsed(ms: number): string {
 
 // --- Component ---
 
+/**
+ * Elapsed timer that never resets unexpectedly.
+ * A single interval ticks every second (depends only on isRunning boolean).
+ * Elapsed time is computed inline from props — no effect dep on startedAt.
+ */
 export function ElapsedTimer({ startedAt, completedAt }: ElapsedTimerProps) {
-  const [elapsed, setElapsed] = useState('0:00');
+  const isRunning = !!startedAt && !completedAt;
+  const [, setTick] = useState(0);
 
+  // Single interval — only depends on isRunning (boolean). Never restarts
+  // when startedAt/completedAt string values change.
   useEffect(() => {
-    if (!startedAt) {
-      setElapsed('0:00');
-      return;
-    }
-
-    const start = new Date(startedAt).getTime();
-
-    // Stage completed — show final duration and stop ticking
-    if (completedAt) {
-      const end = new Date(completedAt).getTime();
-      setElapsed(formatElapsed(end - start));
-      return;
-    }
-
-    // Stage is running — tick every second
-    setElapsed(formatElapsed(Date.now() - start));
-    const interval = setInterval(() => {
-      setElapsed(formatElapsed(Date.now() - start));
-    }, 1000);
-
+    if (!isRunning) return;
+    const interval = setInterval(() => setTick((n) => n + 1), 1000);
     return () => clearInterval(interval);
-  }, [startedAt, completedAt]);
+  }, [isRunning]);
 
   if (!startedAt) return null;
 
-  const isRunning = startedAt && !completedAt;
+  // Compute elapsed inline — always correct, no stale state
+  const start = new Date(startedAt).getTime();
+  const elapsed = completedAt
+    ? formatElapsed(new Date(completedAt).getTime() - start)
+    : formatElapsed(Date.now() - start);
 
   return (
     <div className="inline-flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 tabular-nums">

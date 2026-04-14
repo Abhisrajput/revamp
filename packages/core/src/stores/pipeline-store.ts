@@ -45,18 +45,46 @@ interface PipelineStoreState {
   updateScanSubtask: (index: number, subtaskId: string, updates: Partial<ScanSubtaskState>) => void;
 }
 
+// ─── Session persistence for pipeline identity ─────────────────────
+// Persists currentPipelineRunId + currentProjectId to sessionStorage so
+// initPipeline is NOT called on page refresh when the pipeline hasn't changed.
+// This prevents createDefaultStages() from nuking startedAt, completedAt,
+// pendingApprovalSince — which caused all timers to flash/reset.
+
+import { getSessionStorage } from '../api/storage';
+
+const PIPELINE_ID_KEY = 'revamp:pipeline-identity';
+
+function savePipelineIdentity(projectId: string, runId: string) {
+  try { getSessionStorage().setItem(PIPELINE_ID_KEY, JSON.stringify({ projectId, runId })); } catch {}
+}
+
+function loadPipelineIdentity(): { projectId: string; runId: string } | null {
+  try {
+    const raw = getSessionStorage().getItem(PIPELINE_ID_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
 // ─── Store ─────────────────────────────────────────────────────────
+
+const savedIdentity = loadPipelineIdentity();
 
 export const usePipelineStore = create<PipelineStoreState>()(
   (set, get) => ({
     stages: createDefaultStages(),
     activeStageIndex: 0,
-    currentPipelineRunId: null,
-    currentProjectId: null,
+    currentPipelineRunId: savedIdentity?.runId ?? null,
+    currentProjectId: savedIdentity?.projectId ?? null,
     streamingText: '',
     isGenerating: false,
 
     initPipeline: (projectId, pipelineRunId) => {
+      // If same pipeline, don't reset stages — preserves timers across refresh
+      const current = get();
+      if (current.currentPipelineRunId === pipelineRunId && current.currentProjectId === projectId) {
+        return;
+      }
       set({
         stages: createDefaultStages(),
         activeStageIndex: 0,
@@ -65,10 +93,7 @@ export const usePipelineStore = create<PipelineStoreState>()(
         streamingText: '',
         isGenerating: false,
       });
-      // Activity data (token usage, logs, tool calls) is persisted to sessionStorage
-      // and auto-restored on store creation. Do NOT reset it here — it would wipe
-      // data that survives page refresh. Activity is only reset when a new stage
-      // execution starts (via resetActivity call in use-stage-execution).
+      savePipelineIdentity(projectId, pipelineRunId);
     },
 
     setActiveStage: (index) => set({ activeStageIndex: index }),
