@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import { useAuthStore } from './auth-store';
-// Activity store is self-contained — persists to sessionStorage, restores on creation.
 import {
   type StageStatus,
   type StageValidation,
@@ -15,30 +14,31 @@ import {
 // ─── Types ─────────────────────────────────────────────────────────
 
 interface PipelineStoreState {
+  // ─── State ───────────────────────────────────────────────────
+  // Server-synced state (React Query → unified sync effect → here)
   stages: StageState[];
+  isGenerating: boolean;
+  // UI-only state
   activeStageIndex: number;
   currentPipelineRunId: string | null;
   currentProjectId: string | null;
   streamingText: string;
-  /** True when any stage is currently in 'generating' or 'validating' state */
-  isGenerating: boolean;
 
-  // Actions
+  // ─── UI Actions (pure client-side) ───────────────────────────
   initPipeline: (projectId: string, pipelineRunId: string) => void;
   setActiveStage: (index: number) => void;
   advanceToNextStage: () => void;
-  setStageStatus: (index: number, status: StageStatus) => void;
-  /** Override startedAt — used by backend sync to restore the real server start time after page refresh. */
-  setStageStartedAt: (index: number, startedAt: string | null) => void;
-  setStageOutput: (index: number, output: string) => void;
   appendStreamingText: (text: string) => void;
   clearStreamingText: () => void;
+  resetStage: (index: number) => void;
+  rerunStage: (index: number, user?: string) => void;
+
+  // ─── Execution Actions (called by SSE handler during streaming) ──
+  // TODO: Migrate to React Query mutations + cache invalidation
+  setStageStatus: (index: number, status: StageStatus) => void;
+  setStageOutput: (index: number, output: string) => void;
   setStageApproval: (index: number, status: 'approved' | 'rejected' | 'pending', comment?: string) => void;
   setStageValidation: (index: number, validation: StageValidation) => void;
-  resetStage: (index: number) => void;
-  /** Re-run a stage: preserves previous validation, clears output, cascades reset to downstream stages */
-  rerunStage: (index: number, user?: string) => void;
-  /** Mark stage as awaiting approval (sets pendingApprovalSince) */
   setPendingApproval: (index: number) => void;
   addStageArtifact: (index: number, artifact: StageArtifact) => void;
   addScanSubtask: (index: number, subtask: ScanSubtaskState) => void;
@@ -104,15 +104,6 @@ export const usePipelineStore = create<PipelineStoreState>()(
           (s) => s.status === 'generating' || s.status === 'validating',
         );
         return { stages, isGenerating };
-      });
-    },
-
-    setStageStartedAt: (index, startedAt) => {
-      set((state) => {
-        if (state.stages[index]?.startedAt === startedAt) return state;
-        const stages = [...state.stages];
-        stages[index] = { ...stages[index], startedAt };
-        return { stages };
       });
     },
 
@@ -232,7 +223,6 @@ export const usePipelineStore = create<PipelineStoreState>()(
           ...current,
           status: 'pending',
           output: '',
-          streamingOutput: '',
           approvalStatus: 'not_required',
           previousValidation: current.validation || current.previousValidation,
           validation: null,
