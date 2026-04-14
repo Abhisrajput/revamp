@@ -30,6 +30,7 @@ import { useUIPreferencesStore } from '@revamp/core/stores/ui-preferences-store'
 import { useAuthStore } from '@revamp/core/stores/auth-store';
 import { useStageExecution } from '@revamp/core/hooks/use-stage-execution';
 import { usePipelineShortcuts } from '@revamp/core/hooks/use-keyboard-shortcuts';
+import { useWSSubscribe } from '@revamp/core/hooks/use-ws';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 // IndexedDB caching handled by pipeline-store.setStageOutput (still uses pipeline-cache internally)
@@ -70,6 +71,42 @@ export default function PipelinePage() {
     // Activity data is auto-restored from sessionStorage at store creation time —
     // no explicit restore needed here.
   }, [effectiveRunId, projectId]);
+
+  // ─── WebSocket: real-time pipeline state events ──────────────
+  // Subscribe to pipeline topic for approval/rejection/completion events
+  // so the UI updates immediately without waiting for the next poll cycle.
+  const queryClientWS = useQueryClient();
+  useWSSubscribe(
+    effectiveRunId ? `pipeline:${effectiveRunId}` : null,
+    useCallback((event) => {
+      if (event.event === 'stage_approved') {
+        const data = event.data as { stageName?: string };
+        const stages = usePipelineStore.getState().stages;
+        const idx = stages.findIndex((s) => s.name === data.stageName);
+        if (idx >= 0) {
+          usePipelineStore.getState().setStageStatus(idx, 'approved');
+          const setApproval = usePipelineStore.getState().setStageApproval;
+          if (setApproval) setApproval(idx, 'approved');
+        }
+        // Refetch to sync everything
+        queryClientWS.invalidateQueries({ queryKey: ['pipeline-status', effectiveRunId] });
+      }
+      if (event.event === 'stage_rejected') {
+        const data = event.data as { stageName?: string; reason?: string };
+        const stages = usePipelineStore.getState().stages;
+        const idx = stages.findIndex((s) => s.name === data.stageName);
+        if (idx >= 0) {
+          usePipelineStore.getState().setStageStatus(idx, 'failed');
+        }
+        queryClientWS.invalidateQueries({ queryKey: ['pipeline-status', effectiveRunId] });
+      }
+      if (event.event === 'complete' || event.event === 'stage_completed') {
+        // Stage completed — refetch outputs + status
+        queryClientWS.invalidateQueries({ queryKey: ['pipeline-status', effectiveRunId] });
+        queryClientWS.invalidateQueries({ queryKey: ['pipeline'] });
+      }
+    }, [effectiveRunId, queryClientWS]),
+  );
 
   // ─── Unified sync: React Query → Zustand (single effect) ──────
   // React Query owns the data (usePipelineStatus, useAllStageOutputs).

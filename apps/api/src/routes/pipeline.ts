@@ -1280,6 +1280,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           validation.data.comment,
           force,
         );
+
+        // Publish approval event via WebSocket so all clients update immediately
+        publish(`pipeline:${pipelineRunId}`, "stage_approved", {
+          stageName: stage,
+          approvedBy: request.user.sub,
+          comment: validation.data.comment,
+          timestamp: new Date().toISOString(),
+        });
+
         writeAuditLog({
           userId: request.user.sub,
           action: "STAGE_APPROVED",
@@ -1344,6 +1353,14 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           request.user.sub,
           validation.data.reason,
         );
+
+        publish(`pipeline:${pipelineRunId}`, "stage_rejected", {
+          stageName: stage,
+          rejectedBy: request.user.sub,
+          reason: validation.data.reason,
+          timestamp: new Date().toISOString(),
+        });
+
         writeAuditLog({
           userId: request.user.sub,
           action: "STAGE_REJECTED",
