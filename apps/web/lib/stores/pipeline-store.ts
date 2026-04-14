@@ -9,7 +9,7 @@ import {
   type StageState,
   createDefaultStage,
   createDefaultStages,
-} from './pipeline-types';
+} from '@revamp/core';
 
 // ─── Types ─────────────────────────────────────────────────────────
 

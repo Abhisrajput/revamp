@@ -20,3 +20,4 @@ export { MermaidDiagram } from './mermaid-diagram';
 export { default as StageOutput } from './stage-output';
 export { GitHubSyncDialog } from './github-sync-dialog';
 export { BreeOutputTab } from './bree-output-tab';
+export { AgentBotGrid } from './agent-bot-grid';

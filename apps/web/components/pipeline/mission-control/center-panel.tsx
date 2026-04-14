@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { InlinePromptEditor } from './inline-prompt-editor';
 import { ElapsedTimer } from '@/components/pipeline/elapsed-timer';
 import { STAGE_PANEL_MAP } from '@/components/pipeline/stage-panels';
-import { useRefineSection } from '@/lib/hooks/use-refine-section';
+import { useRefineSection } from '@revamp/core';
 import type { StagePanelProps } from '@/components/pipeline/stage-panels/types';
 import type { StageState } from '@revamp/core';
 

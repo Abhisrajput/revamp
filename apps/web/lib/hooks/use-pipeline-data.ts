@@ -18,8 +18,6 @@ import {
   useInvalidatePipeline,
   type PipelineStatus,
   type ApprovalGate,
-} from './use-pipeline-queries';
-import {
   type StageStatus,
   STAGE_NAMES,
   STAGE_LABELS,
