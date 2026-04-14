@@ -160,7 +160,10 @@ export default function PipelinePage() {
           updates.status = 'approved';
         } else if (dbStatus === 'awaiting_approval' && stages[i].approvalStatus !== 'pending') {
           updates.approvalStatus = 'pending';
-          updates.pendingApprovalSince = stages[i].pendingApprovalSince || new Date().toISOString();
+          // Use the DB timestamp (when status changed to awaiting_approval) so the
+          // auto-approval timer doesn't reset on page refresh. Only fall back to now()
+          // if no DB timestamp exists (shouldn't happen in practice).
+          updates.pendingApprovalSince = dbEntry.updatedAt || stages[i].pendingApprovalSince || new Date().toISOString();
         }
 
         // Confidence score
