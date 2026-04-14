@@ -1,6 +1,6 @@
 
 
-import { useState, useEffect, memo, useCallback } from 'react';
+import { useState, useEffect, useRef, memo, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ShieldCheck, CheckCircle, Clock, RotateCcw,
@@ -45,6 +45,10 @@ function useCountdown(
   onExpire: () => void,
 ) {
   const [remaining, setRemaining] = useState<number | null>(null);
+  // Use a ref for onExpire so the interval doesn't restart when the callback
+  // changes (e.g., when validation score updates recreate handleAutoApprove).
+  const onExpireRef = useRef(onExpire);
+  onExpireRef.current = onExpire;
 
   useEffect(() => {
     if (!enabled || !pendingApprovalSince || timeoutHours <= 0) {
@@ -58,7 +62,7 @@ function useCountdown(
       const diff = deadline - Date.now();
       if (diff <= 0) {
         setRemaining(0);
-        onExpire();
+        onExpireRef.current();
         return;
       }
       setRemaining(diff);
@@ -67,7 +71,7 @@ function useCountdown(
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [enabled, pendingApprovalSince, timeoutHours, onExpire]);
+  }, [enabled, pendingApprovalSince, timeoutHours]);
 
   return remaining;
 }
