@@ -205,6 +205,26 @@ export function useStageExecution(): UseStageExecutionReturn {
           }
         }
 
+        // Critical failure events — surface as prominent error banner + fail the stage
+        // These indicate the stage cannot proceed (auth failure, provider down, etc.)
+        if ((phase === 'scout_failed' || phase === 'composition_failed' || phase === 'director_failed') && idx >= 0) {
+          const errorData = event.data?.data as Record<string, unknown> | undefined;
+          const errorMsg = (errorData?.error as string) || (errorData?.message as string) || `${phase}: Stage execution failed`;
+          s.setStageStatus(idx, 'failed');
+          flashError(stageName, errorMsg);
+          a.addLog({ type: 'error', message: errorMsg, timestamp: new Date().toISOString() });
+        }
+
+        // Provider/auth errors surfaced as phase events — show banner immediately
+        if (phase && typeof phase === 'string' && /fail|error|denied|unauthorized|forbidden/i.test(phase) && idx >= 0) {
+          const errorData = event.data?.data as Record<string, unknown> | undefined;
+          const errorMsg = (errorData?.error as string) || (errorData?.message as string) || '';
+          if (errorMsg && /403|401|auth|credential|token.*invalid|security.*token/i.test(errorMsg)) {
+            s.setStageStatus(idx, 'failed');
+            flashError(stageName, `Authentication failed — run "aws sso login" and retry`);
+          }
+        }
+
         // Director planning event — populate the subtasks list with planned bots
         if (phase === 'director_planning' && event.data?.data && idx >= 0) {
           const planData = event.data.data as Record<string, unknown>;
