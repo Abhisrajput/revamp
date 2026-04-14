@@ -537,14 +537,23 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           artifact_type: a.artifact_type,
           created_at: a.created_at,
         })),
-        approval_gates: run.approvalGates?.map((g: any) => ({
-          id: g.id,
-          stage_name: g.stage_name,
-          status: g.status,
-          required_role: g.required_role,
-          created_at: g.created_at,
-          approved_at: g.approved_at,
-        })),
+        // Deduplicate: only return the LATEST gate per stage (by created_at)
+        approval_gates: Object.values(
+          (run.approvalGates || []).reduce((acc: Record<string, any>, g: any) => {
+            const existing = acc[g.stage_name];
+            if (!existing || new Date(g.created_at) > new Date(existing.created_at)) {
+              acc[g.stage_name] = {
+                id: g.id,
+                stage_name: g.stage_name,
+                status: g.status,
+                required_role: g.required_role,
+                created_at: g.created_at,
+                approved_at: g.approved_at,
+              };
+            }
+            return acc;
+          }, {} as Record<string, any>),
+        ),
       });
     },
   );
@@ -1250,15 +1259,18 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         return reply.status(400).send({ error: "Invalid input" });
       }
 
+      // Find the latest pending gate for this stage
       const gate = await db.query.approvalGates.findFirst({
         where: and(
           eq(approvalGates.pipeline_run_id, pipelineRunId),
           eq(approvalGates.stage_name, stage),
+          eq(approvalGates.status, "pending"),
         ),
+        orderBy: (table, { desc }) => [desc(table.created_at)],
       });
 
       if (!gate) {
-        return reply.status(404).send({ error: "Approval gate not found" });
+        return reply.status(404).send({ error: "No pending approval gate found for this stage" });
       }
 
       if (!["admin", "architect", "sme"].includes(request.user.role)) {
@@ -1282,6 +1294,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           validation.data.comment,
           force,
         );
+
+        // Approve ALL pending gates for this stage (handles duplicates from re-runs)
+        await db.update(approvalGates)
+          .set({ status: "approved", approved_by: request.user.sub, approved_at: new Date(), approval_comment: validation.data.comment })
+          .where(and(
+            eq(approvalGates.pipeline_run_id, pipelineRunId),
+            eq(approvalGates.stage_name, stage),
+            eq(approvalGates.status, "pending"),
+          ));
 
         // Publish approval event via WebSocket so all clients update immediately
         publish(`pipeline:${pipelineRunId}`, "stage_approved", {
