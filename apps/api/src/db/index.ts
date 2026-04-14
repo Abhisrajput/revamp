@@ -15,6 +15,14 @@ const pool = new Pool({
   statement_timeout: 30000,
 });
 
+// Force UTC for all connections. The schema uses `timestamp without time zone`
+// (not timestamptz), so we need PostgreSQL to interpret all timestamps as UTC.
+// Without this, timestamps are ambiguous and JavaScript may misinterpret them
+// as local time, shifting displayed times by the server's timezone offset.
+pool.on("connect", (client) => {
+  client.query("SET timezone = 'UTC'");
+});
+
 // Log pool errors to prevent silent connection drops
 pool.on("error", (err) => {
   console.error("Unexpected database pool error:", err.message);
