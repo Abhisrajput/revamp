@@ -36,7 +36,16 @@ export function setApiClient(client: ApiClient) {
   _apiClient = client;
 }
 
+// No-op client for SSR — returns empty data, never throws
+const SSR_NOOP_CLIENT: ApiClient = {
+  get: async () => ({ data: null, status: 200 }),
+  post: async () => ({ data: null, status: 200 }),
+  put: async () => ({ data: null, status: 200 }),
+  patch: async () => ({ data: null, status: 200 }),
+  delete: async () => ({ data: null, status: 200 }),
+};
+
 export function getApiClient(): ApiClient {
-  if (!_apiClient) throw new Error('@revamp/core: API client not initialized. Call setApiClient() in your platform provider.');
+  if (!_apiClient) return SSR_NOOP_CLIENT;
   return _apiClient;
 }
