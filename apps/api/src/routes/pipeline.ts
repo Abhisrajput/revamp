@@ -568,14 +568,15 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         summary: "Execute a pipeline stage (events via WebSocket)",
         description: "Executes the specified stage. Progress events are pushed to WebSocket topic 'pipeline:<runId>'. Subscribe to the topic before calling this endpoint.",
         response: {
-          200: {
+          202: {
             type: "object",
             properties: {
-              success: { type: "boolean" },
+              accepted: { type: "boolean" },
+              pipelineRunId: { type: "string" },
               stageName: { type: "string" },
-              output: { type: "string" },
-              validation: { type: "object", additionalProperties: true },
-              duration: { type: "number" },
+              topic: { type: "string" },
+              stageRunId: { type: "string" },
+              attempt: { type: "number" },
             },
             additionalProperties: true,
           },
@@ -695,14 +696,9 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       // WebSocket topic for real-time event delivery
       const topic = `pipeline:${pipelineRunId}`;
 
-      // Prevent socket timeouts during long LLM calls (matches legacy-bridge pattern)
-      request.raw.socket.setTimeout(0);
-      request.raw.socket.setKeepAlive(true, 30_000);
-
       let accumulatedOutput = "";
 
       const controller = new AbortController();
-      request.raw.on("close", () => { controller.abort(); });
 
       // Stage-level timeout: abort if stage takes longer than 30 minutes.
       // Individual LLM calls have their own timeout (5-10 min via llm-proxy config),
@@ -781,6 +777,21 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         }
       }
 
+      // ─── Respond immediately, run stage in background ────────
+      // With WebSocket, all events flow through the WS topic. The HTTP
+      // response is just an acknowledgement. We can't hold the connection
+      // open for 5-30 minutes — browsers/proxies will close idle connections.
+      reply.status(202).send({
+        accepted: true,
+        pipelineRunId,
+        stageName,
+        topic,
+        stageRunId,
+        attempt,
+      });
+
+      // Run stage execution asynchronously (fire-and-forget from HTTP perspective)
+      (async () => {
       try {
         let result = await pipelineService.executeStage(
           pipelineRunId,
@@ -978,15 +989,8 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           },
         });
 
-        return reply.status(200).send({
-          success: !result.aborted,
-          stageName: result.stageName,
-          output: result.output,
-          validation: validationPayload,
-          duration: result.duration,
-          refinementCount: result.refinementCount,
-          aborted: result.aborted,
-        });
+        // Stage completed — result already published via WS events
+        persistLog("info", `Stage completed (${result.duration}ms, output: ${result.output?.length || 0} chars)`, "completed");
       } catch (err) {
         const rawMessage = err instanceof Error ? err.message : "Unknown error";
         const classified = classifyError(err);
@@ -1007,10 +1011,9 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           error_message: rawMessage,
           error_category: classified.category,
           completed_at: new Date(),
-        }).where(eq(stageRuns.id, stageRunId)).catch((err) => {
-          const dbMsg = err instanceof Error ? err.message : "DB operation failed";
+        }).where(eq(stageRuns.id, stageRunId)).catch((dbErr) => {
+          const dbMsg = dbErr instanceof Error ? dbErr.message : "DB operation failed";
           persistLog("error", `Failed to update stage run record on failure: ${dbMsg}`, "db_error");
-          console.warn(`[Pipeline] DB update failed (stage failure): ${dbMsg}`);
         });
 
         persistLog("error", rawMessage, "failed", classified.category);
@@ -1035,16 +1038,10 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         } catch {
           // Ignore DB errors during error handling
         }
-
-        return reply.status(500).send({
-          error: userMessage,
-          detail: rawMessage,
-          category: classified.category,
-          shouldRetry: classified.shouldRetry,
-        });
       } finally {
         clearTimeout(stageTimeout);
       }
+      })(); // End of async IIFE — runs in background after 202 response
     },
   );
 
