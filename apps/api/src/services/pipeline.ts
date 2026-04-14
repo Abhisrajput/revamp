@@ -31,6 +31,14 @@ import {
   getStageOrder,
 } from "@revamp/core-engine";
 import { enforceContract } from "@revamp/core-engine";
+import {
+  updateStageProgress,
+  createApprovalGate,
+  storeStageOutput,
+  loadPriorStageOutputs,
+  loadUserFeedback,
+  updateProjectMetrics,
+} from "./pipeline-repository.js";
 import { llmProxyService } from "./llm-proxy.js";
 import {
   matchAndAssignAgent,
@@ -42,10 +50,7 @@ import {
   prepareAgentExecution,
   wrapReviewerWithAgent,
 } from "./agent-execution.js";
-import {
-  generateTierSummaries,
-  loadTieredPriorContext,
-} from "./context-tiering.js";
+// context-tiering now used by pipeline-repository.ts
 import { orchestrateScanStage } from "./scan-orchestrator.js";
 import { orchestrateForgeStage } from "./forge-orchestrator.js";
 import { orchestrateDecodeStage, loadScanOutput } from "./decode-orchestrator.js";
@@ -322,7 +327,7 @@ export class PipelineService {
         data: { skipped: true, reason: 'Stage disabled in project configuration' },
       });
 
-      await this.updateStageProgress(pipelineRunId, stageName, "skipped", 100);
+      await updateStageProgress(pipelineRunId, stageName, "skipped", 100);
 
       return {
         stageName,
@@ -569,7 +574,7 @@ export class PipelineService {
     }
 
     // Load prior stage outputs from artifacts (tiered context with observable trajectory)
-    const { outputs: priorOutputs, trajectoryMeta } = await this.loadPriorStageOutputs(pipelineRunId, stageName);
+    const { outputs: priorOutputs, trajectoryMeta } = await loadPriorStageOutputs(pipelineRunId, stageName);
 
     // Emit trajectory SSE event if available
     if (trajectoryMeta) {
@@ -583,10 +588,10 @@ export class PipelineService {
     }
 
     // Load user feedback from approval history
-    const feedback = await this.loadUserFeedback(pipelineRunId, stageConfig.index);
+    const feedback = await loadUserFeedback(pipelineRunId, stageConfig.index);
 
     // Update stage progress
-    await this.updateStageProgress(pipelineRunId, stageName, "in_progress", 0);
+    await updateStageProgress(pipelineRunId, stageName, "in_progress", 0);
 
     // ─── AGENT MATCHING ─────────────────────────────────────────
     // Attempt to find and assign the best agent for this stage.
@@ -895,7 +900,7 @@ export class PipelineService {
 
       // Store result + record agent completion (reuse existing flow below)
       if (scanResult.output) {
-        await this.storeStageOutput(pipelineRunId, stageName, scanResult);
+        await storeStageOutput(pipelineRunId, stageName, scanResult);
       }
 
       if (agentCtx && scanResult.output) {
@@ -955,10 +960,10 @@ export class PipelineService {
         const scanScore = scanResult.validation?.confidenceScore ?? 70;
         const scanConfig = this.getStageConfig(stageName);
         await db.transaction(async (tx) => {
-          await this.updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: scanScore });
+          await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: scanScore });
           if (scanConfig.requiresApproval) {
-            await this.createApprovalGate(pipelineRunId, stageName, scanConfig.requiredRole || "admin", tx);
-            await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: scanScore });
+            await createApprovalGate(pipelineRunId, stageName, scanConfig.requiredRole || "admin", tx);
+            await updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: scanScore });
           }
         });
         emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: scanResult.duration, confidenceScore: scanScore });
@@ -988,7 +993,7 @@ export class PipelineService {
           });
         }
       } else {
-        await this.updateStageProgress(pipelineRunId, stageName, "failed", 0);
+        await updateStageProgress(pipelineRunId, stageName, "failed", 0);
         emitStageFailed({ pipelineRunId, projectId: run.project.id, stageName, error: "SCAN produced no output" });
       }
 
@@ -1088,7 +1093,7 @@ export class PipelineService {
 
       // Store result
       if (decodeResult.output) {
-        await this.storeStageOutput(pipelineRunId, stageName, decodeResult);
+        await storeStageOutput(pipelineRunId, stageName, decodeResult);
       }
 
       if (agentCtx && decodeResult.output) {
@@ -1138,15 +1143,15 @@ export class PipelineService {
         const decodeScore = decodeResult.validation?.confidenceScore ?? 70;
         const decodeConfig = this.getStageConfig(stageName);
         await db.transaction(async (tx) => {
-          await this.updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: decodeScore });
+          await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: decodeScore });
           if (decodeConfig.requiresApproval) {
-            await this.createApprovalGate(pipelineRunId, stageName, decodeConfig.requiredRole || "admin", tx);
-            await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: decodeScore });
+            await createApprovalGate(pipelineRunId, stageName, decodeConfig.requiredRole || "admin", tx);
+            await updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: decodeScore });
           }
         });
         emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: decodeResult.duration, confidenceScore: decodeScore });
       } else {
-        await this.updateStageProgress(pipelineRunId, stageName, "failed", 0);
+        await updateStageProgress(pipelineRunId, stageName, "failed", 0);
         emitStageFailed({ pipelineRunId, projectId: run.project.id, stageName, error: "DECODE produced no output" });
       }
 
@@ -1169,7 +1174,7 @@ export class PipelineService {
       });
 
       if (forgeResult.output) {
-        await this.storeStageOutput(pipelineRunId, stageName, forgeResult);
+        await storeStageOutput(pipelineRunId, stageName, forgeResult);
       }
 
       if (agentCtx && forgeResult.output) {
@@ -1213,15 +1218,15 @@ export class PipelineService {
         const forgeScore = forgeResult.validation?.confidenceScore ?? 70;
         const forgeConfig = this.getStageConfig(stageName);
         await db.transaction(async (tx) => {
-          await this.updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: forgeScore });
+          await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: forgeScore });
           if (forgeConfig.requiresApproval) {
-            await this.createApprovalGate(pipelineRunId, stageName, forgeConfig.requiredRole || "admin", tx);
-            await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: forgeScore });
+            await createApprovalGate(pipelineRunId, stageName, forgeConfig.requiredRole || "admin", tx);
+            await updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: forgeScore });
           }
         });
         emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: forgeResult.duration, confidenceScore: forgeScore });
       } else {
-        await this.updateStageProgress(pipelineRunId, stageName, "failed", 0);
+        await updateStageProgress(pipelineRunId, stageName, "failed", 0);
         emitStageFailed({ pipelineRunId, projectId: run.project.id, stageName, error: "FORGE produced no output" });
       }
 
@@ -1326,7 +1331,7 @@ export class PipelineService {
 
       // Store result
       if (result.output) {
-        await this.storeStageOutput(pipelineRunId, stageName, result);
+        await storeStageOutput(pipelineRunId, stageName, result);
       }
 
       // Record token usage (estimated from content sizes)
@@ -1351,15 +1356,15 @@ export class PipelineService {
         const score = chunkedResult.coverage.percentage;
         const config = this.getStageConfig(stageName);
         await db.transaction(async (tx) => {
-          await this.updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: score });
+          await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: score });
           if (config.requiresApproval) {
-            await this.createApprovalGate(pipelineRunId, stageName, config.requiredRole || "admin", tx);
-            await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: score });
+            await createApprovalGate(pipelineRunId, stageName, config.requiredRole || "admin", tx);
+            await updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: score });
           }
         });
         emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: chunkedResult.duration, confidenceScore: score });
       } else {
-        await this.updateStageProgress(pipelineRunId, stageName, "failed", 0);
+        await updateStageProgress(pipelineRunId, stageName, "failed", 0);
         emitStageFailed({ pipelineRunId, projectId: run.project.id, stageName, error: `${stageName} chunked generation produced no output` });
       }
 
@@ -1544,7 +1549,7 @@ export class PipelineService {
 
     // Store result
     if (result.output) {
-      await this.storeStageOutput(pipelineRunId, stageName, result);
+      await storeStageOutput(pipelineRunId, stageName, result);
     }
 
     // Record pipeline-level spend from token usage.
@@ -1630,7 +1635,7 @@ export class PipelineService {
     }
 
     // Track project-level metrics after stage completion
-    await this.updateProjectMetrics(run.project.id, pipelineRunId, result);
+    await updateProjectMetrics(run.project.id, pipelineRunId, result);
 
     // Extract memories from stage output (non-blocking, non-fatal)
     if (result.output) {
@@ -1674,7 +1679,7 @@ export class PipelineService {
     // still exists and might be useful. Only contract hard-gates block completely.
     if (contractHardGated) {
       // Hard-gated: critical structural requirements missing. Stage FAILS, no approval gate.
-      await this.updateStageProgress(pipelineRunId, stageName, "failed", Math.round(confidenceScore));
+      await updateStageProgress(pipelineRunId, stageName, "failed", Math.round(confidenceScore));
       emitValidationFailed({
         pipelineRunId, projectId: run.project.id, stageName,
         violations: result.validation?.issues?.length || 0,
@@ -1687,11 +1692,11 @@ export class PipelineService {
       const nextStage = this.getNextStage(stageName);
 
       await db.transaction(async (tx) => {
-        await this.updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore });
+        await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore });
 
         if (currentConfig.requiresApproval) {
-          await this.createApprovalGate(pipelineRunId, stageName, currentConfig.requiredRole || "admin", tx);
-          await this.updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore });
+          await createApprovalGate(pipelineRunId, stageName, currentConfig.requiredRole || "admin", tx);
+          await updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore });
         }
 
         if (!nextStage) {
@@ -1725,223 +1730,21 @@ export class PipelineService {
     return result;
   }
 
-  /**
-   * Load outputs from all prior stages for context building.
-   * Uses tiered context (L0/L1/L2) when available, with observable retrieval trajectory.
-   */
-  private async loadPriorStageOutputs(
-    pipelineRunId: string,
-    currentStage: PipelineStageName,
-    agentId?: string,
-  ): Promise<{ outputs: StageOutput[]; trajectoryMeta?: { tokensUsed: number; totalTokenBudget: number; trajectory: unknown[]; evolutionMemoriesLoaded: number; buildDurationMs: number } }> {
-    // Default token budget: 12K tokens (~48K chars) for prior context
-    const tokenBudget = 12000;
-
-    try {
-      const { outputs, trajectory, tokensUsed } = await loadTieredPriorContext(
-        pipelineRunId,
-        currentStage,
-        tokenBudget,
-        agentId,
-      );
-      return {
-        outputs,
-        trajectoryMeta: {
-          tokensUsed,
-          totalTokenBudget: tokenBudget,
-          trajectory,
-          evolutionMemoriesLoaded: 0,
-          buildDurationMs: 0,
-        },
-      };
-    } catch {
-      // Fallback to raw loading if tiered context fails
-      const order = getStageOrder();
-      const currentIdx = order.indexOf(currentStage);
-      const priorStages = order.slice(0, currentIdx);
-
-      if (priorStages.length === 0) return { outputs: [] };
-
-      const artifacts = await db.query.stageArtifacts.findMany({
-        where: and(
-          eq(stageArtifacts.pipeline_run_id, pipelineRunId),
-          eq(stageArtifacts.artifact_type, "stage_output"),
-          inArray(stageArtifacts.stage_name, priorStages),
-        ),
-      });
-
-      const artifactMap = new Map<string, typeof artifacts[0]>();
-      for (const artifact of artifacts) {
-        if (!artifactMap.has(artifact.stage_name)) {
-          artifactMap.set(artifact.stage_name, artifact);
-        }
-      }
-
-      return {
-        outputs: priorStages
-          .filter((stage) => artifactMap.has(stage))
-          .map((stage) => {
-            const artifact = artifactMap.get(stage)!;
-            const metadata = artifact.metadata as Record<string, unknown>;
-            return {
-              stageName: stage as PipelineStageName,
-              stageIndex: order.indexOf(stage),
-              output: (metadata?.content as string) || "",
-              completedAt: artifact.created_at?.toISOString() || new Date().toISOString(),
-            };
-          }),
-      };
-    }
-  }
+  // ─── Repository methods moved to pipeline-repository.ts ─────────
+  // loadPriorStageOutputs, loadUserFeedback, storeStageOutput,
+  // updateStageProgress, createApprovalGate, updateProjectMetrics
+  // are now standalone functions imported at the top of this file.
 
   /**
-   * Load user feedback from approval rejections and direct feedback.
+   * PLACEHOLDER — methods below this line are still in the class.
    */
-  private async loadUserFeedback(
-    pipelineRunId: string,
-    stageIndex: number,
-  ): Promise<UserFeedback[]> {
-    const gates = await db.query.approvalGates.findMany({
-      where: and(
-        eq(approvalGates.pipeline_run_id, pipelineRunId),
-        eq(approvalGates.status, "rejected"),
-      ),
-    });
 
-    return gates
-      .filter((g) => g.approval_comment)
-      .map((g) => ({
-        stageIndex,
-        feedback: g.approval_comment!,
-        source: "approval_rejection" as const,
-        timestamp: g.approved_at?.toISOString() || new Date().toISOString(),
-      }));
-  }
-
-  /**
-   * Store stage output as an artifact in the database.
-   */
-  private async storeStageOutput(
-    pipelineRunId: string,
-    stageName: PipelineStageName,
-    result: StageRunResult,
-  ): Promise<void> {
-    const artifactId = crypto.randomUUID();
-
-    await db.transaction(async (tx) => {
-      await tx.insert(stageArtifacts).values({
-        id: artifactId,
-        pipeline_run_id: pipelineRunId,
-        stage_name: stageName,
-        artifact_type: "stage_output",
-        storage_path: `pipeline/${pipelineRunId}/${stageName}/output.md`,
-        file_size: Buffer.byteLength(result.output, "utf-8"),
-        metadata: {
-          content: result.output,
-          validation: result.validation ? {
-            passed: result.validation.passed,
-            confidenceScore: result.validation.confidenceScore,
-            issueCount: result.validation.issues.length,
-          } : null,
-          refinementCount: result.refinementCount,
-          duration: result.duration,
-        },
-      });
-
-      if (result.validation) {
-        await tx.insert(stageArtifacts).values({
-          id: crypto.randomUUID(),
-          pipeline_run_id: pipelineRunId,
-          stage_name: stageName,
-          artifact_type: "validation_result",
-          storage_path: `pipeline/${pipelineRunId}/${stageName}/validation.json`,
-          file_size: 0,
-          metadata: {
-            passed: result.validation.passed,
-            confidenceScore: result.validation.confidenceScore,
-            deterministicResults: result.validation.deterministicResults.map((r: { name: string; score: number; status: string; message: string }) => ({
-              name: r.name,
-              score: r.score,
-              status: r.status,
-              message: r.message,
-            })),
-            llmResults: result.validation.llmResults.map((r: { dimension: string; score: number; reasoning: string }) => ({
-              dimension: r.dimension,
-              score: r.score,
-              reasoning: r.reasoning,
-            })),
-            contractViolations: result.validation.contractResult.violations,
-            issues: result.validation.issues,
-            recommendations: result.validation.recommendations,
-          },
-        });
-      }
-    });
-
-    // Fire-and-forget: generate L0/L1 tier summaries (OpenViking pattern)
-    generateTierSummaries(artifactId, stageName, result.output).catch((err) => {
-      console.error(`[Pipeline] tier summary generation failed for ${stageName}:`, err instanceof Error ? err.message : err);
-    });
-  }
-
-  /**
-   * Update stage progress in the pipeline run's JSONB column.
-   */
+  /** Delegate to standalone function for backward compat with route callers */
   async updateStageProgress(
-    pipelineRunId: string,
-    stageName: PipelineStageName,
-    status: string,
-    progress: number,
+    pipelineRunId: string, stageName: PipelineStageName, status: string, progress: number,
     options?: { conn?: DbConnection; confidenceScore?: number },
   ): Promise<void> {
-    const conn = options?.conn ?? db;
-    const now = new Date().toISOString();
-    const isRunning = status === 'in_progress' || status === 'generating' || status === 'validating';
-
-    // Atomic jsonb_set — no read-modify-write race.
-    // Builds the stage entry as a JSON literal and merges it into stage_progress
-    // in a single UPDATE, so concurrent calls for different stages don't clobber each other.
-    const confidenceScore = options?.confidenceScore ?? progress;
-    await conn.execute(sql`
-      UPDATE ${pipelineRuns}
-      SET
-        current_stage = ${stageName},
-        stage_progress = jsonb_set(
-          COALESCE(stage_progress, '{}'::jsonb),
-          ${sql.raw(`'{${stageName}}'`)},
-          COALESCE(stage_progress -> ${stageName}, '{}'::jsonb) || jsonb_build_object(
-            'status', ${status}::text,
-            'progress', ${progress}::int,
-            'confidenceScore', ${confidenceScore}::int,
-            'updatedAt', ${now}::text,
-            'startedAt', CASE
-              WHEN ${isRunning} AND (COALESCE(stage_progress -> ${stageName} ->> 'startedAt', '') = '')
-              THEN ${now}::text
-              ELSE COALESCE(stage_progress -> ${stageName} ->> 'startedAt', '')
-            END
-          )
-        ),
-        updated_at = NOW()
-      WHERE id = ${pipelineRunId}
-    `);
-  }
-
-  /**
-   * Create an approval gate for a stage.
-   */
-  private async createApprovalGate(
-    pipelineRunId: string,
-    stageName: PipelineStageName,
-    requiredRole: string,
-    conn: DbConnection = db,
-  ): Promise<void> {
-    await conn.insert(approvalGates).values({
-      id: crypto.randomUUID(),
-      pipeline_run_id: pipelineRunId,
-      stage_name: stageName,
-      required_role: requiredRole,
-      status: "pending",
-    });
+    return updateStageProgress(pipelineRunId, stageName, status, progress, options);
   }
 
   /**
@@ -1965,8 +1768,8 @@ export class PipelineService {
         return;
       }
 
-      await this.updateStageProgress(pipelineRunId, currentStage, "approved", 100, { conn: tx });
-      await this.updateStageProgress(pipelineRunId, nextStage, "in_progress", 0, { conn: tx });
+      await updateStageProgress(pipelineRunId, currentStage, "approved", 100, { conn: tx });
+      await updateStageProgress(pipelineRunId, nextStage, "in_progress", 0, { conn: tx });
 
       await tx.update(pipelineRuns).set({
         current_stage: nextStage,
@@ -2043,7 +1846,7 @@ export class PipelineService {
         ),
       );
 
-      await this.updateStageProgress(pipelineRunId, stageName, "approved", 100, { conn: tx });
+      await updateStageProgress(pipelineRunId, stageName, "approved", 100, { conn: tx });
 
       const nextStage = this.getNextStage(stageName);
       if (nextStage) {
@@ -2081,7 +1884,7 @@ export class PipelineService {
         ),
       );
 
-      await this.updateStageProgress(pipelineRunId, stageName, "rejected", 0, { conn: tx });
+      await updateStageProgress(pipelineRunId, stageName, "rejected", 0, { conn: tx });
     });
   }
 
@@ -2135,60 +1938,8 @@ export class PipelineService {
    * from the pipeline run into the project's metrics JSONB column.
    *
    * Ported from legacy-bridge metrics tracking during agent runs.
+   * Now in pipeline-repository.ts — standalone function.
    */
-  private async updateProjectMetrics(
-    projectId: string,
-    pipelineRunId: string,
-    result: StageRunResult,
-  ): Promise<void> {
-    try {
-      await db.transaction(async (tx) => {
-        const project = await tx.query.projects.findFirst({
-          where: eq(projects.id, projectId),
-          columns: { metrics: true },
-        });
-
-        const currentMetrics = (project?.metrics as Record<string, unknown>) || {};
-
-        const usageRecords = await tx.query.llmUsage.findMany({
-          where: eq(llmUsage.pipeline_run_id, pipelineRunId),
-        });
-
-        let runTokens = 0;
-        let runCost = 0;
-        for (const record of usageRecords) {
-          runTokens += record.input_tokens + record.output_tokens;
-          runCost += record.cost;
-        }
-
-        const updatedMetrics: Record<string, unknown> = {
-          ...currentMetrics,
-          total_pipeline_runs: ((currentMetrics.total_pipeline_runs as number) || 0) + 1,
-          total_tokens: ((currentMetrics.total_tokens as number) || 0) + runTokens,
-          total_cost_cents: ((currentMetrics.total_cost_cents as number) || 0) + runCost,
-          last_run_duration_ms: result.duration,
-          last_run_at: new Date().toISOString(),
-          stages_completed: ((currentMetrics.stages_completed as number) || 0) + 1,
-          total_refinements: ((currentMetrics.total_refinements as number) || 0) + result.refinementCount,
-        };
-
-        if (result.validation) {
-          updatedMetrics.last_confidence_score = result.validation.confidenceScore;
-          updatedMetrics.total_validation_issues =
-            ((currentMetrics.total_validation_issues as number) || 0) +
-            result.validation.issues.length;
-        }
-
-        await tx
-          .update(projects)
-          .set({ metrics: updatedMetrics, updated_at: new Date() })
-          .where(eq(projects.id, projectId));
-      });
-    } catch (err: any) {
-      // Non-fatal — don't fail the stage because metrics failed
-      console.warn(`[PipelineService] Failed to update project metrics: ${err.message}`);
-    }
-  }
 
   /**
    * Refine a section of stage output using LLM.
@@ -2255,7 +2006,7 @@ Please provide the refined version of the "${sectionTitle}" section only.`;
 
     // Load prior stage outputs using tiered context (L0/L1/L2)
     const order = getStageOrder();
-    const { outputs: priorOutputs } = await this.loadPriorStageOutputs(
+    const { outputs: priorOutputs } = await loadPriorStageOutputs(
       pipelineRunId,
       order[order.length - 1] as PipelineStageName, // Load all prior stages
     );
