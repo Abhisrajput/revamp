@@ -8,6 +8,10 @@
 export { setApiClient, getApiClient } from './api/types';
 export type { ApiClient, ApiResponse, RequestConfig } from './api/types';
 
+// Storage
+export { setSessionStorage, setPersistStorage, getSessionStorage, getPersistStorage } from './api/storage';
+export type { StorageAdapter } from './api/storage';
+
 // Query Keys
 export { pipelineKeys, projectKeys, agentKeys } from './hooks/pipeline-keys';
 
@@ -32,6 +36,9 @@ export * from './hooks/use-orchestrator';
 
 // Refine Section Hook
 export { useRefineSection } from './hooks/use-refine-section';
+
+// Stores (platform-independent — uses injected storage adapters)
+export { usePipelineActivityStore } from './stores/pipeline-activity-store';
 
 // Pipeline API Types
 export type {

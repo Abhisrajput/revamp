@@ -3,13 +3,20 @@
 import { ThemeProvider } from 'next-themes';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
-import { setApiClient } from '@revamp/core';
+import { setApiClient, setSessionStorage, setPersistStorage } from '@revamp/core';
 import { apiClient } from '@/lib/api-client';
 
-// Register the axios-based API client as the global @revamp/core client.
-// This is the Multica-style platform bridge — core defines the interface,
-// apps/web provides the concrete implementation.
+// ─── Platform Bridge (Multica pattern) ──────────────────────────
+// @revamp/core defines interfaces, apps/web provides implementations.
+
+// API client: axios with cookies + token interceptor
 setApiClient(apiClient);
+
+// Storage adapters: browser sessionStorage + localStorage
+if (typeof window !== 'undefined') {
+  setSessionStorage(window.sessionStorage);
+  setPersistStorage(window.localStorage);
+}
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
