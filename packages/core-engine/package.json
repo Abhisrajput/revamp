@@ -29,6 +29,10 @@
     "./transforms": {
       "types": "./dist/transforms/index.d.ts",
       "default": "./dist/transforms/index.js"
+    },
+    "./llm": {
+      "types": "./dist/llm/index.d.ts",
+      "default": "./dist/llm/index.js"
     }
   },
   "files": [

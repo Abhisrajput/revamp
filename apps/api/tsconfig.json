@@ -19,7 +19,8 @@
     "paths": {
       "@/*": ["src/*"],
       "@revamp/shared-types/*": ["../../packages/shared-types/dist/*"],
-      "@revamp/core-engine": ["../../packages/core-engine/dist/index"]
+      "@revamp/core-engine": ["../../packages/core-engine/dist/index"],
+      "@revamp/core-engine/llm": ["../../packages/core-engine/dist/llm/index"]
     }
   },
   "include": ["src"],

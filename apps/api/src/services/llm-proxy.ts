@@ -1,16 +1,18 @@
 /**
- * LLM Proxy Service — bridges Fastify API → Go LLM Orchestrator.
+ * LLM Proxy Service — bridges Fastify API → Node LLM Providers (direct SDK calls).
  *
- * The Go orchestrator handles multi-provider routing, circuit breakers,
- * load balancing, and token tracking. This service provides TypeScript-typed
- * wrappers that integrate with the core-engine orchestration.
+ * Previously this service proxied all LLM traffic through the Go orchestrator
+ * via HTTP. Now it uses the @revamp/core-engine/llm providers directly,
+ * eliminating the Go dependency for LLM calls.
  *
  * Supports:
  *   - System + user prompt separation (required by Claude, OpenAI)
- *   - SSE streaming for real-time output
+ *   - Native SDK streaming (no SSE parsing needed)
  *   - Prompt caching hints (Anthropic cache_control)
  *   - Structured output / JSON mode
  *   - Model selection and fallback
+ *   - Per-provider circuit breakers (via cockatiel)
+ *   - BYOK credentials (per-project)
  *
  * Best practices applied:
  *   - Anthropic: prompt caching via cache_control ephemeral markers
@@ -18,9 +20,10 @@
  *   - All providers: separate evaluator model from generator to avoid self-validation bias
  */
 
-import axios, { AxiosInstance, AxiosResponse, AxiosError } from "axios";
 import type { LLMCallFn, LLMCallRequest } from "@revamp/core-engine";
 import type { LLMEvalFn, LLMEvalRequest } from "@revamp/core-engine";
+import { getProvider, getCircuitBreaker, listAvailableModels } from "@revamp/core-engine/llm";
+import type { ProviderCredentials as CoreCredentials } from "@revamp/core-engine/llm";
 import { ProviderError, isProviderErrorRetryable } from "@/errors/provider-errors.js";
 import { retryToolExecution } from "./agent-retry.js";
 
@@ -85,7 +88,7 @@ export interface SSEEvent {
 }
 
 export interface LLMProviderConfig {
-  orchestratorUrl: string;
+  orchestratorUrl: string; // kept for backward compat — no longer used
   apiKey: string;
   defaultModel: string;
   evaluatorModel: string; // different model for validation (avoid self-bias)
@@ -95,7 +98,6 @@ export interface LLMProviderConfig {
 // ─── SERVICE ────────────────────────────────────────────────────
 
 export class LLMProxyService {
-  private client: AxiosInstance;
   private config: LLMProviderConfig;
   private modelsDiscovered = false;
   private discoveryPromise: Promise<void> | null = null;
@@ -108,19 +110,10 @@ export class LLMProxyService {
       evaluatorModel: config?.evaluatorModel || process.env.LLM_EVALUATOR_MODEL || "",
       timeout: config?.timeout || 600000, // 10 min — composition and FORGE code generation need longer for large outputs
     };
-
-    this.client = axios.create({
-      baseURL: this.config.orchestratorUrl,
-      headers: {
-        ...(this.config.apiKey ? { Authorization: `Bearer ${this.config.apiKey}` } : {}),
-        "Content-Type": "application/json",
-      },
-      timeout: this.config.timeout,
-    });
   }
 
   /**
-   * Auto-discover available models from the Go orchestrator on first use.
+   * Auto-discover available models from configured providers on first use.
    * Picks the best available default and evaluator models.
    */
   private async ensureModelsDiscovered(): Promise<void> {
@@ -138,7 +131,7 @@ export class LLMProxyService {
 
   private async _discoverModels(): Promise<void> {
     try {
-      const models = await this.listModels();
+      const models = listAvailableModels();
       const ids = models.map((m) => m.id);
 
       if (!this.config.defaultModel) {
@@ -148,7 +141,7 @@ export class LLMProxyService {
           ids.find((id) => id.includes("claude-3-5-sonnet")) ||
           ids.find((id) => id.includes("gpt-4")) ||
           ids[0] || "us.anthropic.claude-sonnet-4-6-20251001-v1:0";
-        console.log(`[LLM Proxy] Auto-selected default model: ${this.config.defaultModel}`);
+        console.log(`[LLM] Auto-selected default model: ${this.config.defaultModel}`);
       }
 
       if (!this.config.evaluatorModel) {
@@ -156,41 +149,64 @@ export class LLMProxyService {
         this.config.evaluatorModel =
           ids.find((id) => id.includes("claude-haiku")) ||
           ids.find((id) => id.includes("gpt-3.5")) ||
-          ids.find((id) => id.includes("gemini") && id.includes("flash")) ||
+          ids.find((id) => id.includes("flash")) ||
           this.config.defaultModel;
-        console.log(`[LLM Proxy] Auto-selected evaluator model: ${this.config.evaluatorModel}`);
+        console.log(`[LLM] Auto-selected evaluator model: ${this.config.evaluatorModel}`);
       }
-    } catch (err: any) {
-      console.warn(`[LLM Proxy] Model discovery failed: ${err.message} — using fallback`);
+    } catch {
       // Use Bedrock cross-region inference IDs as fallback — bare model names like
       // "claude-sonnet-4-6" don't match any provider's model list and cause routing failures.
       if (!this.config.defaultModel) this.config.defaultModel = "us.anthropic.claude-sonnet-4-6-20251001-v1:0";
-      if (!this.config.evaluatorModel) this.config.evaluatorModel = "us.anthropic.claude-haiku-4-6-20251001-v1:0";
+      if (!this.config.evaluatorModel) this.config.evaluatorModel = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
     }
     this.modelsDiscovered = true;
   }
 
   /**
-   * Classify an Axios error into a typed ProviderError.
+   * Classify a provider SDK error into a typed ProviderError.
    */
-  private classifyAxiosError(err: unknown): ProviderError {
-    if (err instanceof AxiosError) {
-      if (err.response) {
-        const body = typeof err.response.data === "string"
-          ? err.response.data
-          : JSON.stringify(err.response.data);
-        return ProviderError.fromHttpStatus(err.response.status, body);
-      }
-      return ProviderError.fromNetworkError(err);
-    }
+  private classifyError(err: unknown): ProviderError {
+    if (err instanceof ProviderError) return err;
     if (err instanceof Error) {
+      // Try to extract HTTP status from common SDK error patterns
+      const anyErr = err as any;
+      if (anyErr.status || anyErr.statusCode) {
+        return ProviderError.fromHttpStatus(
+          anyErr.status || anyErr.statusCode,
+          err.message,
+        );
+      }
       return ProviderError.fromNetworkError(err);
     }
     return ProviderError.fromNetworkError(new Error(String(err)));
   }
 
   /**
+   * Map ProjectCredentials (API-level) to ProviderCredentials (core-engine level).
+   */
+  private mapCredentials(creds?: ProjectCredentials): CoreCredentials | undefined {
+    if (!creds) return undefined;
+    return {
+      provider: creds.provider,
+      aws_access_key_id: creds.aws_access_key_id,
+      aws_secret_access_key: creds.aws_secret_access_key,
+      aws_session_token: creds.aws_session_token,
+      aws_region: creds.aws_region,
+      aws_bearer_token: creds.aws_bearer_token,
+      aws_sso_profile: creds.aws_sso_profile,
+      anthropic_api_key: creds.anthropic_api_key,
+      openai_api_key: creds.openai_api_key,
+      openai_endpoint: creds.openai_endpoint,
+      gemini_api_key: creds.gemini_api_key,
+      azure_endpoint: creds.azure_endpoint,
+      azure_api_key: creds.azure_api_key,
+      azure_api_version: creds.azure_api_version,
+    };
+  }
+
+  /**
    * Non-streaming chat completion with automatic retry on transient failures.
+   * Uses Node LLM providers directly (no Go orchestrator).
    */
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     await this.ensureModelsDiscovered();
@@ -198,24 +214,33 @@ export class LLMProxyService {
     return retryToolExecution(
       async () => {
         try {
-          const response = await this.client.post<CompletionResponse>(
-            "/api/v1/chat/completions",
-            {
-              messages: request.messages,
-              model: request.model || this.config.defaultModel,
-              max_tokens: request.max_tokens || 8192,
-              temperature: request.temperature ?? 0.3,
-              response_format: request.response_format === "json"
-                ? { type: "json_object" }
-                : undefined,
-              metadata: request.metadata,
-              ...(request.credentials ? { credentials: request.credentials } : {}),
-              ...(request.advisor?.enabled ? { advisor: request.advisor } : {}),
-            },
-          );
-          return response.data;
+          const model = request.model || this.config.defaultModel;
+          const provider = getProvider(model, this.mapCredentials(request.credentials));
+          const breaker = getCircuitBreaker(provider.name);
+
+          const response = await breaker.execute(() => provider.chat({
+            messages: request.messages.map(m => ({
+              role: m.role,
+              content: m.content,
+              cache_control: m.cache_control,
+            })),
+            model,
+            max_tokens: request.max_tokens || 8192,
+            temperature: request.temperature ?? 0.3,
+            response_format: request.response_format,
+          }));
+
+          return {
+            id: response.id,
+            content: response.content,
+            model: response.model,
+            input_tokens: response.input_tokens,
+            output_tokens: response.output_tokens,
+            stop_reason: response.stop_reason,
+            cached_tokens: response.cached_tokens,
+          };
         } catch (err) {
-          throw this.classifyAxiosError(err);
+          throw this.classifyError(err);
         }
       },
       {
@@ -225,15 +250,15 @@ export class LLMProxyService {
         isRetryable: isProviderErrorRetryable,
         onRetry: (attempt, error) => {
           const pe = error instanceof ProviderError ? error : null;
-          console.warn(`[LLM Proxy] Retry ${attempt} (${pe?.telemetryType || "unknown"}): ${pe?.message || error}`);
+          console.warn(`[LLM] Retry ${attempt} (${pe?.telemetryType || "unknown"}): ${pe?.message || error}`);
         },
       },
     );
   }
 
   /**
-   * Streaming chat completion via SSE.
-   * Calls onDelta for each content chunk, returns full accumulated text.
+   * Streaming chat completion via native SDK streaming.
+   * Calls onDelta for each content chunk, returns full accumulated response.
    */
   async streamCompletion(
     request: CompletionRequest,
@@ -241,168 +266,39 @@ export class LLMProxyService {
     signal?: AbortSignal,
   ): Promise<CompletionResponse> {
     await this.ensureModelsDiscovered();
-    let response: AxiosResponse;
+
+    const model = request.model || this.config.defaultModel;
+    const provider = getProvider(model, this.mapCredentials(request.credentials));
+    const breaker = getCircuitBreaker(provider.name);
+
     try {
-      const streamTimeout = request.advisor?.enabled ? 600000 : this.config.timeout;
-      response = await this.client.post(
-        "/api/v1/chat/completions/stream",
+      const response = await breaker.execute(() => provider.stream(
         {
-          messages: request.messages,
-          model: request.model || this.config.defaultModel,
+          messages: request.messages.map(m => ({
+            role: m.role,
+            content: m.content,
+            cache_control: m.cache_control,
+          })),
+          model,
           max_tokens: request.max_tokens || 8192,
           temperature: request.temperature ?? 0.3,
-          metadata: request.metadata,
-          ...(request.credentials ? { credentials: request.credentials } : {}),
-          ...(request.advisor?.enabled ? { advisor: request.advisor } : {}),
-        },
-        {
-          responseType: "stream",
           signal,
-          timeout: streamTimeout,
         },
-      );
-    } catch (err: any) {
-      throw err;
+        (chunk) => { if (chunk.text) onDelta?.(chunk.text); },
+      ));
+
+      return {
+        id: response.id,
+        content: response.content,
+        model: response.model,
+        input_tokens: response.input_tokens,
+        output_tokens: response.output_tokens,
+        stop_reason: response.stop_reason,
+        cached_tokens: response.cached_tokens,
+      };
+    } catch (err) {
+      throw this.classifyError(err);
     }
-
-    return new Promise((resolve, reject) => {
-      let accumulated = "";
-      let inputTokens = 0;
-      let outputTokens = 0;
-      let cachedTokens = 0;
-      let model = request.model || this.config.defaultModel;
-      let responseId = "";
-
-      const stream = response.data;
-      let buffer = "";
-      let currentEvent = "";
-      // SSE spec: multiple "data:" lines within one event are joined with "\n"
-      let dataLines: string[] = [];
-
-      function dispatchEvent() {
-        if (dataLines.length === 0) {
-          currentEvent = "";
-          return;
-        }
-        const data = dataLines.join("\n");
-        dataLines = [];
-
-        if (data === "[DONE]") { currentEvent = ""; return; }
-
-        // Handle Go orchestrator's SSE format:
-        //   event: message  → data is raw text delta (may span multiple data: lines for newlines)
-        //   event: done     → data is {"finish_reason": "stop"}
-        //   event: error    → data is error string
-        if (currentEvent === "message") {
-          accumulated += data;
-          onDelta?.(data);
-          currentEvent = "";
-          return;
-        }
-
-        if (currentEvent === "advisor_thinking") {
-          // Keepalive during advisor (Opus) sub-inference — suppress timeout, don't emit
-          currentEvent = "";
-          return;
-        }
-
-        if (currentEvent === "error") {
-          reject(new Error(`LLM stream error: ${data}`));
-          currentEvent = "";
-          return;
-        }
-
-        if (currentEvent === "done") {
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.finish_reason) {
-              // Done — will resolve on stream end
-            }
-          } catch {
-            // ignore
-          }
-          currentEvent = "";
-          return;
-        }
-
-        // Fallback: try OpenAI-format JSON parsing (for future provider compatibility)
-        try {
-          const parsed = JSON.parse(data);
-
-          if (parsed.choices?.[0]?.delta?.content) {
-            const delta = parsed.choices[0].delta.content;
-            accumulated += delta;
-            onDelta?.(delta);
-          }
-
-          if (parsed.id) responseId = parsed.id;
-          if (parsed.model) model = parsed.model;
-          if (parsed.usage) {
-            inputTokens = parsed.usage.prompt_tokens || 0;
-            outputTokens = parsed.usage.completion_tokens || 0;
-            cachedTokens = parsed.usage.cached_tokens || 0;
-          }
-        } catch {
-          // Not JSON — might be raw text, accumulate it
-          if (data.trim()) {
-            accumulated += data;
-            onDelta?.(data);
-          }
-        }
-
-        currentEvent = "";
-      }
-
-      stream.on("data", (chunk: Buffer) => {
-        // Safety belt: if abort signal fired, stop processing and destroy stream
-        if (signal?.aborted) {
-          stream.destroy();
-          return;
-        }
-        buffer += chunk.toString();
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || ""; // keep incomplete line
-
-        for (const line of lines) {
-          // Blank line = end of SSE event → dispatch accumulated data lines
-          if (line.trim() === "") {
-            dispatchEvent();
-            continue;
-          }
-
-          // Track SSE event type
-          if (line.startsWith("event: ")) {
-            currentEvent = line.slice(7).trim();
-            continue;
-          }
-
-          // Accumulate data lines (SSE multi-line data support)
-          if (line.startsWith("data: ")) {
-            dataLines.push(line.slice(6));
-          } else if (line.startsWith("data:")) {
-            // "data:" with no space means empty line in the data
-            dataLines.push(line.slice(5));
-          }
-        }
-      });
-
-      stream.on("end", () => {
-        resolve({
-          id: responseId,
-          content: accumulated,
-          model,
-          input_tokens: inputTokens,
-          output_tokens: outputTokens,
-          stop_reason: "end_turn",
-          cached_tokens: cachedTokens,
-        });
-      });
-
-      stream.on("error", (err: Error) => {
-        stream.destroy();
-        reject(new Error(`Stream error: ${err.message}`));
-      });
-    });
   }
 
   /**
@@ -517,33 +413,39 @@ export class LLMProxyService {
   }
 
   /**
-   * List available models from the Go orchestrator.
+   * List available models from all configured providers.
    */
   async listModels(): Promise<Array<{ id: string; provider: string; contextWindow: number }>> {
-    const response = await this.client.get("/api/v1/models");
-    const raw = response.data.models;
-    // The Go orchestrator returns models as a map {id: modelInfo}, convert to array
-    if (raw && !Array.isArray(raw)) {
-      return Object.values(raw) as Array<{ id: string; provider: string; contextWindow: number }>;
-    }
-    return raw || [];
+    const models = listAvailableModels();
+    return models.map(m => ({ id: m.id, provider: m.provider, contextWindow: 200000 }));
   }
 
   /**
-   * Get usage stats from the Go orchestrator.
+   * Get usage stats. Previously delegated to Go orchestrator.
+   * Now returns empty — usage is tracked in the database via llm_usage table.
    */
   async getUsage(projectId?: string): Promise<Record<string, unknown>> {
-    const params = projectId ? { project_id: projectId } : {};
-    const response = await this.client.get("/api/v1/usage", { params });
-    return response.data;
+    // Usage tracking is handled by the database (llm_usage table), not the LLM provider layer.
+    // This method is kept for backward compatibility.
+    return { project_id: projectId, note: "Usage is tracked in the database. Query the llm_usage table directly." };
   }
 
   /**
-   * Health check the Go orchestrator.
+   * Health check the configured LLM providers.
    */
   async healthCheck(): Promise<{ status: string; providers: Record<string, string> }> {
-    const response = await this.client.get("/health");
-    return response.data;
+    const providers: Record<string, string> = {};
+    try {
+      const provider = getProvider(this.config.defaultModel || "us.anthropic.claude-sonnet-4-6-20251001-v1:0");
+      const health = await provider.health();
+      providers[provider.name] = health.healthy ? "healthy" : `unhealthy: ${health.error}`;
+    } catch (err) {
+      providers["default"] = `error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    return {
+      status: Object.values(providers).every(v => v === "healthy") ? "healthy" : "degraded",
+      providers,
+    };
   }
 
   /**
@@ -563,13 +465,13 @@ export class LLMProxyService {
       // No evaluator configured at all
       if (!this.config.evaluatorModel) return false;
 
-      // Verify the evaluator model is actually resolvable by the orchestrator
-      const models = await this.listModels();
+      // Verify the evaluator model is actually in the available model list
+      const models = listAvailableModels();
       const evaluatorExists = models.some((m) => m.id === this.config.evaluatorModel);
 
       return evaluatorExists;
     } catch {
-      // Orchestrator unreachable or model listing failed — no validation model
+      // Provider listing failed — no validation model
       return false;
     }
   }
