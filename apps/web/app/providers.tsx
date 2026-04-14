@@ -9,7 +9,9 @@ import { useState } from 'react';
 import { setApiClient } from '@revamp/core/api/types';
 import { setSessionStorage, setPersistStorage } from '@revamp/core/api/storage';
 import { setNotificationAdapter } from '@revamp/core/api/notifications';
+import { setWSManager } from '@revamp/core/api/ws';
 import { apiClient } from '@/lib/api-client';
+import { createBrowserWSManager } from '@/lib/ws-client';
 import { toast } from 'sonner';
 
 // ─── Platform Bridge ──────────────────────────────────────────────
@@ -26,6 +28,28 @@ if (typeof window !== 'undefined') {
     success: (title, message) => toast.success(title, { description: message, duration: 5000 }),
     error: (title, message) => toast.error(title, { description: message, duration: 8000 }),
     info: (title, message) => toast.info(title, { description: message, duration: 3000 }),
+  });
+
+  // WebSocket — connect when auth token is available
+  const wsManager = createBrowserWSManager();
+  setWSManager(wsManager);
+
+  // Auto-connect using auth token from persisted store
+  // Use require() to avoid triggering barrel import (same pattern as api-client.ts)
+  const { useAuthStore } = require('@revamp/core/stores/auth-store');
+  const authState = useAuthStore.getState();
+  if (authState.token && authState.isAuthenticated) {
+    const apiUrl = (apiClient as any).getBaseUrl?.() || 'http://localhost:8787';
+    wsManager.connect(apiUrl, authState.token);
+  }
+  // Re-connect on auth changes (login/logout)
+  useAuthStore.subscribe((state: any) => {
+    if (state.token && state.isAuthenticated) {
+      const apiUrl = (apiClient as any).getBaseUrl?.() || 'http://localhost:8787';
+      wsManager.connect(apiUrl, state.token);
+    } else {
+      wsManager.disconnect();
+    }
   });
 }
 
