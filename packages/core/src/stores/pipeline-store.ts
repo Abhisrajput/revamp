@@ -76,6 +76,16 @@ function loadPipelineState(): {
     const parsed = JSON.parse(raw);
     // Validate shape
     if (!parsed.stages || !Array.isArray(parsed.stages)) return null;
+    // Normalize transient statuses that can't survive refresh.
+    // 'generating'/'validating' are in-flight states — if the page refreshed,
+    // the execution is gone. Map them to 'completed' (the sync effect will
+    // correct to the DB value on the next poll). This prevents the ApprovalGate
+    // from unmounting/remounting which resets the countdown timer.
+    for (const stage of parsed.stages) {
+      if (stage.status === 'generating' || stage.status === 'validating') {
+        stage.status = stage.output ? 'completed' : 'pending';
+      }
+    }
     return parsed;
   } catch { return null; }
 }
