@@ -27,6 +27,11 @@ import { pipelineService } from "@/services/pipeline.js";
 import { broadcastToPipeline } from "@/plugins/websocket.js";
 import { publish } from "@/services/ws-publisher.js";
 import { recordRetrievalTrajectory } from "@/services/retrieval-observability.js";
+import {
+  createExecution,
+  completeExecution,
+  failExecution,
+} from "@/services/stage-execution-repository.js";
 
 // ─── AUDIT LOG HELPER ───────────────────────────────────────────
 
@@ -749,6 +754,19 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         model: modelOverride || process.env.LLM_DEFAULT_MODEL || null,
       });
 
+      // Dual-write: create stage execution record
+      let stageExecId: string | null = null;
+      try {
+        const exec = await createExecution({
+          pipelineRunId,
+          stageName: stageName as any,
+          model: modelOverride || process.env.LLM_DEFAULT_MODEL || undefined,
+        });
+        stageExecId = exec.id;
+      } catch (execErr) {
+        console.warn(`[Pipeline] Failed to create stage execution: ${execErr instanceof Error ? execErr.message : execErr}`);
+      }
+
       // Helper: persist a log entry (fire-and-forget, non-blocking)
       const persistLog = (level: string, message: string, phase?: string, detail?: string, metadata?: unknown) => {
         db.insert(stageExecutionLogs).values({
@@ -959,6 +977,24 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           summary: "No validation configured",
         });
 
+        // Dual-write: complete stage execution
+        if (stageExecId) {
+          try {
+            await completeExecution({
+              executionId: stageExecId,
+              output: result.output,
+              validation: validationPayload ? {
+                passed: validationPayload.passed,
+                confidenceScore: validationPayload.confidenceScore,
+                criteria: validationPayload.criteria,
+                summary: validationPayload.summary,
+              } : undefined,
+            });
+          } catch (execErr) {
+            console.warn(`[Pipeline] Failed to complete stage execution: ${execErr instanceof Error ? execErr.message : execErr}`);
+          }
+        }
+
         publish(topic, "complete", {
           stageName: result.stageName,
           stageIndex: result.stageIndex,
@@ -1015,6 +1051,21 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           shouldRetry: classified.shouldRetry,
           suggestedDelayMs: classified.suggestedDelayMs,
         });
+
+        // Mark stage as failed in stage_progress JSONB so the frontend sync
+        // effect picks up the terminal status and stops the elapsed timer.
+        // Without this, stage_progress stays at "in_progress" after errors
+        // and the timer runs forever on page refresh.
+        await pipelineService.updateStageProgress(pipelineRunId, stageName, "failed", 0).catch(() => {});
+
+        // Dual-write: fail stage execution
+        if (stageExecId) {
+          try {
+            await failExecution({ executionId: stageExecId, errorMessage: rawMessage });
+          } catch (execErr) {
+            console.warn(`[Pipeline] Failed to fail stage execution: ${execErr instanceof Error ? execErr.message : execErr}`);
+          }
+        }
 
         // Update stage run record with error
         await db.update(stageRuns).set({
