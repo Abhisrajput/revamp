@@ -358,6 +358,54 @@ export const stageRuns = pgTable(
   })
 );
 
+// Stage executions — independent stage lifecycle with versioned outputs
+// This is the future source of truth for stage state (replaces stage_progress JSONB in Phase 2).
+export const stageExecutions = pgTable(
+  "stage_executions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    pipeline_run_id: uuid("pipeline_run_id").notNull().references(() => pipelineRuns.id, { onDelete: "cascade" }),
+    stage_name: varchar("stage_name", { length: 100 }).notNull(),
+    version: integer("version").notNull(),
+
+    // Lifecycle
+    status: varchar("status", { length: 30 }).notNull().default("pending"),
+    started_at: timestamp("started_at"),
+    completed_at: timestamp("completed_at"),
+    error_message: text("error_message"),
+
+    // Output
+    output: text("output"),
+    output_length: integer("output_length").default(0),
+
+    // Validation (inline JSONB)
+    validation: jsonb("validation"),
+
+    // Approval (inline — replaces approval_gates in Phase 3)
+    approval_status: varchar("approval_status", { length: 30 }).notNull().default("not_required"),
+    approved_by: uuid("approved_by"),
+    approved_at: timestamp("approved_at"),
+    approval_comment: text("approval_comment"),
+
+    // Provenance — which prior executions were consumed as input
+    input_refs: jsonb("input_refs").notNull().default({}),
+
+    // Execution metadata
+    model: varchar("model", { length: 200 }),
+    token_usage: jsonb("token_usage"),
+
+    // Timestamps
+    created_at: timestamp("created_at").defaultNow().notNull(),
+    updated_at: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    runIdx: index("stage_exec_run_idx").on(table.pipeline_run_id),
+    lookupIdx: index("stage_exec_lookup_idx").on(table.pipeline_run_id, table.stage_name, table.version),
+    approvedIdx: index("stage_exec_approved_idx").on(table.pipeline_run_id, table.stage_name, table.approval_status),
+    runStageVersionUniq: unique("stage_exec_run_stage_version_uniq").on(table.pipeline_run_id, table.stage_name, table.version),
+  })
+);
+
 // Stage execution logs — persistent log entries from each stage execution
 export const stageExecutionLogs = pgTable(
   "stage_execution_logs",
@@ -439,6 +487,7 @@ export const pipelineRunsRelations = relations(pipelineRuns, ({ many, one }) => 
   approvalGates: many(approvalGates),
   llmUsage: many(llmUsage),
   stageRuns: many(stageRuns),
+  stageExecutions: many(stageExecutions),
   initiatedBy: one(users, {
     fields: [pipelineRuns.initiated_by],
     references: [users.id],
@@ -451,6 +500,17 @@ export const stageRunsRelations = relations(stageRuns, ({ many, one }) => ({
     references: [pipelineRuns.id],
   }),
   logs: many(stageExecutionLogs),
+}));
+
+export const stageExecutionsRelations = relations(stageExecutions, ({ one }) => ({
+  pipelineRun: one(pipelineRuns, {
+    fields: [stageExecutions.pipeline_run_id],
+    references: [pipelineRuns.id],
+  }),
+  approvedByUser: one(users, {
+    fields: [stageExecutions.approved_by],
+    references: [users.id],
+  }),
 }));
 
 export const stageExecutionLogsRelations = relations(stageExecutionLogs, ({ one }) => ({
