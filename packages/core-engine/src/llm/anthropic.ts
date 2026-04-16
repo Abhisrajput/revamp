@@ -37,6 +37,7 @@ export class AnthropicProvider implements LLMProvider {
       output_tokens: response.usage.output_tokens,
       stop_reason: response.stop_reason || 'end_turn',
       cached_tokens: (response.usage as any).cache_read_input_tokens || 0,
+      cache_creation_tokens: (response.usage as any).cache_creation_input_tokens || 0,
     };
   }
 
@@ -68,6 +69,7 @@ export class AnthropicProvider implements LLMProvider {
     const inputTokens = finalMessage.usage.input_tokens;
     const outputTokens = finalMessage.usage.output_tokens;
     const cachedTokens = (finalMessage.usage as any).cache_read_input_tokens || 0;
+    const cacheCreationTokens = (finalMessage.usage as any).cache_creation_input_tokens || 0;
 
     return {
       id: finalMessage.id,
@@ -77,6 +79,7 @@ export class AnthropicProvider implements LLMProvider {
       output_tokens: outputTokens,
       stop_reason: finalMessage.stop_reason || 'end_turn',
       cached_tokens: cachedTokens,
+      cache_creation_tokens: cacheCreationTokens,
     };
   }
 
