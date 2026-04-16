@@ -50,7 +50,6 @@ import {
 } from "./pipeline-operations.js";
 import {
   type StageConfig,
-  PIPELINE_STAGES,
   getStageConfig,
   getNextStage,
   getPreviousStage,
@@ -141,22 +140,12 @@ export class PipelineService {
     }
 
     const runId = crypto.randomUUID();
-    const stageProgress: Record<string, unknown> = {};
-
-    for (const stage of PIPELINE_STAGES) {
-      stageProgress[stage.name] = {
-        status: "pending",
-        progress: 0,
-      };
-    }
 
     await db.insert(pipelineRuns).values({
       id: runId,
       project_id: projectId,
       initiated_by: initiatedBy,
       status: "running",
-      current_stage: PipelineStageName.SCAN,
-      stage_progress: stageProgress,
       budget_cents: options?.budgetCents ?? null,
       started_at: new Date(),
     });

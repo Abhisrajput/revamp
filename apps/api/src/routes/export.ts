@@ -126,7 +126,7 @@ export async function exportRoutes(fastify: FastifyInstance) {
             ? {
                 id: runs[0].id,
                 status: runs[0].status,
-                current_stage: runs[0].current_stage,
+                current_stage: 'N/A', // Derived from stage_executions in Phase 3
                 started_at: runs[0].started_at,
                 completed_at: runs[0].completed_at,
               }

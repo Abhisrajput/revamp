@@ -293,7 +293,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
             id: true,
             project_id: true,
             status: true,
-            current_stage: true,
             started_at: true,
             created_at: true,
           },

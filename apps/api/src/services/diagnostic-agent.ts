@@ -15,6 +15,7 @@ import { pipelineRuns, stageArtifacts, agentSubtasks, projects, stageExecutionLo
 import { eq, and, desc, inArray } from "drizzle-orm";
 import { llmProxyService } from "./llm-proxy.js";
 import type { ProjectCredentials } from "./llm-proxy.js";
+import { getStatusForRun } from "./stage-execution-repository.js";
 
 // ─── TYPES ──────────────────────────────────────────────────────
 
@@ -47,22 +48,32 @@ async function collectPipelineStatus(runId: string): Promise<string> {
     columns: {
       id: true,
       status: true,
-      current_stage: true,
-      stage_progress: true,
       error_message: true,
       started_at: true,
       completed_at: true,
     },
   });
   if (!run) return "Pipeline run not found";
+
+  // Derive current stage and stage statuses from stage_executions (v2 source of truth)
+  const { PIPELINE_STAGE_ORDER } = await import("@revamp/shared-types/pipeline");
+  const v2Status = await getStatusForRun(runId, PIPELINE_STAGE_ORDER);
+  const derivedCurrentStage = Object.entries(v2Status).find(([, e]) => e.latest?.status === 'running')?.[0] ?? null;
+  const derivedStages = Object.fromEntries(
+    Object.entries(v2Status).map(([name, entry]) => [name, {
+      status: entry.latest?.status ?? 'pending',
+      approval_status: entry.latest?.approval_status ?? 'not_required',
+    }])
+  );
+
   return JSON.stringify({
     runId: run.id,
     overallStatus: run.status,
-    currentStage: run.current_stage,
+    currentStage: derivedCurrentStage,
     error: run.error_message,
     startedAt: run.started_at?.toISOString(),
     completedAt: run.completed_at?.toISOString(),
-    stages: run.stage_progress,
+    stages: derivedStages,
   }, null, 2);
 }
 
