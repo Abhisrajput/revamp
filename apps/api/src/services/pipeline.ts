@@ -14,7 +14,7 @@
  *     → Validation → Auto-refinement (if needed) → Store artifacts → Emit events
  */
 
-import { db, type DbConnection } from "@/db/index.js";
+import { db } from "@/db/index.js";
 import { pipelineRuns, stageArtifacts, llmUsage, projects } from "@/db/schema.js";
 import { NotFoundError, ValidationError } from "@/errors.js";
 import { eq, and, sql, inArray } from "drizzle-orm";
@@ -32,8 +32,6 @@ import {
 } from "@revamp/core-engine";
 import { enforceContract } from "@revamp/core-engine";
 import {
-  updateStageProgress,
-  createApprovalGate,
   storeStageOutput,
   loadPriorStageOutputs,
   loadUserFeedback,
@@ -703,19 +701,12 @@ export class PipelineService {
         }
       } catch { /* non-fatal */ }
 
-      // Update stage progress
+      // Update stage progress via stage_executions
       if (result.output) {
         const score = chunkedResult.coverage.percentage;
         const config = getStageConfig(stageName);
-        await db.transaction(async (tx) => {
-          await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: score });
-          if (config.requiresApproval) {
-            await createApprovalGate(pipelineRunId, stageName, config.requiredRole || "admin", tx);
-            await updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: score });
-          }
-        });
         emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: chunkedResult.duration, confidenceScore: score });
-        // Dual-write: complete the execution
+        // Complete the execution in stage_executions
         const latestExecChunk = await getLatestExecution(pipelineRunId, stageName);
         if (latestExecChunk && latestExecChunk.status === 'running') {
           await completeStageExecution({
@@ -726,11 +717,14 @@ export class PipelineService {
               confidenceScore: result.validation.confidenceScore,
             } : undefined,
           }).catch(() => {});
+          // If stage requires approval, set execution to pending approval
+          if (config.requiresApproval) {
+            await setExecApprovalStatus(pipelineRunId, stageName, "pending").catch(() => {});
+          }
         }
       } else {
-        await updateStageProgress(pipelineRunId, stageName, "failed", 0);
         emitStageFailed({ pipelineRunId, projectId: run.project.id, stageName, error: `${stageName} chunked generation produced no output` });
-        // Dual-write: fail the execution
+        // Fail the execution in stage_executions
         const latestExecFail = await getLatestExecution(pipelineRunId, stageName);
         if (latestExecFail && latestExecFail.status === 'running') {
           await failStageExecution({ executionId: latestExecFail.id, errorMessage: `${stageName} chunked generation produced no output` }).catch(() => {});
@@ -1048,13 +1042,12 @@ export class PipelineService {
     // still exists and might be useful. Only contract hard-gates block completely.
     if (contractHardGated) {
       // Hard-gated: critical structural requirements missing. Stage FAILS, no approval gate.
-      await updateStageProgress(pipelineRunId, stageName, "failed", Math.round(confidenceScore));
       emitValidationFailed({
         pipelineRunId, projectId: run.project.id, stageName,
         violations: result.validation?.issues?.length || 0,
         hardGated: true,
       });
-      // Dual-write: fail the execution
+      // Fail the execution in stage_executions
       const latestExec = await getLatestExecution(pipelineRunId, stageName);
       if (latestExec && latestExec.status === 'running') {
         await failStageExecution({ executionId: latestExec.id, errorMessage: `Contract hard-gated: ${result.validation?.contractResult?.violations?.length ?? 0} violations` }).catch(() => {});
@@ -1065,22 +1058,14 @@ export class PipelineService {
       const currentConfig = getStageConfig(stageName);
       const nextStage = getNextStage(stageName);
 
-      await db.transaction(async (tx) => {
-        await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore });
-
-        if (currentConfig.requiresApproval) {
-          await createApprovalGate(pipelineRunId, stageName, currentConfig.requiredRole || "admin", tx);
-          await updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore });
-        }
-
-        if (!nextStage) {
-          await tx.update(pipelineRuns).set({
-            status: "completed",
-            completed_at: new Date(),
-            updated_at: new Date(),
-          }).where(eq(pipelineRuns.id, pipelineRunId));
-        }
-      });
+      // Mark pipeline as completed if this was the last stage
+      if (!nextStage) {
+        await db.update(pipelineRuns).set({
+          status: "completed",
+          completed_at: new Date(),
+          updated_at: new Date(),
+        }).where(eq(pipelineRuns.id, pipelineRunId));
+      }
 
       emitStageCompleted({
         pipelineRunId,
@@ -1090,7 +1075,7 @@ export class PipelineService {
         confidenceScore,
       });
 
-      // Dual-write: complete the execution
+      // Complete the execution in stage_executions
       const latestExec = await getLatestExecution(pipelineRunId, stageName);
       if (latestExec && latestExec.status === 'running') {
         await completeStageExecution({
@@ -1121,23 +1106,6 @@ export class PipelineService {
     }
 
     return result;
-  }
-
-  // ─── Repository methods moved to pipeline-repository.ts ─────────
-  // loadPriorStageOutputs, loadUserFeedback, storeStageOutput,
-  // updateStageProgress, createApprovalGate, updateProjectMetrics
-  // are now standalone functions imported at the top of this file.
-
-  /**
-   * PLACEHOLDER — methods below this line are still in the class.
-   */
-
-  /** Delegate to standalone function for backward compat with route callers */
-  async updateStageProgress(
-    pipelineRunId: string, stageName: PipelineStageName, status: string, progress: number,
-    options?: { conn?: DbConnection; confidenceScore?: number },
-  ): Promise<void> {
-    return updateStageProgress(pipelineRunId, stageName, status, progress, options);
   }
 
   // ─── Operations delegated to pipeline-operations.ts ────────────
