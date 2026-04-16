@@ -7,83 +7,14 @@
  * Used by: PipelineService.executeStage, route handlers, stage orchestrators.
  */
 
-import { db, type DbConnection } from "@/db/index.js";
-import { pipelineRuns, approvalGates, stageArtifacts, llmUsage, projects } from "@/db/schema.js";
-import { eq, and, sql, inArray } from "drizzle-orm";
+import { db } from "@/db/index.js";
+import { approvalGates, stageArtifacts, llmUsage, projects } from "@/db/schema.js";
+import { eq, and, inArray } from "drizzle-orm";
 import { PipelineStageName } from "@revamp/shared-types/pipeline";
 import type { StageRunResult, StageOutput, UserFeedback } from "@revamp/core-engine";
 import { getStageOrder } from "@revamp/core-engine";
 import { loadTieredPriorContext, generateTierSummaries } from "./context-tiering.js";
 import crypto from "crypto";
-
-// ─── Stage Progress ──────────────────────────────────────────────
-
-/**
- * Atomic update of stage progress in the pipeline_runs JSONB column.
- * Uses jsonb_set to avoid read-modify-write race conditions.
- */
-export async function updateStageProgress(
-  pipelineRunId: string,
-  stageName: PipelineStageName,
-  status: string,
-  progress: number,
-  options?: { conn?: DbConnection; confidenceScore?: number },
-): Promise<void> {
-  const conn = options?.conn ?? db;
-  const now = new Date().toISOString();
-  const isRunning = status === 'in_progress' || status === 'generating' || status === 'validating';
-  const isTerminal = status === 'completed' || status === 'failed' || status === 'approved'
-    || status === 'rejected' || status === 'awaiting_approval';
-  const confidenceScore = options?.confidenceScore ?? progress;
-
-  await conn.execute(sql`
-    UPDATE ${pipelineRuns}
-    SET
-      current_stage = ${stageName},
-      stage_progress = jsonb_set(
-        COALESCE(stage_progress, '{}'::jsonb),
-        ${sql.raw(`'{${stageName}}'`)},
-        COALESCE(stage_progress -> ${stageName}, '{}'::jsonb) || jsonb_build_object(
-          'status', ${status}::text,
-          'progress', ${progress}::int,
-          'confidenceScore', ${confidenceScore}::int,
-          'updatedAt', ${now}::text,
-          'startedAt', CASE
-            WHEN ${isRunning} AND (COALESCE(stage_progress -> ${stageName} ->> 'startedAt', '') = '')
-            THEN ${now}::text
-            ELSE COALESCE(stage_progress -> ${stageName} ->> 'startedAt', '')
-          END,
-          'completedAt', CASE
-            WHEN ${isTerminal} THEN ${now}::text
-            WHEN ${isRunning} THEN ''
-            ELSE COALESCE(stage_progress -> ${stageName} ->> 'completedAt', '')
-          END
-        )
-      ),
-      updated_at = NOW()
-    WHERE id = ${pipelineRunId}
-  `);
-}
-
-// ─── Approval Gate ───────────────────────────────────────────────
-
-/**
- * Create an approval gate for a stage.
- */
-export async function createApprovalGate(
-  pipelineRunId: string,
-  stageName: PipelineStageName,
-  requiredRole: string,
-  conn: DbConnection = db,
-): Promise<void> {
-  await conn.insert(approvalGates).values({
-    id: crypto.randomUUID(),
-    pipeline_run_id: pipelineRunId,
-    stage_name: stageName,
-    required_role: requiredRole,
-    status: "pending",
-  });
-}
 
 // ─── Store Stage Output ──────────────────────────────────────────
 
