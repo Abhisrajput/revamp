@@ -776,8 +776,8 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           }
         }
 
-        // Atomically set stage to in_progress under the lock
-        await pipelineService.updateStageProgress(pipelineRunId, stageName, "in_progress", 0, { conn: tx });
+        // The createExecution() call below creates the execution as "running",
+        // which serves as the in_progress marker in stage_executions.
         return { ok: true };
       });
 
@@ -1128,13 +1128,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           suggestedDelayMs: classified.suggestedDelayMs,
         });
 
-        // Mark stage as failed in stage_progress JSONB so the frontend sync
-        // effect picks up the terminal status and stops the elapsed timer.
-        // Without this, stage_progress stays at "in_progress" after errors
-        // and the timer runs forever on page refresh.
-        await pipelineService.updateStageProgress(pipelineRunId, stageName, "failed", 0).catch(() => {});
-
-        // Dual-write: fail stage execution
+        // Fail the stage execution so the frontend picks up the terminal status
         if (stageExecId) {
           try {
             await failExecution({ executionId: stageExecId, errorMessage: rawMessage });
@@ -1974,7 +1968,8 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const { pipelineRunId, stage } = request.params;
-      await pipelineService.updateStageProgress(pipelineRunId, stage as PipelineStageName, "pending", 0);
+      // In the stage_executions model, resetting is implicit — the next executeStage
+      // call creates a new execution row. No explicit state change needed.
       return reply.send({ ok: true, stage, status: "pending" });
     },
   );
