@@ -87,6 +87,7 @@ import {
   failExecution as failStageExecution,
   setApprovalStatus as setExecApprovalStatus,
 } from "./stage-execution-repository.js";
+import { recordStageSpend } from "./pipeline-spend-recorder.js";
 
 // Stage configuration, utilities, and isStageDisabled now in pipeline-config.ts
 export type { StageConfig, ProjectStageConfig } from "./pipeline-config.js";
@@ -907,40 +908,23 @@ export class PipelineService {
       await storeStageOutput(pipelineRunId, stageName, result);
     }
 
-    // Record pipeline-level spend from token usage.
-    // Primary source: llmCallFn.tokenUsage (accumulated from actual LLM responses).
-    // Fallback: phase event data (may be empty for stages that don't emit token phases).
-    try {
+    // Record pipeline spend — single recording path (see pipeline-spend-recorder.ts).
+    {
       const proxyTokens = (llmCallFn as any).tokenUsage as import("./llm-proxy.js").StageTokenUsage | undefined;
-      const stageInputTokens = proxyTokens?.inputTokens
-        || result.phases?.reduce((s, p) => s + (Number(p.data?.inputTokens) || 0), 0)
-        || 0;
-      const stageOutputTokens = proxyTokens?.outputTokens
-        || result.phases?.reduce((s, p) => s + (Number(p.data?.outputTokens) || 0), 0)
-        || 0;
-      if (stageInputTokens > 0 || stageOutputTokens > 0) {
-        const cost = estimateCostCents(
-          { inputTokens: stageInputTokens, outputTokens: stageOutputTokens },
-          modelName,
-        );
-        await recordPipelineSpend(pipelineRunId, cost);
-
-        // Enforce project-level budget (create incidents if thresholds crossed)
-        try { await enforceProjectBudget(run.project.id); } catch { /* non-fatal */ }
-
-        // Write to llmUsage table so dashboard/usage endpoints can display it
-        await db.insert(llmUsage).values({
-          id: crypto.randomUUID(),
-          project_id: run.project.id,
-          pipeline_run_id: pipelineRunId,
-          model: modelName || "unknown",
-          input_tokens: stageInputTokens,
-          output_tokens: stageOutputTokens,
-          cost: Math.round(cost),
+      if (proxyTokens) {
+        const { resolveProviderName } = await import("./pipeline-spend-recorder-helpers.js");
+        await recordStageSpend({
+          pipelineRunId,
+          projectId: run.project.id,
+          stageName,
+          stageIndex: stageConfig.index,
+          model: modelName,
+          provider: resolveProviderName(modelName),
+          operation: "stage",
+          tokens: proxyTokens,
+          onEvent: options?.onEvent,
         });
       }
-    } catch {
-      // Non-fatal — budget tracking failure shouldn't break pipeline
     }
 
     // Record agent completion and lifecycle hooks (if an agent was assigned)
