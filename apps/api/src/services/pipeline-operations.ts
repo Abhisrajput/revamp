@@ -13,7 +13,7 @@ import { PipelineStageName } from "@revamp/shared-types/pipeline";
 import { getStageOrder } from "@revamp/core-engine";
 import { getPipelineRun, getNextStage } from "./pipeline-config.js";
 import { loadPriorStageOutputs } from "./pipeline-repository.js";
-import { setApprovalStatus } from "./stage-execution-repository.js";
+import { setApprovalStatus, getLatestExecution } from "./stage-execution-repository.js";
 import { llmProxyService } from "./llm-proxy.js";
 import crypto from "crypto";
 
@@ -22,22 +22,31 @@ import crypto from "crypto";
 export async function advanceStage(pipelineRunId: string): Promise<void> {
   const run = await getPipelineRun(pipelineRunId);
   if (!run) throw new NotFoundError("Pipeline run not found");
-  if (run.status !== "running") throw new ValidationError(`Cannot advance pipeline in ${run.status} state`);
 
-  const currentStage = run.current_stage as PipelineStageName;
-  const nextStage = getNextStage(currentStage);
+  const order = getStageOrder();
 
-  await db.transaction(async (tx) => {
-    if (!nextStage) {
-      await tx.update(pipelineRuns).set({
-        status: "completed", completed_at: new Date(), updated_at: new Date(),
-      }).where(eq(pipelineRuns.id, pipelineRunId));
-      return;
+  // Find the latest approved stage from stage_executions
+  let lastApprovedIdx = -1;
+  for (let i = order.length - 1; i >= 0; i--) {
+    const exec = await getLatestExecution(pipelineRunId, order[i]);
+    if (exec?.approval_status === "approved") {
+      lastApprovedIdx = i;
+      break;
     }
-    await tx.update(pipelineRuns).set({
-      current_stage: nextStage, updated_at: new Date(),
+  }
+
+  const isComplete = lastApprovedIdx === order.length - 1;
+  if (isComplete) {
+    await db.update(pipelineRuns).set({
+      status: "completed", completed_at: new Date(), updated_at: new Date(),
     }).where(eq(pipelineRuns.id, pipelineRunId));
-  });
+    return;
+  }
+
+  // Stage advancement is implicit in stage_executions — just update the timestamp
+  await db.update(pipelineRuns).set({
+    updated_at: new Date(),
+  }).where(eq(pipelineRuns.id, pipelineRunId));
 }
 
 // ─── Approval Gate ───────────────────────────────────────────────
@@ -62,7 +71,7 @@ export async function approveGate(
     // Confidence threshold check
     const run = await tx.query.pipelineRuns.findFirst({
       where: eq(pipelineRuns.id, pipelineRunId),
-      columns: { project_id: true, stage_progress: true },
+      columns: { project_id: true },
     });
     if (run) {
       const project = await tx.query.projects.findFirst({
@@ -70,8 +79,8 @@ export async function approveGate(
         columns: { settings: true },
       });
       const threshold = (project?.settings as any)?.confidenceThreshold ?? 75;
-      const stageProgress = (run.stage_progress as Record<string, any>) || {};
-      let stageScore = stageProgress[stageName]?.confidenceScore;
+      const latestExec = await getLatestExecution(pipelineRunId, stageName, tx);
+      let stageScore = (latestExec?.validation as any)?.confidenceScore ?? 0;
 
       if (typeof stageScore !== 'number' || stageScore === 0) {
         const valArtifact = await tx.query.stageArtifacts.findFirst({
@@ -105,9 +114,7 @@ export async function approveGate(
     await setApprovalStatus(pipelineRunId, stageName, "approved", approvedBy, comment, tx);
 
     const nextStage = getNextStage(stageName);
-    if (nextStage) {
-      await tx.update(pipelineRuns).set({ current_stage: nextStage }).where(eq(pipelineRuns.id, pipelineRunId));
-    } else {
+    if (!nextStage) {
       await tx.update(pipelineRuns).set({
         status: "completed", completed_at: new Date(),
       }).where(eq(pipelineRuns.id, pipelineRunId));
