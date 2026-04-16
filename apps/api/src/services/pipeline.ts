@@ -552,6 +552,25 @@ export class PipelineService {
         credentials: projectCredentials,
       });
 
+      // Record DECODE spend (before finalize — same pattern as generic/chunked/SCAN paths).
+      try {
+        if (decodeResult.tokenUsage) {
+          await recordStageSpend({
+            pipelineRunId,
+            projectId: run.project.id,
+            stageName,
+            stageIndex: stageConfig.index,
+            model: modelName,
+            provider: resolveProviderName(modelName),
+            operation: "decode-orchestration",
+            tokens: decodeResult.tokenUsage,
+            onEvent: options?.onEvent,
+          });
+        }
+      } catch {
+        // Non-fatal — token accounting must not fail a stage
+      }
+
       // Finalize: store output, record agent, track usage, update progress, emit events
       await finalizeStageResult({
         pipelineRunId, projectId: run.project.id, stageName, stageIndex: stageConfig.index,

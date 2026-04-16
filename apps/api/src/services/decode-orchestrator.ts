@@ -41,7 +41,7 @@ import {
   DEFAULT_DECODE_SUBTASKS,
   type DecodeSubtaskType,
 } from "@revamp/core-engine";
-import { llmProxyService, type ProjectCredentials } from "./llm-proxy.js";
+import { llmProxyService, type ProjectCredentials, type StageTokenUsage } from "./llm-proxy.js";
 import {
   matchAndAssignAgent,
   recordAgentCompletion,
@@ -114,6 +114,16 @@ export async function orchestrateDecodeStage(
   const startTime = Date.now();
   const phases: StageEvent[] = [];
 
+  // ── SHARED TOKEN ACCUMULATOR ──────────────────────────────────
+  // All sub-agent createCallFn calls share this accumulator so the
+  // orchestrator can report a single aggregate token spend to the recorder.
+  const stageTokenUsage: StageTokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    cacheCreationTokens: 0,
+  };
+
   const emit = (phase: StagePhase, data?: Record<string, unknown>) => {
     const event: StageEvent = {
       phase,
@@ -137,7 +147,7 @@ export async function orchestrateDecodeStage(
   try {
     emit("director_planning", { message: "Director planning DECODE subtask delegation..." });
     checkAbort();
-    subtaskPlans = await runDirectorPlanning(opts);
+    subtaskPlans = await runDirectorPlanning(opts, stageTokenUsage);
     emit("director_planning", {
       message: `Director planned ${subtaskPlans.length} subtasks`,
       subtaskCount: subtaskPlans.length,
@@ -246,7 +256,7 @@ export async function orchestrateDecodeStage(
         try {
           result = await executeSubtask(
             { ...opts, signal: subtaskController.signal },
-            plan, subtask, subtaskResults,
+            plan, subtask, subtaskResults, stageTokenUsage,
           );
         } catch (timeoutErr: any) {
           if (subtaskController.signal.aborted && !origSignal?.aborted) {
@@ -342,7 +352,7 @@ export async function orchestrateDecodeStage(
       contractResult: { stageName: PipelineStageName.DECODE, passed: false, completenessScore: 0, violations: [], refinementPrompt: null, hardGated: false },
       metadata: {},
     };
-    return { stageName: PipelineStageName.DECODE, stageIndex: 1, output: "", validation: failedValidation, refinementCount: 0, duration: Date.now() - startTime, phases, aborted: false };
+    return { stageName: PipelineStageName.DECODE, stageIndex: 1, output: "", validation: failedValidation, refinementCount: 0, duration: Date.now() - startTime, phases, aborted: false, tokenUsage: stageTokenUsage };
   }
 
   // ── STEP 3: SMART COMPOSITION ───────────────────────────────────
@@ -466,6 +476,7 @@ export async function orchestrateDecodeStage(
     model: composerModel,
     credentials: opts.credentials,
     advisor: useAdvisor ? DECODE_ADVISOR_CONFIG : undefined,
+    tokenUsage: stageTokenUsage,
   });
 
   opts.onDelta?.("");
@@ -572,7 +583,7 @@ export async function orchestrateDecodeStage(
         contractResult: { stageName: PipelineStageName.DECODE, passed: false, completenessScore: 0, violations: [], refinementPrompt: null, hardGated: false },
         metadata: {},
       };
-      return { stageName: PipelineStageName.DECODE, stageIndex: 1, output: "", validation: compositionFailedValidation, refinementCount: 0, duration: Date.now() - startTime, phases, aborted: false };
+      return { stageName: PipelineStageName.DECODE, stageIndex: 1, output: "", validation: compositionFailedValidation, refinementCount: 0, duration: Date.now() - startTime, phases, aborted: false, tokenUsage: stageTokenUsage };
     }
   }
 
@@ -653,7 +664,7 @@ export async function orchestrateDecodeStage(
           "Integrate these into the existing document structure. Do NOT remove any existing content.",
         ].join("\n");
 
-        composedOutput = await refineComposition(opts, composedOutput, coverageRefinementPrompt);
+        composedOutput = await refineComposition(opts, composedOutput, coverageRefinementPrompt, stageTokenUsage);
         refinementCount++;
 
         // Re-measure coverage after refinement
@@ -696,7 +707,7 @@ export async function orchestrateDecodeStage(
   if (!contractResult.passed && contractResult.refinementPrompt) {
     emit("refining" as StagePhase, { message: "Refining composition to meet DECODE contract...", progress: 92 });
     try {
-      const refinedOutput = await refineComposition(opts, composedOutput, contractResult.refinementPrompt);
+      const refinedOutput = await refineComposition(opts, composedOutput, contractResult.refinementPrompt, stageTokenUsage);
       composedOutput = refinedOutput;
       refinementCount++;
 
@@ -719,6 +730,7 @@ export async function orchestrateDecodeStage(
     maxTokens: 2048,
     model: opts.model || "",
     credentials: opts.credentials,
+    tokenUsage: stageTokenUsage,
   });
   let finalContractResult = await enforceContract(PipelineStageName.DECODE, composedOutput, undefined, validationAgentFn as any);
 
@@ -829,6 +841,7 @@ export async function orchestrateDecodeStage(
     duration: Date.now() - startTime,
     phases,
     aborted: false,
+    tokenUsage: stageTokenUsage,
   };
 }
 
@@ -836,6 +849,7 @@ export async function orchestrateDecodeStage(
 
 async function runDirectorPlanning(
   opts: DecodeOrchestrationOptions,
+  tokenUsage: StageTokenUsage,
 ): Promise<SubtaskPlan[]> {
   // Use composer model for director planning (higher quality = better subtask design)
   const directorModel = opts.composerModel || opts.model || "";
@@ -845,6 +859,7 @@ async function runDirectorPlanning(
     model: directorModel,
     credentials: opts.credentials,
     advisor: useAdvisorForDirector ? DECODE_ADVISOR_CONFIG : undefined,
+    tokenUsage,
   });
 
   const agentRoster = await buildAgentRoster();
@@ -914,6 +929,7 @@ async function executeSubtask(
   plan: SubtaskPlan,
   subtask: SubtaskView,
   priorResults: SubtaskResult[],
+  tokenUsage: StageTokenUsage,
 ): Promise<SubtaskResult> {
   const startTime = Date.now();
 
@@ -964,6 +980,7 @@ async function executeSubtask(
     maxTokens: decodeMaxTokens,
     model: opts.model || "",
     credentials: opts.credentials,
+    tokenUsage,
   });
 
   let agentExec: Awaited<ReturnType<typeof prepareAgentExecution>> | null = null;
@@ -1100,6 +1117,7 @@ async function refineComposition(
   opts: DecodeOrchestrationOptions,
   output: string,
   refinementPrompt: string,
+  tokenUsage: StageTokenUsage,
 ): Promise<string> {
   // Use composer model for refinement (same tier that composed the output)
   const refineModel = opts.composerModel || opts.model || "";
@@ -1108,6 +1126,7 @@ async function refineComposition(
     maxTokens: opts.maxTokens || 32768,
     model: refineModel,
     credentials: opts.credentials,
+    tokenUsage,
   });
 
   opts.onDelta?.("");
