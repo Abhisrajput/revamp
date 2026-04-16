@@ -32,6 +32,8 @@ export async function updateStageProgress(
   const conn = options?.conn ?? db;
   const now = new Date().toISOString();
   const isRunning = status === 'in_progress' || status === 'generating' || status === 'validating';
+  const isTerminal = status === 'completed' || status === 'failed' || status === 'approved'
+    || status === 'rejected' || status === 'awaiting_approval';
   const confidenceScore = options?.confidenceScore ?? progress;
 
   await conn.execute(sql`
@@ -50,6 +52,11 @@ export async function updateStageProgress(
             WHEN ${isRunning} AND (COALESCE(stage_progress -> ${stageName} ->> 'startedAt', '') = '')
             THEN ${now}::text
             ELSE COALESCE(stage_progress -> ${stageName} ->> 'startedAt', '')
+          END,
+          'completedAt', CASE
+            WHEN ${isTerminal} THEN ${now}::text
+            WHEN ${isRunning} THEN ''
+            ELSE COALESCE(stage_progress -> ${stageName} ->> 'completedAt', '')
           END
         )
       ),
