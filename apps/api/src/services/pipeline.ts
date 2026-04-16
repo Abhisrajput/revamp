@@ -595,6 +595,25 @@ export class PipelineService {
         credentials: projectCredentials,
       });
 
+      // Record FORGE spend (before finalize — same pattern as generic/chunked/SCAN/DECODE paths).
+      try {
+        if (forgeResult.tokenUsage) {
+          await recordStageSpend({
+            pipelineRunId,
+            projectId: run.project.id,
+            stageName,
+            stageIndex: stageConfig.index,
+            model: modelName,
+            provider: resolveProviderName(modelName),
+            operation: "forge-orchestration",
+            tokens: forgeResult.tokenUsage,
+            onEvent: options?.onEvent,
+          });
+        }
+      } catch {
+        // Non-fatal — token accounting must not fail a stage
+      }
+
       // Finalize: store output, record agent, track usage, update progress, emit events
       await finalizeStageResult({
         pipelineRunId, projectId: run.project.id, stageName, stageIndex: stageConfig.index,

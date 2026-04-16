@@ -37,7 +37,7 @@ import {
   runValidation,
   type FullValidationResult,
 } from "@revamp/core-engine";
-import { llmProxyService, type ProjectCredentials } from "./llm-proxy.js";
+import { llmProxyService, type ProjectCredentials, type StageTokenUsage } from "./llm-proxy.js";
 
 // ─── TYPES ──────────────────────────────────────────────────────
 
@@ -79,6 +79,14 @@ export async function orchestrateForgeStage(
   const phases: StageEvent[] = [];
   const generatedFiles: GeneratedFile[] = [];
 
+  // All LLM calls share this accumulator so the stage reports total token spend.
+  const stageTokenUsage: StageTokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    cacheCreationTokens: 0,
+  };
+
   const emit = (phase: string, data?: Record<string, unknown>) => {
     const event: StageEvent = {
       phase: phase as StagePhase,
@@ -119,7 +127,7 @@ export async function orchestrateForgeStage(
   emit("director_planning", { message: "Planning code generation..." });
   checkAbort();
 
-  const planCallFn = llmProxyService.createCallFn({ maxTokens: opts.maxTokens || 8192, model: opts.model, credentials: opts.credentials, advisor: FORGE_ADVISOR_CONFIG });
+  const planCallFn = llmProxyService.createCallFn({ maxTokens: opts.maxTokens || 8192, model: opts.model, credentials: opts.credentials, advisor: FORGE_ADVISOR_CONFIG, tokenUsage: stageTokenUsage });
 
   // Extract frontend signals from SCAN output for planning
   const scanLower = scanOutput.toLowerCase();
@@ -718,6 +726,7 @@ ${gapBatch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.lang
     duration: Date.now() - startTime,
     phases,
     aborted: opts.signal?.aborted ?? false,
+    tokenUsage: stageTokenUsage,
   };
 }
 
