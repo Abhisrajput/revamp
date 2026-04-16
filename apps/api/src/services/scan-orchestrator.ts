@@ -42,7 +42,7 @@ import {
   type FullValidationResult,
   extractRequirementsFromPrompt,
 } from "@revamp/core-engine";
-import { llmProxyService, type ProjectCredentials } from "./llm-proxy.js";
+import { llmProxyService, type ProjectCredentials, type StageTokenUsage } from "./llm-proxy.js";
 import {
   matchAndAssignAgent,
   recordAgentCompletion,
@@ -152,12 +152,22 @@ export async function orchestrateScanStage(
   // Replaces manual context-threading between subtasks.
   const messageBus = new PipelineMessageBus(opts.pipelineRunId);
 
+  // ── SHARED TOKEN ACCUMULATOR ──────────────────────────────────
+  // All sub-agent createCallFn calls share this accumulator so the
+  // orchestrator can report a single aggregate token spend to the recorder.
+  const stageTokenUsage: StageTokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    cacheCreationTokens: 0,
+  };
+
   // ── STEP 1: SCOUT TRIAGE ──────────────────────────────────────
   let scoutAssessment: Record<string, unknown>;
   try {
     emit("scout_assessment", { message: "Scout agent triaging codebase..." });
     checkAbort();
-    scoutAssessment = await runScoutTriage(opts);
+    scoutAssessment = await runScoutTriage(opts, stageTokenUsage);
 
     // Store scout assessment as artifact
     try {
@@ -195,6 +205,7 @@ export async function orchestrateScanStage(
       duration: Date.now() - startTime,
       phases,
       aborted: opts.signal?.aborted ?? false,
+      tokenUsage: stageTokenUsage,
     };
   }
 
@@ -203,7 +214,7 @@ export async function orchestrateScanStage(
   try {
     emit("director_planning", { message: "Director planning subtask delegation..." });
     checkAbort();
-    subtaskPlans = await runDirectorPlanning(opts, scoutAssessment);
+    subtaskPlans = await runDirectorPlanning(opts, scoutAssessment, stageTokenUsage);
     emit("director_planning", {
       message: `Director planned ${subtaskPlans.length} subtasks`,
       subtaskCount: subtaskPlans.length,
@@ -317,7 +328,7 @@ export async function orchestrateScanStage(
       try {
         result = await executeSubtask(
           { ...opts, signal: subtaskController.signal },
-          plan, subtask, subtaskResults, scoutAssessment, messageBus,
+          plan, subtask, subtaskResults, scoutAssessment, messageBus, stageTokenUsage,
         );
       } catch (timeoutErr: any) {
         if (subtaskController.signal.aborted && !origSignal?.aborted) {
@@ -358,7 +369,7 @@ export async function orchestrateScanStage(
             });
 
             try {
-              const revised = await reviseSubtaskOutput(opts, result.output, review.revisionPrompt, plan.type);
+              const revised = await reviseSubtaskOutput(opts, result.output, review.revisionPrompt, plan.type, stageTokenUsage);
               result.output = revised;
               result.revised = true;
             } catch {
@@ -533,6 +544,7 @@ export async function orchestrateScanStage(
       duration: Date.now() - startTime,
       phases,
       aborted: false,
+      tokenUsage: stageTokenUsage,
     };
   }
 
@@ -542,7 +554,7 @@ export async function orchestrateScanStage(
 
   let composedOutput: string;
   try {
-    composedOutput = await composeResults(opts, subtaskResults);
+    composedOutput = await composeResults(opts, subtaskResults, stageTokenUsage);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     emit("failed", {
@@ -559,6 +571,7 @@ export async function orchestrateScanStage(
       duration: Date.now() - startTime,
       phases,
       aborted: false,
+      tokenUsage: stageTokenUsage,
     };
   }
 
@@ -631,7 +644,7 @@ export async function orchestrateScanStage(
   if (!validationResult.contractResult.passed && validationResult.contractResult.refinementPrompt) {
     emit("refining" as StagePhase, { message: "Refining composition to meet stage contract..." });
     try {
-      const refinedOutput = await refineComposition(opts, composedOutput, validationResult.contractResult.refinementPrompt);
+      const refinedOutput = await refineComposition(opts, composedOutput, validationResult.contractResult.refinementPrompt, stageTokenUsage);
       composedOutput = refinedOutput;
       refinementCount = 1;
 
@@ -736,6 +749,7 @@ export async function orchestrateScanStage(
     duration: Date.now() - startTime,
     phases,
     aborted: false,
+    tokenUsage: stageTokenUsage,
   };
 }
 
@@ -743,12 +757,14 @@ export async function orchestrateScanStage(
 
 async function runScoutTriage(
   opts: ScanOrchestrationOptions,
+  tokenUsage: StageTokenUsage,
 ): Promise<Record<string, unknown>> {
   // Use a fast/cheap model for scout
   const scoutCallFn = llmProxyService.createCallFn({
     maxTokens: 4096,
     model: pickScoutModel(),
     credentials: opts.credentials,
+    tokenUsage,
   });
 
   const fileAnalysisData = formatFileAnalysisForPrompt(opts.fileAnalysis);
@@ -774,12 +790,14 @@ async function runScoutTriage(
 async function runDirectorPlanning(
   opts: ScanOrchestrationOptions,
   scoutAssessment: Record<string, unknown>,
+  tokenUsage: StageTokenUsage,
 ): Promise<SubtaskPlan[]> {
   const directorCallFn = llmProxyService.createCallFn({
     maxTokens: 4096,
     model: opts.model || "",
     credentials: opts.credentials,
     advisor: SCAN_ADVISOR_CONFIG,
+    tokenUsage,
   });
 
   // Build agent roster from available agents
@@ -852,7 +870,8 @@ async function executeSubtask(
   subtask: SubtaskView,
   priorResults: SubtaskResult[],
   scoutAssessment: Record<string, unknown>,
-  messageBus?: PipelineMessageBus,
+  messageBus: PipelineMessageBus | undefined,
+  tokenUsage: StageTokenUsage,
 ): Promise<SubtaskResult> {
   const startTime = Date.now();
 
@@ -952,6 +971,7 @@ async function executeSubtask(
     maxTokens: subtaskMaxTokens,
     model: opts.model || "",
     credentials: opts.credentials,
+    tokenUsage,
   });
 
   let agentExec: Awaited<ReturnType<typeof prepareAgentExecution>> | null = null;
@@ -1140,6 +1160,7 @@ async function executeSubtask(
 async function composeResults(
   opts: ScanOrchestrationOptions,
   results: SubtaskResult[],
+  tokenUsage: StageTokenUsage,
 ): Promise<string> {
   const successfulResults = results.filter((r) => r.status === "completed" && r.output);
   const fa = opts.fileAnalysis;
@@ -1280,6 +1301,7 @@ async function composeResults(
     model: composerModel,
     credentials: opts.credentials,
     advisor: skipAdvisor ? undefined : SCAN_ADVISOR_CONFIG,
+    tokenUsage,
   });
 
   opts.onDelta?.("");
@@ -1451,6 +1473,7 @@ async function refineComposition(
   opts: ScanOrchestrationOptions,
   output: string,
   refinementPrompt: string,
+  tokenUsage: StageTokenUsage,
 ): Promise<string> {
   // Match refinement maxTokens to composition limits (not 16K)
   const refineTotalLines = opts.fileAnalysis.totalLines;
@@ -1461,6 +1484,7 @@ async function refineComposition(
     maxTokens: refineMaxTokens,
     model: opts.model || "",
     credentials: opts.credentials,
+    tokenUsage,
   });
 
   opts.onDelta?.("");
@@ -1760,11 +1784,13 @@ async function reviseSubtaskOutput(
   originalOutput: string,
   revisionPrompt: string,
   subtaskType: string,
+  tokenUsage: StageTokenUsage,
 ): Promise<string> {
   const callFn = llmProxyService.createCallFn({
     maxTokens: opts.fileAnalysis.totalLines < 5000 ? 2048 : 3072,
     model: opts.model || "",
     credentials: opts.credentials,
+    tokenUsage,
   });
 
   const prompt = [

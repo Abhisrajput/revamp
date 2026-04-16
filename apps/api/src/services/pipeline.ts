@@ -406,7 +406,26 @@ export class PipelineService {
         credentials: projectCredentials,
       });
 
-      // Finalize: store output, record agent, track usage, update progress, emit events
+      // Record SCAN spend (before finalize — same pattern as generic/chunked paths).
+      try {
+        if (scanResult.tokenUsage) {
+          await recordStageSpend({
+            pipelineRunId,
+            projectId: run.project.id,
+            stageName,
+            stageIndex: stageConfig.index,
+            model: modelName,
+            provider: resolveProviderName(modelName),
+            operation: "scan-orchestration",
+            tokens: scanResult.tokenUsage,
+            onEvent: options?.onEvent,
+          });
+        }
+      } catch {
+        // Non-fatal — token accounting must not fail a stage
+      }
+
+      // Finalize: store output, record agent, update progress, emit events
       await finalizeStageResult({
         pipelineRunId, projectId: run.project.id, stageName, stageIndex: stageConfig.index,
         result: scanResult, modelName, agentCtx, agentExec, onEvent: options?.onEvent,
