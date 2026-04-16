@@ -99,7 +99,10 @@ export async function finalizeStageResult(opts: FinalizeOptions): Promise<void> 
     );
     const estimatedOutputTokens = Math.round((result.output.length || 0) / 4);
     if (estimatedOutputTokens > 0) {
-      const cost = estimateCostCents(estimatedInputTokens, estimatedOutputTokens, modelName);
+      const cost = estimateCostCents(
+        { inputTokens: estimatedInputTokens, outputTokens: estimatedOutputTokens },
+        modelName,
+      );
       await recordPipelineSpend(pipelineRunId, cost);
       await db.insert(llmUsage).values({
         id: crypto.randomUUID(),

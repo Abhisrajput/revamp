@@ -82,17 +82,25 @@ const MODEL_COST_PER_1M: Record<string, { input: number; output: number }> = {
 };
 
 /**
- * Estimate cost in USD for a given token count.
- * Returns dollars (not cents).
+ * Compute LLM cost in integer cents using Anthropic's 4-way pricing model:
+ *   - regular input           × 1.0
+ *   - cache_creation_tokens   × 1.25
+ *   - cached_tokens (read)    × 0.1
+ *   - output tokens           × output rate
+ *
+ * Returns integer cents (matches `cost_events.cost_cents` and `llm_usage.cost`).
  */
 export function estimateCostCents(
-  inputTokens: number,
-  outputTokens: number,
+  tokens: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens?: number;
+    cacheCreationTokens?: number;
+  },
   model: string = "default",
 ): number {
   const modelLower = model.toLowerCase();
   let pricing = MODEL_COST_PER_1M.default;
-
   for (const [key, cost] of Object.entries(MODEL_COST_PER_1M)) {
     if (key !== "default" && modelLower.includes(key)) {
       pricing = cost;
@@ -100,9 +108,12 @@ export function estimateCostCents(
     }
   }
 
-  const inputCost = (inputTokens / 1_000_000) * pricing.input;
-  const outputCost = (outputTokens / 1_000_000) * pricing.output;
-  return Math.round((inputCost + outputCost) * 10000) / 10000; // 4 decimal places in USD
+  const inputUsd        = (tokens.inputTokens                / 1_000_000) * pricing.input;
+  const cacheWriteUsd   = ((tokens.cacheCreationTokens ?? 0) / 1_000_000) * pricing.input * 1.25;
+  const cacheReadUsd    = ((tokens.cachedTokens        ?? 0) / 1_000_000) * pricing.input * 0.1;
+  const outputUsd       = (tokens.outputTokens               / 1_000_000) * pricing.output;
+
+  return Math.round((inputUsd + cacheWriteUsd + cacheReadUsd + outputUsd) * 100); // USD → ¢
 }
 
 // ─── BUDGET OPERATIONS ──────────────────────────────────────────
@@ -233,7 +244,10 @@ export function withPipelineBudget(
       (req.systemPrompt.length + req.userPrompt.length) / 4,
     );
     const estimatedOutputTokens = 4000;
-    const estimatedCost = estimateCostCents(estimatedInputTokens, estimatedOutputTokens, model);
+    const estimatedCost = estimateCostCents(
+      { inputTokens: estimatedInputTokens, outputTokens: estimatedOutputTokens },
+      model,
+    );
 
     await checkPipelineBudget(pipelineRunId, estimatedCost);
 
@@ -241,7 +255,10 @@ export function withPipelineBudget(
 
     // Record actual spend
     const actualOutputTokens = Math.round(result.length / 4);
-    const actualCost = estimateCostCents(estimatedInputTokens, actualOutputTokens, model);
+    const actualCost = estimateCostCents(
+      { inputTokens: estimatedInputTokens, outputTokens: actualOutputTokens },
+      model,
+    );
     await recordPipelineSpend(pipelineRunId, actualCost);
 
     return result;

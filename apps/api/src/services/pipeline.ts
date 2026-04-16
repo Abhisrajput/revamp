@@ -678,7 +678,10 @@ export class PipelineService {
         const estimatedInputTokens = Math.round((result.output?.length || 0) / 4);
         const estimatedOutputTokens = Math.round((result.output?.length || 0) / 4);
         if (estimatedOutputTokens > 0) {
-          const cost = estimateCostCents(estimatedInputTokens, estimatedOutputTokens, modelName);
+          const cost = estimateCostCents(
+            { inputTokens: estimatedInputTokens, outputTokens: estimatedOutputTokens },
+            modelName,
+          );
           await recordPipelineSpend(pipelineRunId, cost);
           await db.insert(llmUsage).values({
             id: crypto.randomUUID(), project_id: run.project.id, pipeline_run_id: pipelineRunId,
@@ -916,7 +919,10 @@ export class PipelineService {
         || result.phases?.reduce((s, p) => s + (Number(p.data?.outputTokens) || 0), 0)
         || 0;
       if (stageInputTokens > 0 || stageOutputTokens > 0) {
-        const cost = estimateCostCents(stageInputTokens, stageOutputTokens, modelName);
+        const cost = estimateCostCents(
+          { inputTokens: stageInputTokens, outputTokens: stageOutputTokens },
+          modelName,
+        );
         await recordPipelineSpend(pipelineRunId, cost);
 
         // Enforce project-level budget (create incidents if thresholds crossed)
