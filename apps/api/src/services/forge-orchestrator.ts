@@ -38,6 +38,7 @@ import {
   type FullValidationResult,
 } from "@revamp/core-engine";
 import { llmProxyService, type ProjectCredentials, type StageTokenUsage } from "./llm-proxy.js";
+import { accumulateTokens } from "./pipeline-spend-recorder-helpers.js";
 
 // ─── TYPES ──────────────────────────────────────────────────────
 
@@ -332,6 +333,7 @@ Generate ALL ${batch.length} files with complete, working code. No stubs, no TOD
       );
 
       accumulated = response.content || accumulated;
+      accumulateTokens(stageTokenUsage, response);
 
       // Parse generated files from the response
       const filePattern = /###\s*FILE:\s*(.+?)\s*\n```(\w+)?\s*\n([\s\S]*?)```/g;
@@ -513,6 +515,7 @@ ${gapBatch.map((f, i) => `${i + 1}. **${f.path}** — ${f.description} (${f.lang
           }, (delta) => { gapAccum += delta; opts.onDelta?.(delta); }, opts.signal);
 
           gapAccum = gapResp.content || gapAccum;
+          accumulateTokens(stageTokenUsage, gapResp);
 
           const gapFilePattern = /###\s*FILE:\s*(.+?)\s*\n```(\w+)?\s*\n([\s\S]*?)```/g;
           let gapMatch;

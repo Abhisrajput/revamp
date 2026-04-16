@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveProviderName } from "@/services/pipeline-spend-recorder-helpers.js";
+import { resolveProviderName, accumulateTokens } from "@/services/pipeline-spend-recorder-helpers.js";
 
 describe("resolveProviderName", () => {
   it("identifies Bedrock cross-region IDs by prefix", () => {
@@ -28,5 +28,32 @@ describe("resolveProviderName", () => {
   it("returns unknown for unrecognized models", () => {
     expect(resolveProviderName("")).toBe("unknown");
     expect(resolveProviderName("mystery-model-v1")).toBe("unknown");
+  });
+});
+
+describe("accumulateTokens", () => {
+  it("adds all four token fields into the target accumulator", () => {
+    const target = { inputTokens: 100, outputTokens: 50, cachedTokens: 10, cacheCreationTokens: 5 };
+    accumulateTokens(target, {
+      input_tokens: 200,
+      output_tokens: 150,
+      cached_tokens: 20,
+      cache_creation_tokens: 30,
+    });
+    expect(target).toEqual({ inputTokens: 300, outputTokens: 200, cachedTokens: 30, cacheCreationTokens: 35 });
+  });
+
+  it("treats missing fields as zero", () => {
+    const target = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 };
+    accumulateTokens(target, { input_tokens: 50 });
+    expect(target).toEqual({ inputTokens: 50, outputTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 });
+  });
+
+  it("mutates the passed-in target (reference semantics)", () => {
+    const target = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 };
+    const returnValue = accumulateTokens(target, { input_tokens: 1, output_tokens: 2 });
+    expect(returnValue).toBeUndefined();
+    expect(target.inputTokens).toBe(1);
+    expect(target.outputTokens).toBe(2);
   });
 });
