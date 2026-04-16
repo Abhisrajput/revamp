@@ -45,7 +45,10 @@ export interface FinalizeOptions {
 }
 
 /**
- * Finalize a stage execution — store output, record usage, update progress.
+ * Finalize a stage execution — store output, complete the execution record,
+ * emit events, and update metrics. Spend recording has moved to pipeline-spend-recorder;
+ * callers invoke `recordStageSpend()` before calling this function.
+ *
  * Shared by SCAN, DECODE, FORGE, and generic stage handlers.
  */
 export async function finalizeStageResult(opts: FinalizeOptions): Promise<void> {
@@ -107,9 +110,9 @@ export async function finalizeStageResult(opts: FinalizeOptions): Promise<void> 
     }
   }
 
-  // 5. Emit completion event
+  // 4. Emit completion event
   emitStageCompleted({ pipelineRunId, projectId, stageName, duration: result.duration, confidenceScore: score });
 
-  // 6. Update project metrics (non-fatal)
+  // 5. Update project metrics (non-fatal)
   await updateProjectMetrics(projectId, pipelineRunId, result);
 }
