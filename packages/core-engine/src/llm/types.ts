@@ -26,6 +26,8 @@ export interface ChatResponse {
   output_tokens: number;
   stop_reason: string;
   cached_tokens?: number;
+  /** Tokens written to prompt cache this call (Anthropic: cache_creation_input_tokens). Priced at 1.25× base input. */
+  cache_creation_tokens?: number;
 }
 
 export interface StreamChunk {
@@ -34,6 +36,8 @@ export interface StreamChunk {
     input_tokens: number;
     output_tokens: number;
     cached_tokens?: number;
+    /** Tokens written to prompt cache this call (Anthropic: cache_creation_input_tokens). Priced at 1.25× base input. */
+    cache_creation_tokens?: number;
   };
 }
 

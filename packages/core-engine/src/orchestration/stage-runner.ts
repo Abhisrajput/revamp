@@ -280,6 +280,13 @@ export interface StageRunResult {
   duration: number; // ms
   phases: StageEvent[];
   aborted: boolean;
+  /** Aggregated token usage across every LLM call made by this stage (including refinements and orchestrator sub-agents). Populated by orchestrators and by runStage. */
+  tokenUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    cacheCreationTokens: number;
+  };
 }
 
 // Stages that benefit from extended thinking (complex reasoning).
