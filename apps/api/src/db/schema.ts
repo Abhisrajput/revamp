@@ -127,8 +127,6 @@ export const pipelineRuns = pgTable(
     project_id: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
     initiated_by: uuid("initiated_by").notNull().references(() => users.id),
     status: varchar("status", { length: 50 }).notNull().default("pending"), // pending, running, completed, failed, cancelled
-    current_stage: varchar("current_stage", { length: 100 }),
-    stage_progress: jsonb("stage_progress").default({}),
     error_message: text("error_message"),
     budget_cents: integer("budget_cents"), // max budget in cents (null = unlimited)
     budget_used_cents: integer("budget_used_cents").notNull().default(0), // accumulated spend
