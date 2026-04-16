@@ -92,7 +92,6 @@ export default function PipelinePage() {
           if (setApproval) setApproval(idx, 'approved');
         }
         // Refetch to sync everything
-        queryClientWS.invalidateQueries({ queryKey: ['pipeline-status', effectiveRunId] });
         queryClientWS.invalidateQueries({ queryKey: ['pipeline-status-v2', effectiveRunId] });
       }
       if (event.event === 'stage_rejected') {
@@ -102,88 +101,77 @@ export default function PipelinePage() {
         if (idx >= 0) {
           usePipelineStore.getState().setStageStatus(idx, 'failed');
         }
-        queryClientWS.invalidateQueries({ queryKey: ['pipeline-status', effectiveRunId] });
         queryClientWS.invalidateQueries({ queryKey: ['pipeline-status-v2', effectiveRunId] });
       }
       if (event.event === 'complete' || event.event === 'stage_completed') {
         // Stage completed — refetch outputs + status
-        queryClientWS.invalidateQueries({ queryKey: ['pipeline-status', effectiveRunId] });
         queryClientWS.invalidateQueries({ queryKey: ['pipeline-status-v2', effectiveRunId] });
         queryClientWS.invalidateQueries({ queryKey: ['pipeline'] });
       }
     }, [effectiveRunId, queryClientWS]),
   );
 
-  // ─── Unified sync: React Query → Zustand (single effect) ──────
-  // React Query owns the data (usePipelineStatus, useAllStageOutputs).
-  // This single effect bridges it to Zustand for components that still
-  // read from the store. As components migrate to usePipelineData,
-  // this effect shrinks and eventually disappears.
+  // ─── Unified sync: V2 stage_executions → Zustand (single effect) ──────
+  // V2 (stage_executions table) is the source of truth. This effect bridges
+  // it to Zustand for components that still read from the store.
   useEffect(() => {
-    if (!pipelineStatusData?.stage_progress) return;
-    const sp = pipelineStatusData.stage_progress;
-    const gates = pipelineStatusData.approval_gates || [];
-    const gateMap = new Map(gates.map((g: any) => [g.stage_name, g.status]));
+    if (!statusV2?.stages) return;
 
     usePipelineStore.setState((state) => {
       const stages = [...state.stages];
       let changed = false;
 
       for (let i = 0; i < stages.length; i++) {
-        const dbEntry = sp[stages[i].name] as any;
-        if (!dbEntry?.status) continue;
+        const v2Entry = statusV2.stages[stages[i].name];
+        if (!v2Entry?.latest) continue;
 
-        const dbStatus = dbEntry.status;
-        const mapped = dbStatus === 'in_progress' ? 'generating'
-          : dbStatus === 'awaiting_approval' ? 'completed'
-          : dbStatus;
-
+        const exec = v2Entry.latest;
         const updates: Record<string, any> = {};
 
-        // Status
+        // Status mapping: v2 'running' → frontend 'generating'
+        const mapped = exec.status === 'running' ? 'generating'
+          : exec.status;
         if (mapped !== stages[i].status) updates.status = mapped;
 
-        // Timer: startedAt from server
-        if (dbEntry.startedAt && dbEntry.startedAt !== stages[i].startedAt) {
-          updates.startedAt = dbEntry.startedAt;
+        // Timer: startedAt and completedAt from v2 (clean per-execution timestamps)
+        if (exec.started_at && exec.started_at !== stages[i].startedAt) {
+          updates.startedAt = exec.started_at;
         }
-        // Timer: pending clears, finished sets completedAt from DB
-        if (dbStatus === 'pending') {
-          if (stages[i].startedAt || stages[i].completedAt) {
-            updates.startedAt = null;
-            updates.completedAt = null;
-          }
-        } else if (dbStatus !== 'in_progress') {
-          // Stage is terminal — read completedAt from DB (primary source).
-          // Fall back to updatedAt for legacy data, then current time.
-          const completedTs = dbEntry.completedAt || dbEntry.updatedAt || new Date().toISOString();
-          if (stages[i].completedAt !== completedTs) {
-            updates.completedAt = completedTs;
+        if (exec.completed_at && exec.completed_at !== stages[i].completedAt) {
+          updates.completedAt = exec.completed_at;
+        }
+        if (!exec.started_at && (stages[i].startedAt || stages[i].completedAt)) {
+          updates.startedAt = null;
+          updates.completedAt = null;
+        }
+
+        // Approval status
+        if (exec.approval_status !== stages[i].approvalStatus) {
+          updates.approvalStatus = exec.approval_status;
+        }
+
+        // Pending approval timestamp (for auto-approval countdown)
+        if (exec.approval_status === 'pending' && exec.completed_at) {
+          if (stages[i].pendingApprovalSince !== exec.completed_at) {
+            updates.pendingApprovalSince = exec.completed_at;
           }
         }
 
-        // Approval from gate
-        const gateStatus = gateMap.get(stages[i].name);
-        if (gateStatus === 'approved' && stages[i].approvalStatus !== 'approved') {
-          updates.approvalStatus = 'approved';
-          updates.status = 'approved';
-        } else if (dbStatus === 'awaiting_approval') {
-          if (stages[i].approvalStatus !== 'pending') {
-            updates.approvalStatus = 'pending';
-          }
-          // Use the approval gate's created_at timestamp (when the gate was created)
-          // so the auto-approval timer doesn't reset on page refresh.
-          const gate = gates.find((g: any) => g.stage_name === stages[i].name && g.status === 'pending');
-          const gateCreatedAt = (gate as any)?.created_at;
-          const approvalTimestamp = gateCreatedAt || dbEntry.updatedAt || stages[i].pendingApprovalSince;
-          if (approvalTimestamp && stages[i].pendingApprovalSince !== approvalTimestamp) {
-            updates.pendingApprovalSince = approvalTimestamp;
-          }
+        // Validation from v2
+        if (exec.validation && !stages[i].validation) {
+          const v = exec.validation as any;
+          updates.validation = {
+            passed: v.passed ?? false,
+            score: v.confidenceScore ?? 0,
+            criteria: v.criteria ?? [],
+            summary: v.summary ?? '',
+            validatedAt: exec.completed_at ?? new Date().toISOString(),
+          };
         }
 
-        // Confidence score
-        if (dbEntry.confidenceScore !== undefined) {
-          updates.confidenceScore = dbEntry.confidenceScore;
+        // Confidence score for display
+        if (exec.validation && typeof (exec.validation as any).confidenceScore === 'number') {
+          updates.confidenceScore = (exec.validation as any).confidenceScore;
         }
 
         if (Object.keys(updates).length > 0) {
@@ -192,29 +180,12 @@ export default function PipelinePage() {
         }
       }
 
-      // Subtasks — only update if API returned data (don't wipe existing on empty response)
-      const currentStage = pipelineStatusData.current_stage;
-      const subtaskRows = pipelineStatusData.current_stage_subtasks || [];
-      const overallProgress = pipelineStatusData.current_stage_progress;
-      if (currentStage && subtaskRows.length > 0) {
-        const idx = stages.findIndex(s => s.name === currentStage);
-        if (idx >= 0) {
-          stages[idx] = {
-            ...stages[idx],
-            subtasks: (subtaskRows as any[]).map((r: any) => ({
-              id: r.id, type: r.type, label: r.title, title: r.title,
-              status: ['running', 'completed', 'failed', 'pending'].includes(r.status) ? r.status : 'pending',
-              agentName: r.agent_name,
-            })),
-            subtaskProgress: overallProgress || stages[idx].subtaskProgress,
-          };
-          changed = true;
-        }
-      }
-
-      return changed ? { stages, isGenerating: stages.some(s => s.status === 'generating' || s.status === 'validating') } : state;
+      return changed ? {
+        stages,
+        isGenerating: stages.some(s => s.status === 'generating' || s.status === 'validating'),
+      } : state;
     });
-  }, [pipelineStatusData]);
+  }, [statusV2]);
 
   // ─── Pipeline Store (granular selectors to avoid re-renders from streaming) ──
   const stages = usePipelineStore((s) => s.stages);
