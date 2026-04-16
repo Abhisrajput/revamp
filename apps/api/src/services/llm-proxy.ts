@@ -80,6 +80,15 @@ export interface CompletionResponse {
   output_tokens: number;
   stop_reason: string;
   cached_tokens?: number; // tokens served from cache
+  /** Tokens written to prompt cache this call (1.25× input pricing). */
+  cache_creation_tokens?: number;
+}
+
+export interface StageTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  cacheCreationTokens: number;
 }
 
 export interface LLMProviderConfig {
@@ -229,6 +238,7 @@ export class LLMProxyService {
             output_tokens: response.output_tokens,
             stop_reason: response.stop_reason,
             cached_tokens: response.cached_tokens,
+            cache_creation_tokens: response.cache_creation_tokens,
           };
         } catch (err) {
           throw this.classifyError(err);
@@ -286,6 +296,7 @@ export class LLMProxyService {
         output_tokens: response.output_tokens,
         stop_reason: response.stop_reason,
         cached_tokens: response.cached_tokens,
+        cache_creation_tokens: response.cache_creation_tokens,
       };
     } catch (err) {
       throw this.classifyError(err);
@@ -299,8 +310,20 @@ export class LLMProxyService {
    * The returned function has a `.tokenUsage` property that accumulates
    * input/output tokens across all calls made through this function.
    */
-  createCallFn(options?: { model?: string; maxTokens?: number; credentials?: ProjectCredentials; advisor?: { enabled: boolean; model?: string; max_uses?: number } }): LLMCallFn & { tokenUsage: { inputTokens: number; outputTokens: number } } {
-    const tokenUsage = { inputTokens: 0, outputTokens: 0 };
+  createCallFn(options?: {
+    model?: string;
+    maxTokens?: number;
+    credentials?: ProjectCredentials;
+    advisor?: { enabled: boolean; model?: string; max_uses?: number };
+    /** Optional: share one accumulator across multiple callFns in the same stage. If omitted, a fresh zero-initialized accumulator is created. */
+    tokenUsage?: StageTokenUsage;
+  }): LLMCallFn & { tokenUsage: StageTokenUsage } {
+    const tokenUsage: StageTokenUsage = options?.tokenUsage ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      cacheCreationTokens: 0,
+    };
     const fn = async (req: LLMCallRequest): Promise<string> => {
       const messages: ChatMessage[] = [];
 
@@ -354,8 +377,10 @@ export class LLMProxyService {
           req.onDelta,
           req.signal,
         );
-        tokenUsage.inputTokens += response.input_tokens || 0;
-        tokenUsage.outputTokens += response.output_tokens || 0;
+        tokenUsage.inputTokens         += response.input_tokens          || 0;
+        tokenUsage.outputTokens        += response.output_tokens         || 0;
+        tokenUsage.cachedTokens        += response.cached_tokens         || 0;
+        tokenUsage.cacheCreationTokens += response.cache_creation_tokens || 0;
         return response.content;
       }
 
@@ -371,8 +396,10 @@ export class LLMProxyService {
         advisor: options?.advisor,
       });
 
-      tokenUsage.inputTokens += response.input_tokens || 0;
-      tokenUsage.outputTokens += response.output_tokens || 0;
+      tokenUsage.inputTokens         += response.input_tokens          || 0;
+      tokenUsage.outputTokens        += response.output_tokens         || 0;
+      tokenUsage.cachedTokens        += response.cached_tokens         || 0;
+      tokenUsage.cacheCreationTokens += response.cache_creation_tokens || 0;
       return response.content;
     };
     fn.tokenUsage = tokenUsage;
