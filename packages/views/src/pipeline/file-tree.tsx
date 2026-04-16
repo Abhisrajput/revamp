@@ -15,7 +15,7 @@ export type FileAction = 'edit' | 'delete' | 'rename';
 
 export interface FileNode {
   name: string;
-  type: 'file' | 'dir';
+  type: 'file' | 'directory';
   path?: string;
   language?: string;
   size?: number;
@@ -126,7 +126,7 @@ function filterTree(nodes: FileNode[], query: string): FileNode[] {
 
   return nodes
     .map((node) => {
-      if (node.type === 'dir') {
+      if (node.type === 'directory') {
         const filteredChildren = filterTree(node.children || [], query);
         if (filteredChildren.length > 0) {
           return { ...node, children: filteredChildren };
@@ -155,7 +155,7 @@ function TreeNode({
 }: TreeNodeProps) {
   const [showActions, setShowActions] = useState(false);
   const fullPath = parentPath ? `${parentPath}/${node.name}` : node.name;
-  const isDir = node.type === 'dir';
+  const isDir = node.type === 'directory';
   const isExpanded = expandedPaths.has(fullPath);
   const isSelected = selectedPath === fullPath;
   const Icon = isDir
@@ -279,7 +279,7 @@ function TreeNode({
 
 function sortNodes(nodes: FileNode[]): FileNode[] {
   return [...nodes].sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
 }

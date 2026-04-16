@@ -2,7 +2,7 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  transpilePackages: ['@revamp/shared'],
+  transpilePackages: ['@revamp/shared', '@revamp/core', '@revamp/views'],
   experimental: {
     optimizePackageImports: ['lucide-react'],
   },

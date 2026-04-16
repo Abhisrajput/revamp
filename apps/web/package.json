@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "rm -rf .next/dev && next dev -p 3001",
-    "dev:hot": "next dev -p 3001",
+    "dev": "rm -rf .next/dev && WATCHPACK_POLLING=true next dev -p 3001",
+    "dev:hot": "WATCHPACK_POLLING=true next dev -p 3001",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
@@ -17,6 +17,7 @@
     "@revamp/core": "workspace:*",
     "@revamp/shared-types": "workspace:*",
     "@revamp/ui": "workspace:*",
+    "@revamp/views": "workspace:*",
     "@tailwindcss/postcss": "^4.0.0",
     "@tanstack/react-query": "^5.28.0",
     "axios": "^1.6.2",

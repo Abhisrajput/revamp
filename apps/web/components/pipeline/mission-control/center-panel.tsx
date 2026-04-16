@@ -78,6 +78,8 @@ interface CenterPanelProps {
   isExecuting: boolean;
   /** Current execution phase */
   currentPhase: string | null;
+  /** Raw DB stage progress — bypasses Zustand for timer data */
+  dbStageProgress?: { startedAt?: string; completedAt?: string; updatedAt?: string; status?: string };
 
   // Inline prompt editor
   promptEditorOpen: boolean;
@@ -117,6 +119,7 @@ export const CenterPanel = memo(function CenterPanel({
   validationPrompt,
   onSaveValidationPrompt,
   onResetValidationPrompt,
+  dbStageProgress,
   className,
 }: CenterPanelProps) {
   const [validationPromptOpen, setValidationPromptOpen] = useState(false);
@@ -152,10 +155,21 @@ export const CenterPanel = memo(function CenterPanel({
             {/* Detect "running in background" — stage is generating but local SSE is not active
                 (happens after page refresh when execution continues server-side) */}
             {!isExecuting && (stage.status === 'generating' || stage.status === 'validating') && (
-              <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 animate-pulse">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-                Running on server
-              </span>
+              <>
+                <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 animate-pulse">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                  Running on server
+                </span>
+                {onStop && (
+                  <button
+                    onClick={onStop}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-red-600 hover:bg-red-700 text-white transition-colors"
+                  >
+                    <Square className="w-3 h-3" />
+                    Stop
+                  </button>
+                )}
+              </>
             )}
 
             {/* Inline action buttons */}
@@ -203,8 +217,9 @@ export const CenterPanel = memo(function CenterPanel({
             )}
 
             <ElapsedTimer
-              startedAt={stage.startedAt}
-              completedAt={stage.completedAt}
+              startedAt={dbStageProgress?.startedAt || stage.startedAt}
+              completedAt={dbStageProgress?.completedAt || stage.completedAt}
+              status={stage.status}
             />
           </div>
         </div>

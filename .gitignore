@@ -159,3 +159,4 @@ services/bree-engine/data/
 # CI/CD
 .circleci/
 .github/workflows/*.local.yml
+.superpowers/

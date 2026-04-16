@@ -12,7 +12,7 @@ import {
 import { Button } from '@revamp/ui/components/button';
 import { Card } from '@revamp/ui/components/card';
 import { Badge } from '@revamp/ui/components/badge';
-import { ConfirmDeleteDialog } from '@/components/ui/confirm-delete-dialog';
+import { ConfirmDeleteDialog } from '@revamp/ui/components/confirm-delete-dialog';
 import { apiClient } from '@/lib/api-client';
 import { STAGE_DISPLAY_LABELS } from '@revamp/shared-types';
 

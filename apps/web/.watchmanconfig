@@ -1,0 +1,6 @@
+node_modules
+.next
+dist
+packages/views/src
+packages/core/src
+packages/ui/src

@@ -1,4 +1,11 @@
-import type { FileNode } from '@/components/pipeline/file-tree';
+export interface FileNode {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  children?: FileNode[];
+  language?: string;
+  size?: number;
+}
 
 const LANGUAGE_MAP: Record<string, string> = {
   ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
@@ -45,9 +52,9 @@ export function buildFileTree(
           ...(defaultLanguage ? { language: defaultLanguage } : {}),
         });
       } else {
-        let dir = current.find((n) => n.name === part && n.type === 'dir');
+        let dir = current.find((n) => n.name === part && n.type === 'directory');
         if (!dir) {
-          dir = { name: part, type: 'dir', children: [] };
+          dir = { name: part, type: 'directory', path: parts.slice(0, i + 1).join('/'), children: [] };
           current.push(dir);
         }
         current = dir.children!;

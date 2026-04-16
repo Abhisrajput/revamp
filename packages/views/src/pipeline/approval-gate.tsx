@@ -127,7 +127,10 @@ export const ApprovalGate = memo(function ApprovalGate({
   const [showPromptEditor, setShowPromptEditor] = useState(false);
   const [promptDraft, setPromptDraft] = useState('');
 
-  const canAct = userRole === requiredRole || userRole === 'admin' || userRole === 'developer';
+  // Role hierarchy: admin > architect > developer > sme
+  // Higher roles can approve anything lower roles can.
+  const roleRank: Record<string, number> = { admin: 4, architect: 3, developer: 2, sme: 1 };
+  const canAct = (roleRank[userRole] ?? 0) >= (roleRank[requiredRole] ?? 0);
   const cfg = statusConfig[status] || statusConfig.pending;
   const StatusIcon = cfg.icon;
 
