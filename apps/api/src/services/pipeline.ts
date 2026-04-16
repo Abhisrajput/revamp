@@ -88,6 +88,7 @@ import {
   getLatestExecution,
   completeExecution as completeStageExecution,
   failExecution as failStageExecution,
+  setApprovalStatus as setExecApprovalStatus,
 } from "./stage-execution-repository.js";
 
 // Stage configuration, utilities, and isStageDisabled now in pipeline-config.ts
@@ -1102,6 +1103,10 @@ export class PipelineService {
             recommendations: result.validation.recommendations,
           } : undefined,
         }).catch(() => {});
+        // If stage requires approval, set execution to pending approval
+        if (currentConfig.requiresApproval) {
+          await setExecApprovalStatus(pipelineRunId, stageName, "pending").catch(() => {});
+        }
       }
 
       if (!nextStage) {
