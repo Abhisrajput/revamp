@@ -212,3 +212,107 @@ export async function getLatestExecution(
   });
   return row ?? null;
 }
+
+// ─── Status Query (Phase 2) ─────────────────────────────────────
+
+export interface StageExecutionSummary {
+  id: string;
+  version: number;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  output_length: number;
+  approval_status: string;
+  approved_at: string | null;
+  validation: Record<string, unknown> | null;
+  model: string | null;
+  token_usage: Record<string, unknown> | null;
+  input_refs: Record<string, string>;
+  error_message: string | null;
+}
+
+export interface StageStatusEntry {
+  latest: StageExecutionSummary | null;
+  versions: number[];
+  stale: boolean;
+  stale_reason: string | null;
+}
+
+/**
+ * Build the full pipeline status from stage_executions.
+ * Returns one entry per stage with the latest execution and staleness info.
+ */
+export async function getStatusForRun(
+  pipelineRunId: string,
+  stageOrder: string[],
+  conn: DbConnection = db,
+): Promise<Record<string, StageStatusEntry>> {
+  // Fetch all executions for this run
+  const allExecs = await conn.query.stageExecutions.findMany({
+    where: eq(stageExecutions.pipeline_run_id, pipelineRunId),
+    orderBy: [desc(stageExecutions.version)],
+  });
+
+  // Group by stage
+  const byStage = new Map<string, typeof allExecs>();
+  for (const exec of allExecs) {
+    const list = byStage.get(exec.stage_name) || [];
+    list.push(exec);
+    byStage.set(exec.stage_name, list);
+  }
+
+  // Build latest approved map for staleness detection
+  const latestApprovedMap = new Map<string, string>();
+  for (const [stageName, execs] of byStage) {
+    const approved = execs.find(e => e.approval_status === 'approved');
+    if (approved) latestApprovedMap.set(stageName, approved.id);
+  }
+
+  const result: Record<string, StageStatusEntry> = {};
+
+  for (const stageName of stageOrder) {
+    const execs = byStage.get(stageName) || [];
+    const latest = execs[0] || null; // Already sorted desc by version
+
+    // Staleness: check if any input_ref points to an older execution
+    // than the current latest approved for that stage
+    let stale = false;
+    let staleReason: string | null = null;
+    if (latest && latest.input_refs && typeof latest.input_refs === 'object') {
+      const refs = latest.input_refs as Record<string, string>;
+      for (const [refStage, refExecId] of Object.entries(refs)) {
+        const currentApproved = latestApprovedMap.get(refStage);
+        if (currentApproved && currentApproved !== refExecId) {
+          stale = true;
+          const currentVersion = byStage.get(refStage)?.find(e => e.id === currentApproved)?.version;
+          const refVersion = byStage.get(refStage)?.find(e => e.id === refExecId)?.version;
+          staleReason = `Built from ${refStage} v${refVersion ?? '?'}, but v${currentVersion ?? '?'} is now approved`;
+          break;
+        }
+      }
+    }
+
+    result[stageName] = {
+      latest: latest ? {
+        id: latest.id,
+        version: latest.version,
+        status: latest.status,
+        started_at: latest.started_at?.toISOString() ?? null,
+        completed_at: latest.completed_at?.toISOString() ?? null,
+        output_length: latest.output_length ?? 0,
+        approval_status: latest.approval_status,
+        approved_at: latest.approved_at?.toISOString() ?? null,
+        validation: latest.validation as Record<string, unknown> | null,
+        model: latest.model,
+        token_usage: latest.token_usage as Record<string, unknown> | null,
+        input_refs: (latest.input_refs as Record<string, string>) ?? {},
+        error_message: latest.error_message,
+      } : null,
+      versions: execs.map(e => e.version),
+      stale,
+      stale_reason: staleReason,
+    };
+  }
+
+  return result;
+}
