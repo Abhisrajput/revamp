@@ -141,15 +141,18 @@ export default function PipelinePage() {
         if (dbEntry.startedAt && dbEntry.startedAt !== stages[i].startedAt) {
           updates.startedAt = dbEntry.startedAt;
         }
-        // Timer: pending clears, finished sets completedAt
+        // Timer: pending clears, finished sets completedAt from DB
         if (dbStatus === 'pending') {
           if (stages[i].startedAt || stages[i].completedAt) {
             updates.startedAt = null;
             updates.completedAt = null;
           }
-        } else if (dbStatus !== 'in_progress' && dbEntry.updatedAt) {
-          if (stages[i].completedAt !== dbEntry.updatedAt) {
-            updates.completedAt = dbEntry.updatedAt;
+        } else if (dbStatus !== 'in_progress') {
+          // Stage is terminal — read completedAt from DB (primary source).
+          // Fall back to updatedAt for legacy data, then current time.
+          const completedTs = dbEntry.completedAt || dbEntry.updatedAt || new Date().toISOString();
+          if (stages[i].completedAt !== completedTs) {
+            updates.completedAt = completedTs;
           }
         }
 
