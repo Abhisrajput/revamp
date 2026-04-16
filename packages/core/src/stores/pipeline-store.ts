@@ -81,6 +81,9 @@ function loadPipelineState(): {
     // the execution is gone. Map them to 'completed' (the sync effect will
     // correct to the DB value on the next poll). This prevents the ApprovalGate
     // from unmounting/remounting which resets the countdown timer.
+    // completedAt is NOT fabricated here — the DB owns it. The ElapsedTimer
+    // uses the status prop as a fallback stop signal until the sync effect
+    // delivers completedAt from the DB on the first poll.
     for (const stage of parsed.stages) {
       if (stage.status === 'generating' || stage.status === 'validating') {
         stage.status = stage.output ? 'completed' : 'pending';
