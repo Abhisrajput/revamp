@@ -136,6 +136,12 @@ async function runCleanup(log: {
       results.push(`reaped ${reaped} orphaned stage_runs`);
     }
 
+    // 2c. Prune old stage execution versions (keep latest 3 per stage)
+    const pruned = await cleanupOldExecutions();
+    if (pruned > 0) {
+      results.push(`pruned ${pruned} old stage execution(s)`);
+    }
+
     // 3. Check .next cache size
     const cacheWarning = await checkCacheSize(log);
     if (cacheWarning) {
@@ -315,7 +321,6 @@ async function cleanStaleDbRecords(log: {
 //   - the elapsed timer (via the /status backfill from stage_runs.started_at)
 //   - the "is this stage running?" UI signal
 // This reaper marks any row stuck >STAGE_RUN_ORPHAN_AGE_MINUTES as aborted
-// AND clears the corresponding stage_progress JSONB entry back to 'pending'
 // so the user gets a clean slate to re-run.
 
 async function reapOrphanedStageRuns(log: {
@@ -369,33 +374,6 @@ async function reapOrphanedStageRuns(log: {
              error_message = COALESCE(error_message, 'Auto-reaped: orphaned running row (no heartbeat for ${sql.raw(String(STAGE_RUN_HEARTBEAT_MINUTES))}+ minutes)')
        WHERE id = ANY(${sql.raw(`ARRAY[${orphanIds.map((id) => `'${id}'`).join(",")}]::uuid[]`)})
     `);
-
-    // Reset the matching stage_progress[stage] entries to 'pending' so the UI
-    // doesn't keep showing the stage as live. Use jsonb_set per (run, stage)
-    // pair — there's typically only a handful so the loop is fine.
-    const seen = new Set<string>();
-    for (const o of orphans) {
-      const key = `${o.pipeline_run_id}::${o.stage_name}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      try {
-        await db.execute(sql`
-          UPDATE pipeline_runs
-             SET stage_progress = jsonb_set(
-                   stage_progress,
-                   ARRAY[${o.stage_name}]::text[],
-                   '{"status":"pending","progress":0}'::jsonb
-                 ),
-                 updated_at = NOW()
-           WHERE id = ${o.pipeline_run_id}
-             AND stage_progress->${o.stage_name}->>'status' = 'in_progress'
-        `);
-      } catch (err) {
-        log.error(
-          `Failed to reset stage_progress for ${o.pipeline_run_id}/${o.stage_name}: ${err instanceof Error ? err.message : err}`,
-        );
-      }
-    }
 
     log.info(
       `Reaped ${orphans.length} orphaned stage_runs (older than ${STAGE_RUN_ORPHAN_AGE_MINUTES}m)`,
@@ -482,4 +460,30 @@ function cleanTempFiles(log: {
   }
 
   return cleaned;
+}
+
+// ─── STAGE EXECUTION RETENTION ───────────────────────────
+//
+// Keep the latest 3 executions per (pipeline_run_id, stage_name).
+// Older versions are pruned to prevent unbounded growth from repeated
+// re-runs. Runs during the regular cleanup interval.
+
+async function cleanupOldExecutions(): Promise<number> {
+  try {
+    const result = await db.execute(sql`
+      WITH ranked AS (
+        SELECT id, pipeline_run_id, stage_name, version,
+               ROW_NUMBER() OVER (PARTITION BY pipeline_run_id, stage_name ORDER BY version DESC) as rn
+        FROM stage_executions
+      )
+      DELETE FROM stage_executions
+      WHERE id IN (SELECT id FROM ranked WHERE rn > 3)
+      RETURNING id
+    `);
+    const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
+    return rows.length;
+  } catch (err) {
+    console.warn('[Cleanup] Execution retention failed:', err instanceof Error ? err.message : err);
+    return 0;
+  }
 }
