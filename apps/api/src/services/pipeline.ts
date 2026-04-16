@@ -15,7 +15,7 @@
  */
 
 import { db } from "@/db/index.js";
-import { pipelineRuns, stageArtifacts, llmUsage, projects } from "@/db/schema.js";
+import { pipelineRuns, stageArtifacts, projects } from "@/db/schema.js";
 import { NotFoundError, ValidationError } from "@/errors.js";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { PipelineStageName } from "@revamp/shared-types/pipeline";
@@ -65,14 +65,6 @@ import {
 import { orchestrateScanStage } from "./scan-orchestrator.js";
 import { orchestrateForgeStage } from "./forge-orchestrator.js";
 import { orchestrateDecodeStage, loadScanOutput } from "./decode-orchestrator.js";
-import {
-  checkPipelineBudget,
-  recordPipelineSpend,
-  estimateCostCents,
-  PipelineBudgetExceededError,
-  ProjectBudgetExceededError,
-  enforceProjectBudget,
-} from "./pipeline-budget.js";
 import {
   pipelineEventBus,
   emitStageCompleted,
@@ -675,25 +667,25 @@ export class PipelineService {
         await storeStageOutput(pipelineRunId, stageName, result);
       }
 
-      // Record token usage (estimated from content sizes)
+      // Record chunked-stage spend from llmCallFn.tokenUsage (same closure runChunkedStage uses internally).
       try {
-        const estimatedInputTokens = Math.round((result.output?.length || 0) / 4);
-        const estimatedOutputTokens = Math.round((result.output?.length || 0) / 4);
-        if (estimatedOutputTokens > 0) {
-          const cost = estimateCostCents(
-            { inputTokens: estimatedInputTokens, outputTokens: estimatedOutputTokens },
-            modelName,
-          );
-          await recordPipelineSpend(pipelineRunId, cost);
-          await db.insert(llmUsage).values({
-            id: crypto.randomUUID(), project_id: run.project.id, pipeline_run_id: pipelineRunId,
-            model: modelName || "unknown", input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens, cost: Math.round(cost),
-          });
-          options?.onEvent?.({ phase: 'usage' as any, stageName, stageIndex: stageConfig.index, timestamp: new Date().toISOString(),
-            data: { input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens, cost },
+        const proxyTokens = (llmCallFn as any).tokenUsage as import("./llm-proxy.js").StageTokenUsage | undefined;
+        if (proxyTokens) {
+          await recordStageSpend({
+            pipelineRunId,
+            projectId: run.project.id,
+            stageName,
+            stageIndex: stageConfig.index,
+            model: modelName,
+            provider: resolveProviderName(modelName),
+            operation: "chunked",
+            tokens: proxyTokens,
+            onEvent: options?.onEvent,
           });
         }
-      } catch { /* non-fatal */ }
+      } catch {
+        // Non-fatal — token accounting must not fail a stage
+      }
 
       // Update stage progress via stage_executions
       if (result.output) {
