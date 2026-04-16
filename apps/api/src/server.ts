@@ -365,36 +365,27 @@ async function bootstrap() {
     console.log(`Server listening on http://${HOST}:${PORT}`);
     console.log(`API docs available at http://${HOST}:${PORT}/docs`);
 
-    // ─── Startup recovery: reset orphaned in_progress stages ──────
-    // When the server restarts (crash, deploy, SSO refresh), any stages
-    // that were mid-execution get stuck in 'in_progress' forever.
-    // Detect and reset them so users don't see stuck timers.
+    // ─── Startup recovery: reset orphaned running stage_executions ──
+    // When the server restarts (crash, deploy, SSO refresh), any stage
+    // executions that were mid-run get stuck in 'running' forever.
+    // Detect and mark them failed so users don't see stuck timers.
     try {
       const { db } = await import("@/db/index.js");
       const { sql } = await import("drizzle-orm");
       const result = await db.execute(sql`
-        UPDATE pipeline_runs
-        SET stage_progress = (
-          SELECT jsonb_object_agg(
-            key,
-            CASE
-              WHEN value->>'status' = 'in_progress'
-              THEN jsonb_set(value, '{status}', '"failed"')
-              ELSE value
-            END
-          )
-          FROM jsonb_each(stage_progress)
-        )
+        UPDATE stage_executions
+        SET status = 'failed',
+            completed_at = NOW(),
+            error_message = 'Auto-recovered: stuck running after server restart'
         WHERE status = 'running'
-          AND updated_at < NOW() - INTERVAL '5 minutes'
-        RETURNING id
+          AND started_at < NOW() - INTERVAL '30 minutes'
+        RETURNING id, stage_name
       `);
       const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
       if (rows.length > 0) {
-        console.log(`[Startup] Recovered ${rows.length} pipeline run(s) with stuck in_progress stages`);
+        console.log(`[Startup] Recovered ${rows.length} stuck stage execution(s)`);
       }
     } catch (recoveryErr) {
-      // Non-fatal — don't block server start
       console.warn('[Startup] Stage recovery failed:', recoveryErr instanceof Error ? recoveryErr.message : recoveryErr);
     }
   } catch (error) {
