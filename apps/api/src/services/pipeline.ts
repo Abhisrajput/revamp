@@ -908,7 +908,7 @@ export class PipelineService {
     // Primary source: llmCallFn.tokenUsage (accumulated from actual LLM responses).
     // Fallback: phase event data (may be empty for stages that don't emit token phases).
     try {
-      const proxyTokens = (llmCallFn as any).tokenUsage as { inputTokens: number; outputTokens: number } | undefined;
+      const proxyTokens = (llmCallFn as any).tokenUsage as import("./llm-proxy.js").StageTokenUsage | undefined;
       const stageInputTokens = proxyTokens?.inputTokens
         || result.phases?.reduce((s, p) => s + (Number(p.data?.inputTokens) || 0), 0)
         || 0;

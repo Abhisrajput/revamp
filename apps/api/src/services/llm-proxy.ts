@@ -305,10 +305,11 @@ export class LLMProxyService {
 
   /**
    * Create an LLMCallFn compatible with core-engine stage runner.
-   * This is the main integration point.
    *
-   * The returned function has a `.tokenUsage` property that accumulates
-   * input/output tokens across all calls made through this function.
+   * The returned function has a `.tokenUsage` property (`StageTokenUsage`) that
+   * accumulates four metrics across all calls: regular input, output, cache reads,
+   * and cache writes. Pass `options.tokenUsage` to share one accumulator across
+   * multiple call functions (used by orchestrators to sum usage across sub-agents).
    */
   createCallFn(options?: {
     model?: string;
