@@ -12,7 +12,7 @@ import { eq, and } from "drizzle-orm";
 import { PipelineStageName } from "@revamp/shared-types/pipeline";
 import { getStageOrder } from "@revamp/core-engine";
 import { getPipelineRun, getNextStage } from "./pipeline-config.js";
-import { updateStageProgress, loadPriorStageOutputs } from "./pipeline-repository.js";
+import { loadPriorStageOutputs } from "./pipeline-repository.js";
 import { setApprovalStatus } from "./stage-execution-repository.js";
 import { llmProxyService } from "./llm-proxy.js";
 import crypto from "crypto";
@@ -34,8 +34,6 @@ export async function advanceStage(pipelineRunId: string): Promise<void> {
       }).where(eq(pipelineRuns.id, pipelineRunId));
       return;
     }
-    await updateStageProgress(pipelineRunId, currentStage, "approved", 100, { conn: tx });
-    await updateStageProgress(pipelineRunId, nextStage, "in_progress", 0, { conn: tx });
     await tx.update(pipelineRuns).set({
       current_stage: nextStage, updated_at: new Date(),
     }).where(eq(pipelineRuns.id, pipelineRunId));
@@ -103,8 +101,6 @@ export async function approveGate(
       eq(approvalGates.stage_name, stageName),
     ));
 
-    await updateStageProgress(pipelineRunId, stageName, "approved", 100, { conn: tx });
-
     // Dual-write: approve the stage execution
     await setApprovalStatus(pipelineRunId, stageName, "approved", approvedBy, comment, tx);
 
@@ -133,7 +129,6 @@ export async function rejectGate(
       eq(approvalGates.pipeline_run_id, pipelineRunId),
       eq(approvalGates.stage_name, stageName),
     ));
-    await updateStageProgress(pipelineRunId, stageName, "rejected", 0, { conn: tx });
 
     // Dual-write: reject the stage execution
     await setApprovalStatus(pipelineRunId, stageName, "rejected", rejectedBy, reason, tx);

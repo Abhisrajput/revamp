@@ -18,7 +18,6 @@ import type { AgentStageContext } from "./agent-pipeline.js";
 import type { StageConfig } from "./pipeline-config.js";
 import type { ProjectCredentials } from "./llm-proxy.js";
 import {
-  updateStageProgress,
   loadPriorStageOutputs,
   loadUserFeedback,
 } from "./pipeline-repository.js";
@@ -161,7 +160,6 @@ export async function prepareStageExecution(
       timestamp: new Date().toISOString(),
       data: { skipped: true, reason: 'Stage disabled in project configuration' },
     });
-    await updateStageProgress(pipelineRunId, stageName, "skipped", 100);
     return null; // Caller handles the skipped result
   }
 
@@ -235,7 +233,6 @@ export async function prepareStageExecution(
   }
 
   const feedback = await loadUserFeedback(pipelineRunId, stageConfig.index);
-  await updateStageProgress(pipelineRunId, stageName, "in_progress", 0);
 
   // ─── 7. Agent matching ────────────────────────────────────────
   let agentCtx: AgentStageContext | null = null;
