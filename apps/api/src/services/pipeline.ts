@@ -88,6 +88,7 @@ import {
   setApprovalStatus as setExecApprovalStatus,
 } from "./stage-execution-repository.js";
 import { recordStageSpend } from "./pipeline-spend-recorder.js";
+import { resolveProviderName } from "./pipeline-spend-recorder-helpers.js";
 
 // Stage configuration, utilities, and isStageDisabled now in pipeline-config.ts
 export type { StageConfig, ProjectStageConfig } from "./pipeline-config.js";
@@ -909,10 +910,9 @@ export class PipelineService {
     }
 
     // Record pipeline spend — single recording path (see pipeline-spend-recorder.ts).
-    {
+    try {
       const proxyTokens = (llmCallFn as any).tokenUsage as import("./llm-proxy.js").StageTokenUsage | undefined;
       if (proxyTokens) {
-        const { resolveProviderName } = await import("./pipeline-spend-recorder-helpers.js");
         await recordStageSpend({
           pipelineRunId,
           projectId: run.project.id,
@@ -925,6 +925,8 @@ export class PipelineService {
           onEvent: options?.onEvent,
         });
       }
+    } catch {
+      // Non-fatal: spend recording must never break stage completion
     }
 
     // Record agent completion and lifecycle hooks (if an agent was assigned)
