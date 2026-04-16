@@ -8,7 +8,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getApiClient } from '../api/types';
 import { pipelineKeys } from './pipeline-keys';
-import type { PipelineStatus, ValidationResult } from '../types/pipeline';
+import type { PipelineStatus, PipelineStatusV2, ValidationResult } from '../types/pipeline';
 
 // ─── Hooks ──────────────────────────────────────────────────────
 
@@ -110,6 +110,43 @@ export function useStageValidation(runId: string | null, stageName: string | nul
     },
     enabled: !!runId && !!stageName,
     staleTime: 60_000,
+    retry: 1,
+  });
+}
+
+// ─── V2 Hooks (stage_executions based) ──────────────────────────
+
+export function usePipelineStatusV2(runId: string | null) {
+  const api = getApiClient();
+  return useQuery<PipelineStatusV2 | null>({
+    queryKey: ['pipeline-status-v2', runId || ''],
+    queryFn: async () => {
+      if (!runId) return null;
+      const res = await api.get(`/pipeline/${runId}/status/v2`);
+      return res.data;
+    },
+    enabled: !!runId,
+    staleTime: 5_000,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      if (status === 'running' || status === 'pending') return 5_000;
+      if (status === 'completed' || status === 'failed') return 30_000;
+      return 10_000;
+    },
+  });
+}
+
+export function useStageExecutionOutput(executionId: string | null) {
+  const api = getApiClient();
+  return useQuery<string | null>({
+    queryKey: ['stage-execution-output', executionId || ''],
+    queryFn: async () => {
+      if (!executionId) return null;
+      const res = await api.get(`/pipeline/execution/${executionId}/output`);
+      return res.data?.output ?? null;
+    },
+    enabled: !!executionId,
+    staleTime: 300_000, // Output doesn't change once written
     retry: 1,
   });
 }

@@ -27,7 +27,9 @@ export { pipelineKeys, projectKeys, agentKeys } from './hooks/pipeline-keys';
 export {
   useLatestPipelineRun,
   usePipelineStatus,
+  usePipelineStatusV2,
   useStageOutput,
+  useStageExecutionOutput,
   useAllStageOutputs,
   useStageValidation,
   useStageStatus,
@@ -77,6 +79,9 @@ export type { MarkdownSection } from './utils/markdown-sections';
 // Pipeline API Types
 export type {
   PipelineStatus,
+  PipelineStatusV2,
+  StageStatusV2,
+  StageExecutionEntry,
   StageProgressEntry,
   ApprovalGate,
   SubtaskEntry,

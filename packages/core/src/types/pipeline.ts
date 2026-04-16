@@ -62,6 +62,39 @@ export interface PipelineStatus {
   approval_gates?: ApprovalGate[];
 }
 
+/** Stage execution summary from GET /pipeline/:id/status/v2 */
+export interface StageExecutionEntry {
+  id: string;
+  version: number;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  output_length: number;
+  approval_status: string;
+  approved_at: string | null;
+  validation: { passed?: boolean; confidenceScore?: number; criteria?: unknown[]; summary?: string } | null;
+  model: string | null;
+  token_usage: { input?: number; output?: number; cost?: number } | null;
+  input_refs: Record<string, string>;
+  error_message: string | null;
+}
+
+/** Per-stage status from v2 endpoint */
+export interface StageStatusV2 {
+  latest: StageExecutionEntry | null;
+  versions: number[];
+  stale: boolean;
+  stale_reason: string | null;
+}
+
+/** Full pipeline status from GET /pipeline/:id/status/v2 */
+export interface PipelineStatusV2 {
+  id: string;
+  project_id: string;
+  status: string;
+  stages: Record<string, StageStatusV2>;
+}
+
 /** Parsed validation result from artifact metadata */
 export interface ValidationResult {
   passed: boolean;
