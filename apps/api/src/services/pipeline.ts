@@ -15,8 +15,8 @@
  */
 
 import { db, type DbConnection } from "@/db/index.js";
-import { pipelineRuns, approvalGates, stageArtifacts, llmUsage, projects } from "@/db/schema.js";
-import { NotFoundError, ForbiddenError, ValidationError } from "@/errors.js";
+import { pipelineRuns, stageArtifacts, llmUsage, projects } from "@/db/schema.js";
+import { NotFoundError, ValidationError } from "@/errors.js";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { PipelineStageName } from "@revamp/shared-types/pipeline";
 import {
@@ -40,7 +40,6 @@ import {
   updateProjectMetrics,
 } from "./pipeline-repository.js";
 import { finalizeStageResult } from "./pipeline-finalize.js";
-import { resolveProjectCredentials } from "./pipeline-credentials.js";
 import {
   advanceStage as advanceStageOp,
   approveGate as approveGateOp,
@@ -61,17 +60,11 @@ import {
   isStageDisabled,
 } from "./pipeline-config.js";
 import { llmProxyService } from "./llm-proxy.js";
+import { prepareStageExecution, type StageExecutionContext, type ExecuteStageOptions } from "./pipeline-execution-context.js";
 import {
-  matchAndAssignAgent,
   recordAgentCompletion,
-  getStageKeywords,
   type AgentStageContext,
 } from "./agent-pipeline.js";
-import {
-  prepareAgentExecution,
-  wrapReviewerWithAgent,
-} from "./agent-execution.js";
-// context-tiering now used by pipeline-repository.ts
 import { orchestrateScanStage } from "./scan-orchestrator.js";
 import { orchestrateForgeStage } from "./forge-orchestrator.js";
 import { orchestrateDecodeStage, loadScanOutput } from "./decode-orchestrator.js";
@@ -91,30 +84,11 @@ import {
   emitMemoryExtracted,
   emitPipelineBudgetWarning,
 } from "./pipeline-event-bus.js";
-
-// ─── PROJECT ROW TYPE (from Drizzle `with: { project: true }`) ──
-// Drizzle's inferred type omits 10X-specific columns from the relation result.
-// This interface matches the actual DB row shape returned by the query.
-interface ProjectRow {
-  id: string;
-  name: string;
-  description: string | null;
-  organization_id: string;
-  repository_url: string | null;
-  status: string;
-  config: Record<string, unknown> | null;
-  source_type: string | null;
-  source_url: string | null;
-  source_branch: string | null;
-  source_languages: string[] | null;
-  target_stack: string | null;
-  target_cloud: string | null;
-  stage_prompts: Record<string, string> | null;
-  validation_prompts: Record<string, string> | null;
-  settings: Record<string, unknown> | null;
-  created_by: string;
-  [key: string]: unknown; // allow additional fields
-}
+import {
+  getLatestExecution,
+  completeExecution as completeStageExecution,
+  failExecution as failStageExecution,
+} from "./stage-execution-repository.js";
 
 // Stage configuration, utilities, and isStageDisabled now in pipeline-config.ts
 export type { StageConfig, ProjectStageConfig } from "./pipeline-config.js";
@@ -233,45 +207,14 @@ export class PipelineService {
     pipelineRunId: string,
     stageName: PipelineStageName,
     templateVars: Record<string, string>,
-    options?: {
-      onEvent?: OnStageEvent;
-      onDelta?: OnDelta;
-      signal?: AbortSignal;
-      skipLlmEval?: boolean;
-      /** Override execution model */
-      model?: string;
-      /** Override director/composition model */
-      composerModel?: string;
-      /** Override evaluator model */
-      evaluatorModel?: string;
-      /** Max output tokens (scales depth for larger codebases) */
-      maxTokens?: number;
-      /** Override stage prompt for this execution (re-run with edited prompt) */
-      promptOverride?: string;
-      /** Validation feedback from previous run — appended to prompt context */
-      validationFeedback?: Array<{ name: string; passed: boolean; score: number; feedback: string; severity?: string }>;
-    },
+    options?: ExecuteStageOptions,
   ): Promise<StageRunResult> {
-    const run = await getPipelineRun(pipelineRunId);
-    if (!run) throw new NotFoundError("Pipeline run not found");
-    if (!run.project) throw new NotFoundError("Project not found for pipeline run");
+    // ─── Common setup (project context, agents, LLM fns, BYOK) ──
+    const ctx = await prepareStageExecution(pipelineRunId, stageName, templateVars, options);
 
-    const stageConfig = getStageConfig(stageName);
-
-    // Check if stage is disabled in project config
-    const proj = run.project as ProjectRow;
-    const projectConfig = proj.config;
-    if (isStageDisabled(stageName, projectConfig)) {
-      options?.onEvent?.({
-        phase: 'completed',
-        stageName,
-        stageIndex: stageConfig.index,
-        timestamp: new Date().toISOString(),
-        data: { skipped: true, reason: 'Stage disabled in project configuration' },
-      });
-
-      await updateStageProgress(pipelineRunId, stageName, "skipped", 100);
-
+    if (!ctx) {
+      // Stage is disabled — return skipped result
+      const stageConfig = getStageConfig(stageName);
       return {
         stageName,
         stageIndex: stageConfig.index,
@@ -284,65 +227,11 @@ export class PipelineService {
       };
     }
 
-    // Emit stage started event
-    pipelineEventBus.fire({
-      type: "stage.started",
-      timestamp: new Date().toISOString(),
-      pipelineRunId,
-      projectId: run.project.id,
-      stageName,
-      data: { stageIndex: stageConfig.index },
-    });
-
-    // Build project context from DB
-    const projectContext: ProjectContext & { stagePrompts?: Record<string, string>; validationPrompts?: Record<string, string> } = {
-      projectId: proj.id,
-      projectName: proj.name,
-      description: proj.description || "",
-      codebaseSource: proj.source_url || proj.repository_url || "uploaded",
-      sourceLanguages: proj.source_languages || ["unknown"],
-      targetStack: proj.target_stack || "Java/Spring Boot",
-      targetCloud: proj.target_cloud || undefined,
-    };
-    // Attach stage prompts for validation (prompt-derived validation needs these)
-    const rawStagePrompts = proj.stage_prompts || {};
-    const rawValidationPrompts = proj.validation_prompts || {};
-    projectContext.stagePrompts = rawStagePrompts;
-    projectContext.validationPrompts = rawValidationPrompts;
-
-    // For stages 2-8: reload SCAN's file analysis ground truth from stored artifact
-    // so downstream stages have verified versions, component counts, and migration stats.
-    if (stageName !== PipelineStageName.SCAN) {
-      try {
-        const scanArtifact = await db.query.stageArtifacts.findFirst({
-          where: and(
-            eq(stageArtifacts.pipeline_run_id, pipelineRunId),
-            eq(stageArtifacts.stage_name, 'SCAN'),
-            eq(stageArtifacts.artifact_type, 'cloned_codebase'),
-          ),
-        });
-        if (scanArtifact?.metadata) {
-          const meta = scanArtifact.metadata as Record<string, unknown>;
-          projectContext.fileAnalysis = {
-            totalFiles: (meta.totalFiles as number) || 0,
-            totalLines: (meta.totalLines as number) || 0,
-            detectedLanguages: (meta.detectedLanguages as string[]) || [],
-            frameworkVersions: (meta.frameworkVersions as any[]) || [],
-            componentCounts: (meta.componentCounts as any[]) || [],
-            migrationStats: (meta.migrationStats as any) || undefined,
-            largestFiles: (meta.largestFiles as any[]) || [],
-            filesByExtension: (meta.filesByExtension as Record<string, number>) || {},
-            linesByExtension: (meta.linesByExtension as Record<string, number>) || {},
-            directoryTree: '',
-            keyFiles: [],
-            codeSnippets: [],
-          };
-          if (scanArtifact.storage_path) {
-            projectContext.codebasePath = scanArtifact.storage_path;
-          }
-        }
-      } catch { /* non-fatal — stages still work without ground truth */ }
-    }
+    const { run, proj, stageConfig, projectContext, projectCredentials,
+      priorOutputs, feedback, agentCtx, agentExec, modelName, maxTokens: configuredMaxTokens,
+      promptOverride, effectiveModel } = ctx;
+    let { llmCallFn, reviewerLlmCallFn } = ctx;
+    const llmEvalFn = ctx.llmEvalFn;
 
     // For SCAN stage — run real file analysis on the codebase
     if (stageName === PipelineStageName.SCAN) {
@@ -513,216 +402,6 @@ export class PipelineService {
             data: { message: `File analysis skipped: ${err.message}` },
           });
         }
-      }
-    }
-
-    // Load prior stage outputs from artifacts (tiered context with observable trajectory)
-    const { outputs: priorOutputs, trajectoryMeta } = await loadPriorStageOutputs(pipelineRunId, stageName);
-
-    // Emit trajectory SSE event if available
-    if (trajectoryMeta) {
-      options?.onEvent?.({
-        phase: 'context_retrieval',
-        stageName,
-        stageIndex: stageConfig.index,
-        timestamp: new Date().toISOString(),
-        data: trajectoryMeta,
-      });
-    }
-
-    // Load user feedback from approval history
-    const feedback = await loadUserFeedback(pipelineRunId, stageConfig.index);
-
-    // Update stage progress
-    await updateStageProgress(pipelineRunId, stageName, "in_progress", 0);
-
-    // ─── AGENT MATCHING ─────────────────────────────────────────
-    // Attempt to find and assign the best agent for this stage.
-    // Falls back to direct LLM execution if no agent is available.
-    let agentCtx: AgentStageContext | null = null;
-    try {
-      const sourceLanguages = projectContext.sourceLanguages || [];
-      const targetStack = projectContext.targetStack ? [projectContext.targetStack] : [];
-      agentCtx = await matchAndAssignAgent(
-        pipelineRunId,
-        stageName,
-        getStageKeywords(stageName),
-        [...sourceLanguages, ...targetStack],
-      );
-      if (agentCtx) {
-        options?.onEvent?.({
-          phase: 'agent_assigned',
-          stageName,
-          stageIndex: stageConfig.index,
-          timestamp: new Date().toISOString(),
-          data: {
-            agentId: agentCtx.agentId,
-            agentName: agentCtx.agentName,
-            assignmentId: agentCtx.assignmentId,
-          },
-        });
-      }
-    } catch (matchErr: unknown) {
-      // Non-fatal — proceed without agent
-      const errMsg = matchErr instanceof Error ? matchErr.message : String(matchErr);
-      options?.onEvent?.({
-        phase: 'agent_assigned',
-        stageName,
-        stageIndex: stageConfig.index,
-        timestamp: new Date().toISOString(),
-        data: { skipped: true, reason: `Agent matching failed: ${errMsg}` },
-      });
-    }
-
-    // Load prompt override: prefer per-request override (re-run with edited prompt),
-    // then fall back to project-level override (set via Settings page).
-    const stagePrompts = (run.project as any).stage_prompts as Record<string, string> | null;
-    // Support both stage-name keys (new) and numeric-index keys (prompt-generator uses numeric)
-    let promptOverride = options?.promptOverride
-      || stagePrompts?.[stageName]
-      || stagePrompts?.[String(stageConfig.index)]
-      || undefined;
-
-    // Append validation feedback from previous run to the prompt so the LLM can address issues
-    if (options?.validationFeedback && options.validationFeedback.length > 0) {
-      const failedFindings = options.validationFeedback.filter(f => !f.passed);
-      if (failedFindings.length > 0) {
-        const feedbackBlock = failedFindings.map(f =>
-          `- [${(f.severity || 'warning').toUpperCase()}] ${f.name}: ${f.feedback}`
-        ).join('\n');
-        const feedbackPrompt = `\n\n--- VALIDATION FEEDBACK FROM PREVIOUS RUN ---\nThe previous output had the following issues. Please address ALL of them in this run:\n${feedbackBlock}\n--- END VALIDATION FEEDBACK ---`;
-        promptOverride = (promptOverride || '') + feedbackPrompt;
-      }
-    }
-
-    // Create LLM call and eval functions — with optional model overrides.
-    // If an agent was assigned, prefer the agent's model configuration.
-    const modelName = options?.model
-      || process.env.LLM_DEFAULT_MODEL
-      || agentCtx?.preferredModel
-      || "";
-    // Read maxTokens: per-request override > project settings > default 32768
-    const projectSettings = (run.project as any).settings as Record<string, unknown> | null;
-    const configuredMaxTokens = options?.maxTokens || (projectSettings?.maxTokens as number) || 32768;
-
-    // BYOK: extract per-project LLM provider credentials
-    const projectCredentials = resolveProjectCredentials(projectSettings);
-
-    // ─── ADVISOR TOOL (Anthropic-only; Bedrock/OpenAI silently ignore) ──
-    // Per-stage config: enable Opus advisor for strategic/synthesis phases.
-    const STAGE_ADVISOR_CONFIG: Partial<Record<PipelineStageName, { enabled: boolean; max_uses: number }>> = {
-      [PipelineStageName.SCAN]:       { enabled: true,  max_uses: 3 },
-      [PipelineStageName.DECODE]:     { enabled: true,  max_uses: 3 },
-      [PipelineStageName.BLUEPRINT]:  { enabled: true,  max_uses: 2 },
-      [PipelineStageName.SPEC_LOCK]:  { enabled: false, max_uses: 0 },
-      [PipelineStageName.ARCHITECT]:  { enabled: true,  max_uses: 3 },
-      [PipelineStageName.FORGE]:      { enabled: true,  max_uses: 5 },
-      [PipelineStageName.SHADOW_RUN]: { enabled: false, max_uses: 0 },
-      [PipelineStageName.EVOLVE]:     { enabled: true,  max_uses: 2 },
-    };
-    const advisorEnabled = process.env.ADVISOR_ENABLED !== 'false';
-    const stageAdvisor = advisorEnabled ? STAGE_ADVISOR_CONFIG[stageName] : undefined;
-    const advisorConfig = stageAdvisor?.enabled ? {
-      enabled: true,
-      model: 'claude-opus-4-6',
-      max_uses: stageAdvisor.max_uses,
-    } : undefined;
-
-    // For generic stages (BLUEPRINT through EVOLVE), the composer model
-    // is used as the main generation model for higher quality output.
-    // For orchestrated stages (SCAN, DECODE, FORGE), the composer model
-    // is passed separately to the orchestrator.
-    const effectiveModel = options?.composerModel || modelName;
-    const skipAdvisor = /opus/i.test(effectiveModel); // Don't double-pay if already Opus
-    let llmCallFn: LLMCallFn = llmProxyService.createCallFn({
-      maxTokens: configuredMaxTokens,
-      model: effectiveModel,
-      credentials: projectCredentials,
-      advisor: skipAdvisor ? undefined : advisorConfig,
-    });
-    const llmEvalFn = options?.skipLlmEval
-      ? undefined
-      : llmProxyService.createEvalFn({ model: options?.evaluatorModel, credentials: projectCredentials });
-
-    // Reviewer LLM — uses the evaluator model (different from generator to avoid
-    // self-validation bias). This enables the full multi-agent loop:
-    // Generate -> Review -> Refine -> Validate
-    //
-    // hasValidationModel() check: verify the evaluator model resolves to a
-    // configured provider with credentials before attempting dual-model flow.
-    // Without this, the reviewer step fails silently. Ported from legacy-bridge.
-    let reviewerLlmCallFn: LLMCallFn | undefined;
-    const wantedEvaluatorModel = options?.evaluatorModel
-      || agentCtx?.evaluatorModel
-      || process.env.LLM_EVALUATOR_MODEL;
-    if (wantedEvaluatorModel) {
-      const hasEvalModel = await llmProxyService.hasValidationModel();
-      if (hasEvalModel) {
-        reviewerLlmCallFn = llmProxyService.createCallFn({
-          maxTokens: 2048,
-          model: wantedEvaluatorModel,
-          credentials: projectCredentials,
-        });
-      } else {
-        // Evaluator model is not resolvable — skip reviewer, rely on validation only
-        options?.onEvent?.({
-          phase: 'reviewing',
-          stageName,
-          stageIndex: stageConfig.index,
-          timestamp: new Date().toISOString(),
-          data: {
-            skipped: true,
-            reason: `Evaluator model "${wantedEvaluatorModel}" not available — skipping reviewer step`,
-          },
-        });
-      }
-    }
-
-    // ─── AGENT EXECUTION BRIDGE ─────────────────────────────────
-    // When an agent is assigned, wrap the LLM call function with the agent's
-    // identity (system prompt, session context, tool permissions). This makes
-    // every LLM call operate under the agent's persona.
-    let agentExec: Awaited<ReturnType<typeof prepareAgentExecution>> | null = null;
-    if (agentCtx) {
-      try {
-        agentExec = await prepareAgentExecution({
-          agentCtx,
-          baseLlmCallFn: llmCallFn,
-          stageIndex: stageConfig.index,
-          pipelineRunId,
-          signal: options?.signal,
-        });
-
-        // Replace the LLM call function with the agent-enhanced version
-        llmCallFn = agentExec.llmCallFn;
-
-        // Also wrap the reviewer if available
-        if (reviewerLlmCallFn) {
-          reviewerLlmCallFn = wrapReviewerWithAgent(reviewerLlmCallFn, agentCtx);
-        }
-
-        options?.onEvent?.({
-          phase: 'agent_assigned',
-          stageName,
-          stageIndex: stageConfig.index,
-          timestamp: new Date().toISOString(),
-          data: {
-            agentEnhanced: true,
-            agentName: agentCtx.agentName,
-            toolCount: agentExec.tools.length,
-            hasSessionContext: !!agentCtx.sessionContext,
-          },
-        });
-      } catch (agentExecErr: unknown) {
-        // Non-fatal — proceed with base LLM call (no agent identity)
-        const errMsg = agentExecErr instanceof Error ? agentExecErr.message : String(agentExecErr);
-        options?.onEvent?.({
-          phase: 'agent_assigned',
-          stageName,
-          stageIndex: stageConfig.index,
-          timestamp: new Date().toISOString(),
-          data: { agentEnhanced: false, reason: `Agent execution setup failed: ${errMsg}` },
-        });
       }
     }
 
@@ -1035,9 +714,26 @@ export class PipelineService {
           }
         });
         emitStageCompleted({ pipelineRunId, projectId: run.project.id, stageName, duration: chunkedResult.duration, confidenceScore: score });
+        // Dual-write: complete the execution
+        const latestExecChunk = await getLatestExecution(pipelineRunId, stageName);
+        if (latestExecChunk && latestExecChunk.status === 'running') {
+          await completeStageExecution({
+            executionId: latestExecChunk.id,
+            output: result.output,
+            validation: result.validation ? {
+              passed: result.validation.passed,
+              confidenceScore: result.validation.confidenceScore,
+            } : undefined,
+          }).catch(() => {});
+        }
       } else {
         await updateStageProgress(pipelineRunId, stageName, "failed", 0);
         emitStageFailed({ pipelineRunId, projectId: run.project.id, stageName, error: `${stageName} chunked generation produced no output` });
+        // Dual-write: fail the execution
+        const latestExecFail = await getLatestExecution(pipelineRunId, stageName);
+        if (latestExecFail && latestExecFail.status === 'running') {
+          await failStageExecution({ executionId: latestExecFail.id, errorMessage: `${stageName} chunked generation produced no output` }).catch(() => {});
+        }
       }
 
       return result;
@@ -1357,6 +1053,11 @@ export class PipelineService {
         violations: result.validation?.issues?.length || 0,
         hardGated: true,
       });
+      // Dual-write: fail the execution
+      const latestExec = await getLatestExecution(pipelineRunId, stageName);
+      if (latestExec && latestExec.status === 'running') {
+        await failStageExecution({ executionId: latestExec.id, errorMessage: `Contract hard-gated: ${result.validation?.contractResult?.violations?.length ?? 0} violations` }).catch(() => {});
+      }
     } else {
       // Stage completed — create approval gate regardless of confidence score.
       // Low confidence = reviewer must scrutinize. High confidence = routine approval.
@@ -1387,6 +1088,21 @@ export class PipelineService {
         duration: 0,
         confidenceScore,
       });
+
+      // Dual-write: complete the execution
+      const latestExec = await getLatestExecution(pipelineRunId, stageName);
+      if (latestExec && latestExec.status === 'running') {
+        await completeStageExecution({
+          executionId: latestExec.id,
+          output: result.output,
+          validation: result.validation ? {
+            passed: result.validation.passed,
+            confidenceScore: result.validation.confidenceScore,
+            issues: result.validation.issues,
+            recommendations: result.validation.recommendations,
+          } : undefined,
+        }).catch(() => {});
+      }
 
       if (!nextStage) {
         pipelineEventBus.fire({
