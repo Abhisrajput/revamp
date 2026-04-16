@@ -19,7 +19,7 @@ import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { buildRouteSchema } from "@/lib/zod-to-jsonschema.js";
 import { db } from "@/db/index.js";
-import { stageArtifacts, approvalGates, auditLogs, stageRuns, stageExecutionLogs, projectMembers, pipelineRuns, users, projects, modernizedFiles, traceabilityEntries, agentSubtasks } from "@/db/schema.js";
+import { stageArtifacts, approvalGates, auditLogs, stageRuns, stageExecutionLogs, projectMembers, pipelineRuns, users, projects, modernizedFiles, traceabilityEntries, agentSubtasks, stageExecutions } from "@/db/schema.js";
 import { eq, and, desc, inArray, sql } from "drizzle-orm";
 import { PipelineStageName } from "@revamp/shared-types/pipeline";
 import { getStageOrder, classifyError } from "@revamp/core-engine";
@@ -31,6 +31,7 @@ import {
   createExecution,
   completeExecution,
   failExecution,
+  getStatusForRun,
 } from "@/services/stage-execution-repository.js";
 
 // ─── AUDIT LOG HELPER ───────────────────────────────────────────
@@ -559,6 +560,81 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
             return acc;
           }, {} as Record<string, any>),
         ),
+      });
+    },
+  );
+
+  /**
+   * GET /pipeline/:pipelineRunId/status/v2 — Stage-executions-based status
+   */
+  fastify.get<{ Params: { pipelineRunId: string } }>(
+    "/pipeline/:pipelineRunId/status/v2",
+    {
+      schema: buildRouteSchema({
+        params: PipelineRunParamsSchema,
+        tags: ["Pipeline"],
+        summary: "Get pipeline status from stage_executions (v2)",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate, fastify.requirePipelineAccess],
+    },
+    async (request, reply) => {
+      const { pipelineRunId } = request.params;
+      const run = await pipelineService.getPipelineRun(pipelineRunId);
+      if (!run) {
+        return reply.status(404).send({ error: "Pipeline run not found" });
+      }
+
+      const { PIPELINE_STAGE_ORDER } = await import("@revamp/shared-types/pipeline");
+      const stages = await getStatusForRun(pipelineRunId, PIPELINE_STAGE_ORDER);
+
+      // Derive run status from stage states
+      const stageEntries = Object.values(stages);
+      const allApproved = stageEntries.every(s => s.latest?.approval_status === 'approved');
+      const anyRunning = stageEntries.some(s => s.latest?.status === 'running');
+      const anyStarted = stageEntries.some(s => s.latest !== null);
+      const derivedStatus = allApproved ? 'completed'
+        : anyRunning ? 'running'
+        : anyStarted ? 'in_progress'
+        : 'pending';
+
+      return reply.send({
+        id: run.id,
+        project_id: run.project_id,
+        status: derivedStatus,
+        stages,
+      });
+    },
+  );
+
+  /**
+   * GET /pipeline/execution/:executionId/output — Get execution output content
+   */
+  fastify.get<{ Params: { executionId: string } }>(
+    "/pipeline/execution/:executionId/output",
+    {
+      schema: buildRouteSchema({
+        params: z.object({ executionId: z.string().uuid() }),
+        tags: ["Pipeline"],
+        summary: "Get stage execution output content",
+        response: { ...errorResponse },
+      }),
+      onRequest: [fastify.authenticate],
+    },
+    async (request, reply) => {
+      const { executionId } = request.params;
+      const exec = await db.query.stageExecutions.findFirst({
+        where: eq(stageExecutions.id, executionId),
+        columns: { id: true, output: true, stage_name: true, version: true },
+      });
+      if (!exec) {
+        return reply.status(404).send({ error: "Execution not found" });
+      }
+      return reply.send({
+        id: exec.id,
+        stage_name: exec.stage_name,
+        version: exec.version,
+        output: exec.output,
       });
     },
   );
