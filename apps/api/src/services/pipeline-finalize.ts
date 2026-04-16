@@ -4,14 +4,14 @@
  * After any stage (SCAN, DECODE, FORGE, generic) produces a result:
  *   1. Store output + validation artifacts
  *   2. Record agent completion
- *   3. Record token usage + cost
- *   4. Update stage progress + create approval gate
- *   5. Emit completion/failure events
- *   6. Update project metrics
+ *   3. Complete stage execution + set approval status
+ *   4. Emit completion/failure events
+ *   5. Update project metrics
+ *
+ * Spend recording is NOT done here — callers invoke recordStageSpend() before
+ * calling finalizeStageResult so that actual token counts (not estimates) are used.
  */
 
-import { db } from "@/db/index.js";
-import { llmUsage } from "@/db/schema.js";
 import { PipelineStageName } from "@revamp/shared-types/pipeline";
 import type { StageRunResult, OnStageEvent } from "@revamp/core-engine";
 import type { AgentStageContext } from "./agent-pipeline.js";
@@ -28,14 +28,9 @@ import {
 } from "./stage-execution-repository.js";
 import { getStageConfig } from "./pipeline-config.js";
 import {
-  recordPipelineSpend,
-  estimateCostCents,
-} from "./pipeline-budget.js";
-import {
   emitStageCompleted,
   emitStageFailed,
 } from "./pipeline-event-bus.js";
-import crypto from "crypto";
 
 export interface FinalizeOptions {
   pipelineRunId: string;
@@ -54,7 +49,7 @@ export interface FinalizeOptions {
  * Shared by SCAN, DECODE, FORGE, and generic stage handlers.
  */
 export async function finalizeStageResult(opts: FinalizeOptions): Promise<void> {
-  const { pipelineRunId, projectId, stageName, stageIndex, result, modelName, agentCtx, agentExec, onEvent } = opts;
+  const { pipelineRunId, projectId, stageName, result, modelName, agentCtx, agentExec } = opts;
 
   if (!result.output) {
     // Mark stage execution as failed
@@ -92,38 +87,7 @@ export async function finalizeStageResult(opts: FinalizeOptions): Promise<void> 
     }
   }
 
-  // 3. Record token usage (estimated from content sizes)
-  try {
-    const estimatedInputTokens = Math.round(
-      (result.phases?.reduce((s: number, p: any) => s + (JSON.stringify(p.data || '').length), 0) || 4000) / 4
-    );
-    const estimatedOutputTokens = Math.round((result.output.length || 0) / 4);
-    if (estimatedOutputTokens > 0) {
-      const cost = estimateCostCents(
-        { inputTokens: estimatedInputTokens, outputTokens: estimatedOutputTokens },
-        modelName,
-      );
-      await recordPipelineSpend(pipelineRunId, cost);
-      await db.insert(llmUsage).values({
-        id: crypto.randomUUID(),
-        project_id: projectId,
-        pipeline_run_id: pipelineRunId,
-        model: modelName || "unknown",
-        input_tokens: estimatedInputTokens,
-        output_tokens: estimatedOutputTokens,
-        cost: Math.round(cost),
-      });
-      onEvent?.({
-        phase: 'usage' as any,
-        stageName,
-        stageIndex,
-        timestamp: new Date().toISOString(),
-        data: { input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens, cost },
-      });
-    }
-  } catch { /* non-fatal */ }
-
-  // 4. Complete stage execution and set approval status
+  // 3. Complete stage execution and set approval status
   const score = result.validation?.confidenceScore ?? 70;
   const config = getStageConfig(stageName);
   const latestExec = await getLatestExecution(pipelineRunId, stageName);
