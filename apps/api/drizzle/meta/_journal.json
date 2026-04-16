@@ -57,6 +57,13 @@
       "when": 1776330962052,
       "tag": "0007_complete_jocasta",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1776365151477,
+      "tag": "0008_brief_vengeance",
+      "breakpoints": true
     }
   ]
 }

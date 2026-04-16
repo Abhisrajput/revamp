@@ -777,6 +777,7 @@ export const costEvents = pgTable(
     input_tokens: integer("input_tokens").notNull().default(0),
     output_tokens: integer("output_tokens").notNull().default(0),
     cached_tokens: integer("cached_tokens").notNull().default(0),
+    cache_creation_tokens: integer("cache_creation_tokens").notNull().default(0),
     cost_cents: integer("cost_cents").notNull().default(0),
 
     // Context
