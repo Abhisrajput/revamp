@@ -13,6 +13,7 @@ import { PipelineStageName } from "@revamp/shared-types/pipeline";
 import { getStageOrder } from "@revamp/core-engine";
 import { getPipelineRun, getNextStage } from "./pipeline-config.js";
 import { updateStageProgress, loadPriorStageOutputs } from "./pipeline-repository.js";
+import { setApprovalStatus } from "./stage-execution-repository.js";
 import { llmProxyService } from "./llm-proxy.js";
 import crypto from "crypto";
 
@@ -104,6 +105,9 @@ export async function approveGate(
 
     await updateStageProgress(pipelineRunId, stageName, "approved", 100, { conn: tx });
 
+    // Dual-write: approve the stage execution
+    await setApprovalStatus(pipelineRunId, stageName, "approved", approvedBy, comment, tx);
+
     const nextStage = getNextStage(stageName);
     if (nextStage) {
       await tx.update(pipelineRuns).set({ current_stage: nextStage }).where(eq(pipelineRuns.id, pipelineRunId));
@@ -130,6 +134,9 @@ export async function rejectGate(
       eq(approvalGates.stage_name, stageName),
     ));
     await updateStageProgress(pipelineRunId, stageName, "rejected", 0, { conn: tx });
+
+    // Dual-write: reject the stage execution
+    await setApprovalStatus(pipelineRunId, stageName, "rejected", rejectedBy, reason, tx);
   });
 }
 
