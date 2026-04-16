@@ -27,7 +27,7 @@ vi.mock("drizzle-orm", () => ({
   isNull: vi.fn(),
 }));
 
-import { wrapReviewerWithAgent } from "../services/agent-execution.js";
+import { wrapReviewerWithAgent, wrapLlmCallWithAgent } from "../services/agent-execution.js";
 import { getToolsForStage } from "../services/agent-tools.js";
 import type { AgentStageContext } from "../services/agent-pipeline.js";
 
@@ -112,6 +112,77 @@ describe("Agent Execution Bridge", () => {
       expect(names).toContain("write_file");
       expect(names).toContain("edit_file");
       expect(names).toContain("shell_exec");
+    });
+  });
+
+  describe("wrapLlmCallWithAgent — tokenUsage forwarding", () => {
+    it("forwards tokenUsage accumulator by reference from base to wrapper", () => {
+      const tokenUsage = {
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 0,
+        cacheCreationTokens: 0,
+      };
+      const base: any = async (_req: any) => "ok";
+      base.tokenUsage = tokenUsage;
+
+      const wrapped = wrapLlmCallWithAgent(base, "You are a test agent.");
+
+      // Same object reference — mutations on one are visible through the other
+      expect((wrapped as any).tokenUsage).toBe(tokenUsage);
+    });
+
+    it("mutations to the base accumulator are visible through the wrapper reference", () => {
+      const tokenUsage = {
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 0,
+        cacheCreationTokens: 0,
+      };
+      const base: any = async (_req: any) => "ok";
+      base.tokenUsage = tokenUsage;
+
+      const wrapped = wrapLlmCallWithAgent(base, "You are a test agent.");
+
+      // Simulate what the LLM provider does: mutate the shared accumulator
+      tokenUsage.inputTokens = 42;
+      tokenUsage.outputTokens = 150;
+
+      // The pipeline recorder reads .tokenUsage from the wrapper; it must see
+      // the live values — not a stale snapshot taken at wrap time.
+      expect((wrapped as any).tokenUsage.inputTokens).toBe(42);
+      expect((wrapped as any).tokenUsage.outputTokens).toBe(150);
+    });
+
+    it("returns undefined tokenUsage when base has none (graceful degradation)", () => {
+      const base: any = async (_req: any) => "ok";
+      // Intentionally no .tokenUsage attached
+
+      const wrapped = wrapLlmCallWithAgent(base, "You are a test agent.");
+
+      expect((wrapped as any).tokenUsage).toBeUndefined();
+    });
+
+    it("delegates the call to baseLlmCallFn with enhanced system prompt", async () => {
+      const base = vi.fn().mockResolvedValue("result text");
+      (base as any).tokenUsage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 };
+
+      const wrapped = wrapLlmCallWithAgent(base, "AGENT PERSONA");
+
+      await wrapped({
+        systemPrompt: "original system prompt",
+        userPrompt: "user task",
+        model: "claude-3-5-haiku-20241022",
+        provider: "anthropic",
+      } as any);
+
+      expect(base).toHaveBeenCalledTimes(1);
+      const callArg = base.mock.calls[0][0];
+      // Agent persona must precede the stage task
+      expect(callArg.systemPrompt).toContain("AGENT PERSONA");
+      expect(callArg.systemPrompt).toContain("original system prompt");
+      // The cacheable prefix is set to the agent persona for prompt caching
+      expect(callArg.cacheablePrefix).toBe("AGENT PERSONA");
     });
   });
 });

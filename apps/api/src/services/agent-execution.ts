@@ -20,6 +20,7 @@ import type { AgentStageContext } from "./agent-pipeline.js";
 import { getToolsForStage, type ToolDefinition } from "./agent-tools.js";
 import { retryToolExecution, isToolExecutionRetryable } from "./agent-retry.js";
 import type { LLMCallFn } from "@revamp/core-engine";
+import type { StageTokenUsage } from "./llm-proxy.js";
 
 // ─── TYPES ──────────────────────────────────────────────────────
 
@@ -235,11 +236,11 @@ function filterToolsForAgent(
  * The wrapper prepends the agent's persona + session context to the system prompt
  * of every LLM call, ensuring the model operates with the agent's full identity.
  */
-function wrapLlmCallWithAgent(
+export function wrapLlmCallWithAgent(
   baseLlmCallFn: LLMCallFn,
   agentSystemPrompt: string,
-): LLMCallFn {
-  return async (req) => {
+): LLMCallFn & { tokenUsage?: StageTokenUsage } {
+  const wrapped = async (req: Parameters<LLMCallFn>[0]): Promise<string> => {
     // Prepend agent context to the system prompt
     const enhancedSystemPrompt = [
       agentSystemPrompt,
@@ -256,6 +257,13 @@ function wrapLlmCallWithAgent(
       cacheablePrefix: agentSystemPrompt,
     });
   };
+
+  // Forward the tokenUsage accumulator reference from the base function so
+  // that pipeline recorders reading `(llmCallFn as any).tokenUsage` see the
+  // live accumulator even when llmCallFn has been replaced by the agent wrapper.
+  (wrapped as any).tokenUsage = (baseLlmCallFn as any).tokenUsage;
+
+  return wrapped;
 }
 
 // ─── MAIN EXECUTION BRIDGE ──────────────────────────────────────
