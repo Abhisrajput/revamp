@@ -34,7 +34,7 @@ import { useWSSubscribe } from '@revamp/core/hooks/use-ws';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 // IndexedDB caching handled by pipeline-store.setStageOutput (still uses pipeline-cache internally)
-import { useLatestPipelineRun, usePipelineStatus, useAllStageOutputs } from '@revamp/core';
+import { useLatestPipelineRun, usePipelineStatus, useAllStageOutputs, usePipelineStatusV2, useStageExecutionOutput } from '@revamp/core';
 
 // ─── Page Component ─────────────────────────────────────────────
 
@@ -56,6 +56,9 @@ export default function PipelinePage() {
 
   // Fetch pipeline status (stage progress, approval gates)
   const { data: pipelineStatusData } = usePipelineStatus(effectiveRunId);
+
+  // V2: stage-executions-based status (clean timestamps, no JSONB race conditions)
+  const { data: statusV2 } = usePipelineStatusV2(effectiveRunId);
 
   // Batch-fetch ALL stage outputs (parallel, cached)
   const STAGE_NAMES = PIPELINE_STAGE_ORDER;
@@ -90,6 +93,7 @@ export default function PipelinePage() {
         }
         // Refetch to sync everything
         queryClientWS.invalidateQueries({ queryKey: ['pipeline-status', effectiveRunId] });
+        queryClientWS.invalidateQueries({ queryKey: ['pipeline-status-v2', effectiveRunId] });
       }
       if (event.event === 'stage_rejected') {
         const data = event.data as { stageName?: string; reason?: string };
@@ -99,10 +103,12 @@ export default function PipelinePage() {
           usePipelineStore.getState().setStageStatus(idx, 'failed');
         }
         queryClientWS.invalidateQueries({ queryKey: ['pipeline-status', effectiveRunId] });
+        queryClientWS.invalidateQueries({ queryKey: ['pipeline-status-v2', effectiveRunId] });
       }
       if (event.event === 'complete' || event.event === 'stage_completed') {
         // Stage completed — refetch outputs + status
         queryClientWS.invalidateQueries({ queryKey: ['pipeline-status', effectiveRunId] });
+        queryClientWS.invalidateQueries({ queryKey: ['pipeline-status-v2', effectiveRunId] });
         queryClientWS.invalidateQueries({ queryKey: ['pipeline'] });
       }
     }, [effectiveRunId, queryClientWS]),
@@ -210,24 +216,6 @@ export default function PipelinePage() {
     });
   }, [pipelineStatusData]);
 
-  // Sync stage outputs from React Query → store
-  useEffect(() => {
-    if (!allOutputs) return;
-    usePipelineStore.setState((state) => {
-      const stages = [...state.stages];
-      let changed = false;
-      for (const [stageName, output] of Object.entries(allOutputs)) {
-        if (!output) continue;
-        const idx = stages.findIndex(s => s.name === stageName);
-        if (idx >= 0 && (!stages[idx].output || stages[idx].output.includes('Partial Result'))) {
-          stages[idx] = { ...stages[idx], output };
-          changed = true;
-        }
-      }
-      return changed ? { stages } : state;
-    });
-  }, [allOutputs]);
-
   // ─── Pipeline Store (granular selectors to avoid re-renders from streaming) ──
   const stages = usePipelineStore((s) => s.stages);
   const activeStageIndex = usePipelineStore((s) => s.activeStageIndex);
@@ -327,6 +315,42 @@ export default function PipelinePage() {
   } = useStageExecution();
 
   const activeStage = stages[activeStageIndex];
+
+  // V2: derive stage execution data for the active stage
+  const activeStageV2 = statusV2?.stages?.[activeStage?.name ?? ''] ?? null;
+  const activeExecId = activeStageV2?.latest?.id ?? null;
+  const { data: activeStageOutput } = useStageExecutionOutput(activeExecId);
+
+  // Sync stage outputs from React Query → store
+  // React Query is the source of truth — always overwrite Zustand with DB data.
+  // V2 execution output for the active stage takes priority.
+  useEffect(() => {
+    if (!allOutputs && !activeStageOutput) return;
+    usePipelineStore.setState((state) => {
+      const stages = [...state.stages];
+      let changed = false;
+      // V1: bulk output sync
+      if (allOutputs) {
+        for (const [stageName, output] of Object.entries(allOutputs)) {
+          if (!output) continue;
+          const idx = stages.findIndex(s => s.name === stageName);
+          if (idx >= 0 && stages[idx].output !== output) {
+            stages[idx] = { ...stages[idx], output };
+            changed = true;
+          }
+        }
+      }
+      // V2: active stage output from stage_executions (takes priority)
+      if (activeStageOutput && activeStage) {
+        const idx = stages.findIndex(s => s.name === activeStage.name);
+        if (idx >= 0 && stages[idx].output !== activeStageOutput) {
+          stages[idx] = { ...stages[idx], output: activeStageOutput };
+          changed = true;
+        }
+      }
+      return changed ? { stages } : state;
+    });
+  }, [allOutputs, activeStageOutput, activeStage?.name]);
 
   // Active stage output comes from React Query (via the allOutputs sync above).
   // No manual fetch needed — React Query handles caching and refetching.
@@ -653,6 +677,15 @@ export default function PipelinePage() {
 
   const handleStop = useCallback(() => {
     abort();
+    // Also reset the backend stage — covers the case where the page was
+    // refreshed and the local SSE connection is gone but the stage is still
+    // running on the server. Without this, the stage stays at 'in_progress'.
+    const s = usePipelineStore.getState();
+    const stage = s.stages[s.activeStageIndex];
+    if (s.currentPipelineRunId && stage && (stage.status === 'generating' || stage.status === 'validating')) {
+      apiClient.post(`/pipeline/${s.currentPipelineRunId}/reset/${stage.name}`, {}).catch(() => {});
+      s.setStageStatus(s.activeStageIndex, 'failed');
+    }
   }, [abort]);
 
   // ─── Hard Refresh — purge all caches, re-sync from API ────
@@ -676,6 +709,8 @@ export default function PipelinePage() {
     // 3. Invalidate all React Query caches — triggers automatic refetch
     queryClient.invalidateQueries({ queryKey: ['pipeline'] });
     queryClient.invalidateQueries({ queryKey: ['pipeline-status'] });
+    queryClient.invalidateQueries({ queryKey: ['pipeline-status-v2'] });
+    queryClient.invalidateQueries({ queryKey: ['stage-execution-output'] });
     queryClient.invalidateQueries({ queryKey: ['all-stage-outputs'] });
     queryClient.invalidateQueries({ queryKey: ['stage-output'] });
     queryClient.invalidateQueries({ queryKey: ['stage-validation'] });
@@ -1082,6 +1117,11 @@ export default function PipelinePage() {
               onReject={() => {}}
               isExecuting={isExecuting}
               currentPhase={currentPhase}
+              dbStageProgress={activeStageV2?.latest ? {
+                startedAt: activeStageV2.latest.started_at ?? undefined,
+                completedAt: activeStageV2.latest.completed_at ?? undefined,
+                status: activeStageV2.latest.status,
+              } : undefined}
               promptEditorOpen={promptEditorOpen}
               onTogglePromptEditor={togglePromptEditor}
               currentPrompt={currentPrompt}
