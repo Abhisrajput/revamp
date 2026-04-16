@@ -191,7 +191,7 @@ export async function recordStageSpend(ctx: StageSpendContext): Promise<void>;
 
 ### Error handling
 
-Entire body wrapped in a try/catch that logs and swallows. Token-accounting failures must never fail a pipeline stage. This matches the existing invariant (all three current recording blocks already wrap in try/catch).
+Each DB / budget operation is individually wrapped in a try/catch that logs and swallows. Isolating errors per operation is required so a `cost_events` write still succeeds even if the `llm_usage` write fails (and vice versa), and so budget-hook failures don't drop the actual ledger writes. Token-accounting failures must never fail a pipeline stage.
 
 ### Call sites
 

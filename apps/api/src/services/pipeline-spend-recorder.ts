@@ -15,7 +15,6 @@ import {
 } from "./pipeline-budget.js";
 import type { OnStageEvent } from "@revamp/core-engine";
 import type { PipelineStageName } from "@revamp/shared-types/pipeline";
-import crypto from "crypto";
 
 export interface StageSpendContext {
   pipelineRunId: string;
@@ -46,7 +45,6 @@ export async function recordStageSpend(ctx: StageSpendContext): Promise<void> {
   // 1) llm_usage — legacy table, aggregates only
   try {
     await db.insert(llmUsage).values({
-      id: crypto.randomUUID(),
       project_id: ctx.projectId,
       pipeline_run_id: ctx.pipelineRunId,
       model: ctx.model,

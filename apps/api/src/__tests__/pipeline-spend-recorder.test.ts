@@ -72,7 +72,7 @@ describe("recordStageSpend", () => {
     const usageEventArg = (onEvent.mock.calls as any[][])[0][0];
     expect(usageEventArg.phase).toBe("usage");
     expect(usageEventArg.stageName).toBe(PipelineStageName.SCAN);
-    expect(usageEventArg.data.cost).toBeGreaterThan(0);
+    expect(usageEventArg.data.cost).toBe(65);
   });
 
   it("short-circuits when all token counts are zero", async () => {
@@ -119,7 +119,7 @@ describe("recordStageSpend", () => {
       cached_tokens: 5_000,
       cache_creation_tokens: 40_000,
     });
-    expect(costEventsValues.cost_cents).toBeGreaterThan(0);
+    expect(costEventsValues.cost_cents).toBe(65);
   });
 
   it("writes llm_usage with regular input only (not summed)", async () => {
@@ -132,6 +132,16 @@ describe("recordStageSpend", () => {
       input_tokens: 10_000,   // regular only — not 10_000 + 5_000 + 40_000
       output_tokens: 2_000,
     });
-    expect(llmUsageValues.cost).toBeGreaterThan(0);
+    expect(llmUsageValues.cost).toBe(65);
+  });
+
+  it("writes cost_events even when llm_usage insert fails", async () => {
+    insertValuesMock.mockRejectedValueOnce(new Error("first insert fails"));
+    await recordStageSpend(baseCtx);
+    // Both inserts should have been attempted — the first rejected, the second should still have run.
+    expect(insertMock).toHaveBeenCalledTimes(2);
+    // And budget hooks should still fire.
+    expect(recordPipelineSpendMock).toHaveBeenCalledTimes(1);
+    expect(enforceProjectBudgetMock).toHaveBeenCalledTimes(1);
   });
 });
