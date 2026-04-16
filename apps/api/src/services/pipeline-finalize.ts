@@ -17,11 +17,15 @@ import type { StageRunResult, OnStageEvent } from "@revamp/core-engine";
 import type { AgentStageContext } from "./agent-pipeline.js";
 import { recordAgentCompletion } from "./agent-pipeline.js";
 import {
-  updateStageProgress,
-  createApprovalGate,
   storeStageOutput,
   updateProjectMetrics,
 } from "./pipeline-repository.js";
+import {
+  getLatestExecution,
+  completeExecution,
+  failExecution,
+  setApprovalStatus,
+} from "./stage-execution-repository.js";
 import { getStageConfig } from "./pipeline-config.js";
 import {
   recordPipelineSpend,
@@ -53,7 +57,11 @@ export async function finalizeStageResult(opts: FinalizeOptions): Promise<void> 
   const { pipelineRunId, projectId, stageName, stageIndex, result, modelName, agentCtx, agentExec, onEvent } = opts;
 
   if (!result.output) {
-    await updateStageProgress(pipelineRunId, stageName, "failed", 0);
+    // Mark stage execution as failed
+    const failedExec = await getLatestExecution(pipelineRunId, stageName);
+    if (failedExec && failedExec.status === 'running') {
+      await failExecution({ executionId: failedExec.id, errorMessage: `${stageName} produced no output` }).catch(() => {});
+    }
     emitStageFailed({ pipelineRunId, projectId, stageName, error: `${stageName} produced no output` });
     return;
   }
@@ -112,16 +120,25 @@ export async function finalizeStageResult(opts: FinalizeOptions): Promise<void> 
     }
   } catch { /* non-fatal */ }
 
-  // 4. Update stage progress + create approval gate
+  // 4. Complete stage execution and set approval status
   const score = result.validation?.confidenceScore ?? 70;
   const config = getStageConfig(stageName);
-  await db.transaction(async (tx) => {
-    await updateStageProgress(pipelineRunId, stageName, "completed", 100, { conn: tx, confidenceScore: score });
+  const latestExec = await getLatestExecution(pipelineRunId, stageName);
+  if (latestExec && latestExec.status === 'running') {
+    await completeExecution({
+      executionId: latestExec.id,
+      output: result.output,
+      validation: result.validation ? {
+        passed: result.validation.passed,
+        confidenceScore: result.validation.confidenceScore,
+        issues: result.validation.issues,
+        recommendations: result.validation.recommendations,
+      } : undefined,
+    }).catch(() => {});
     if (config.requiresApproval) {
-      await createApprovalGate(pipelineRunId, stageName, config.requiredRole || "admin", tx);
-      await updateStageProgress(pipelineRunId, stageName, "awaiting_approval", 100, { conn: tx, confidenceScore: score });
+      await setApprovalStatus(pipelineRunId, stageName, "pending").catch(() => {});
     }
-  });
+  }
 
   // 5. Emit completion event
   emitStageCompleted({ pipelineRunId, projectId, stageName, duration: result.duration, confidenceScore: score });
