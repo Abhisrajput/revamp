@@ -32,6 +32,7 @@ import {
   completeExecution,
   failExecution,
   getStatusForRun,
+  getLatestExecution,
 } from "@/services/stage-execution-repository.js";
 
 // ─── AUDIT LOG HELPER ───────────────────────────────────────────
@@ -340,39 +341,57 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ error: "Pipeline run not found" });
       }
 
-      // Backfill startedAt into stage_progress so the frontend elapsed timer can
-      // resume after a page refresh. Only backfill for stages that are currently
-      // in_progress, and only use stage_runs rows that are still 'running' — this
-      // avoids picking up orphaned/aborted attempts from prior sessions which would
-      // cause the timer to show absurd values like 5+ hours.
-      const enrichedStageProgress = { ...((run.stage_progress as Record<string, any>) || {}) };
-      const inProgressStageNames = Object.entries(enrichedStageProgress)
-        .filter(([, sp]) => sp && typeof sp === "object" && (sp as any).status === "in_progress" && !(sp as any).startedAt)
-        .map(([name]) => name);
-      if (inProgressStageNames.length > 0) {
-        const runningStageRunRows = await db
-          .select({
-            stage_name: stageRuns.stage_name,
-            started_at: stageRuns.started_at,
-          })
-          .from(stageRuns)
-          .where(
-            and(
-              eq(stageRuns.pipeline_run_id, run.id),
-              eq(stageRuns.status, "running"),
-              inArray(stageRuns.stage_name, inProgressStageNames),
-            ),
-          )
-          .orderBy(desc(stageRuns.started_at));
-        const latestStartedAt: Record<string, string> = {};
-        for (const row of runningStageRunRows) {
-          if (!latestStartedAt[row.stage_name] && row.started_at) {
-            latestStartedAt[row.stage_name] = row.started_at.toISOString();
-          }
+      // ─── Build v1-compatible stage_progress from stage_executions ───
+      const { PIPELINE_STAGE_ORDER } = await import("@revamp/shared-types/pipeline");
+      const v2Stages = await getStatusForRun(request.params.pipelineRunId, PIPELINE_STAGE_ORDER);
+
+      // Map v2 status → v1 status for backward compatibility
+      const enrichedStageProgress: Record<string, any> = {};
+      for (const stageName of PIPELINE_STAGE_ORDER) {
+        const entry = v2Stages[stageName];
+        if (!entry?.latest) {
+          enrichedStageProgress[stageName] = { status: "pending" };
+          continue;
         }
-        for (const stageName of inProgressStageNames) {
-          if (latestStartedAt[stageName]) {
-            enrichedStageProgress[stageName] = { ...enrichedStageProgress[stageName], startedAt: latestStartedAt[stageName] };
+        const v2Status = entry.latest.status;
+        const approvalStatus = entry.latest.approval_status;
+        // v2 "running" → v1 "in_progress"
+        // v2 "completed" with pending approval → v1 "awaiting_approval"
+        // everything else passes through
+        let v1Status: string;
+        if (v2Status === "running") {
+          v1Status = "in_progress";
+        } else if (v2Status === "completed" && approvalStatus === "pending") {
+          v1Status = "awaiting_approval";
+        } else {
+          v1Status = v2Status;
+        }
+        enrichedStageProgress[stageName] = {
+          status: v1Status,
+          startedAt: entry.latest.started_at ?? undefined,
+          completedAt: entry.latest.completed_at ?? undefined,
+          version: entry.latest.version,
+          model: entry.latest.model,
+          error_message: entry.latest.error_message,
+        };
+      }
+
+      // Derive current_stage from v2 data: first running stage, or the latest non-pending stage
+      let currentStageName: string | null = null;
+      for (const stageName of PIPELINE_STAGE_ORDER) {
+        const entry = v2Stages[stageName];
+        if (entry?.latest?.status === "running") {
+          currentStageName = stageName;
+          break;
+        }
+      }
+      if (!currentStageName) {
+        // Fall back to the latest stage that has any execution
+        for (let i = PIPELINE_STAGE_ORDER.length - 1; i >= 0; i--) {
+          const stageName = PIPELINE_STAGE_ORDER[i];
+          if (v2Stages[stageName]?.latest) {
+            currentStageName = stageName;
+            break;
           }
         }
       }
@@ -405,9 +424,9 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         pending: 0,
         rounds: 0,
       };
-      const currentStageStatus = enrichedStageProgress[run.current_stage ?? ""]?.status;
-      const isStageActive = currentStageStatus && currentStageStatus !== "pending";
-      if (run.current_stage && isStageActive) { try {
+      const currentStageV1Status = enrichedStageProgress[currentStageName ?? ""]?.status;
+      const isStageActive = currentStageV1Status && currentStageV1Status !== "pending";
+      if (currentStageName && isStageActive) { try {
         // Fetch subtasks for any non-pending stage (in_progress, completed, approved,
         // awaiting_approval) so the bot grid persists after page refresh.
         // Use a single SQL query that joins stage_runs to scope subtasks to the
@@ -425,12 +444,12 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
           SELECT ast.id, ast.title, ast.priority, ast.status, ast.cost_cents, ast.created_at
             FROM agent_subtasks ast
            WHERE ast.pipeline_run_id = ${run.id}
-             AND ast.stage_name = ${run.current_stage}
+             AND ast.stage_name = ${currentStageName}
              AND ast.created_at >= (
                SELECT sr.started_at
                  FROM stage_runs sr
                 WHERE sr.pipeline_run_id = ${run.id}
-                  AND sr.stage_name = ${run.current_stage}
+                  AND sr.stage_name = ${currentStageName}
                 ORDER BY sr.started_at DESC
                 LIMIT 1
              )
@@ -530,7 +549,7 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
       return reply.send({
         id: run.id,
         status: run.status,
-        current_stage: run.current_stage,
+        current_stage: currentStageName,
         current_stage_subtasks: currentStageSubtasks,
         current_stage_progress: currentStageProgress,
         stage_progress: enrichedStageProgress,
@@ -712,26 +731,29 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         await pipelineService.resetRunStatus(pipelineRunId);
       }
 
-      // ─── Stage prerequisite guardrail ───────────────────────────
+      // ─── Stage prerequisite guardrail (reads from stage_executions) ──
       // Ensure all prior stages are completed/approved before allowing execution
       const stageOrder = getStageOrder();
       const currentStageIdx = stageOrder.indexOf(stageName);
-      const stageProgress = (run.stage_progress as Record<string, { status?: string }>) || {};
 
       if (currentStageIdx > 0) {
+        const { PIPELINE_STAGE_ORDER: stageOrderForPrereq } = await import("@revamp/shared-types/pipeline");
+        const v2StatusMap = await getStatusForRun(pipelineRunId, stageOrderForPrereq);
+
         for (let i = 0; i < currentStageIdx; i++) {
           const priorStage = stageOrder[i];
-          const priorStatus = stageProgress[priorStage]?.status;
+          const priorEntry = v2StatusMap[priorStage];
+          const priorApproval = priorEntry?.latest?.approval_status;
+          const priorStatus = priorEntry?.latest?.status;
 
           // Allow next stage ONLY when prior stage is explicitly approved or skipped.
           // Approval is a HARD GATE — the stage output must be reviewed before proceeding.
           // This ensures every stage output is validated by a human before the next stage builds on it.
-          const doneStatuses = new Set(["approved", "skipped"]);
-          if (!doneStatuses.has(priorStatus || "")) {
+          if (priorApproval !== "approved" && priorStatus !== "skipped") {
             const priorConfig = pipelineService.getStageConfig(priorStage);
 
             // Provide a clear message depending on whether the stage needs approval or hasn't run
-            const needsApproval = priorStatus === "completed" || priorStatus === "awaiting_approval";
+            const needsApproval = priorApproval === "pending" || (priorStatus === "completed" && !priorApproval);
             const message = needsApproval
               ? `Cannot execute ${stageName}: prior stage "${priorStage}" is awaiting approval. Please review and approve it first.`
               : `Cannot execute ${stageName}: prerequisite stage "${priorStage}" (${priorConfig.name}) has not been completed yet (status: ${priorStatus || "pending"}).`;
@@ -741,39 +763,32 @@ export async function pipelineRoutes(fastify: FastifyInstance) {
         }
       }
 
-      // ─── Approval gate enforcement ─────────────────────────────
-      // Atomic guard: acquire row lock, check stage status, set to in_progress.
+      // ─── Concurrency lock (reads from stage_executions) ────────
+      // Atomic guard: acquire row lock, check stage status via stage_executions.
       // This prevents concurrent execution of the same stage — the second request
-      // will block on the FOR UPDATE lock until the first sets in_progress, then see
-      // the updated status and return 409.
+      // will block on the FOR UPDATE lock until the first creates its execution as
+      // "running", then see the updated status and return 409.
       const lockAcquired = await db.transaction(async (tx) => {
-        // Acquire exclusive row lock on the pipeline run
+        // Acquire exclusive row lock on the pipeline run (without reading stage_progress)
         const lockResult = await tx.execute(
-          sql`SELECT stage_progress FROM ${pipelineRuns} WHERE id = ${pipelineRunId} FOR UPDATE`
+          sql`SELECT id FROM ${pipelineRuns} WHERE id = ${pipelineRunId} FOR UPDATE`
         );
         const locked = lockResult.rows?.[0] ?? (lockResult as any)[0];
         if (!locked) return { ok: false, error: "Pipeline run not found", code: 404 };
 
-        const sp = (locked.stage_progress as Record<string, { status?: string }>) || {};
-        const currentStatus = sp[stageName]?.status;
+        // Check current status from stage_executions
+        const latestExec = await getLatestExecution(pipelineRunId, stageName, tx);
+        const currentStatus = latestExec?.status;
 
-        if (currentStatus === "in_progress") {
+        if (currentStatus === "running") {
           return { ok: false, error: "Stage is already executing", code: 409 };
         }
-        if (currentStatus === "awaiting_approval") {
-          const pendingGate = await tx.query.approvalGates.findFirst({
-            where: and(
-              eq(approvalGates.pipeline_run_id, pipelineRunId),
-              eq(approvalGates.stage_name, stageName),
-            ),
-          });
-          if (pendingGate && pendingGate.status === "pending") {
-            return {
-              ok: false,
-              error: `Stage ${stageName} is awaiting approval. Please review and approve or reject before re-running.`,
-              code: 400,
-            };
-          }
+        if (latestExec?.approval_status === "pending") {
+          return {
+            ok: false,
+            error: `Stage ${stageName} is awaiting approval. Please review and approve or reject before re-running.`,
+            code: 400,
+          };
         }
 
         // The createExecution() call below creates the execution as "running",
