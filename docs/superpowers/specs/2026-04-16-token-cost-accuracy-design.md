@@ -80,10 +80,10 @@ A single Drizzle migration adds the column with default 0. Historical rows read 
 
 The table remains for existing readers. The recorder writes one row per stage execution with aggregates (`input_tokens`, `output_tokens`, `cost`). The `cost` field carries the full, correct, 3-way-priced value; the token fields carry regular input and output only.
 
-### `LLMResponse` (core-engine `llm/types.ts`)
+### `ChatResponse` (core-engine `llm/types.ts`)
 
 ```typescript
-interface LLMResponse {
+interface ChatResponse {
   // existing fields unchanged
   cached_tokens?: number;          // cache_read_input_tokens (unchanged)
   cache_creation_tokens?: number;  // NEW — cache_creation_input_tokens
@@ -267,7 +267,7 @@ The implementation plan enforces this as a dependency step.
 
 ### Unit — core-engine provider adapters
 
-- `anthropic.test.ts` — response with `cache_creation_input_tokens` and `cache_read_input_tokens` populates both fields on `LLMResponse`.
+- `anthropic.test.ts` — response with `cache_creation_input_tokens` and `cache_read_input_tokens` populates both fields on `ChatResponse`.
 - `bedrock.test.ts` — same.
 
 ### Integration — double-write regression

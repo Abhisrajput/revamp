@@ -25,7 +25,7 @@
 
 ### Modify
 
-- `packages/core-engine/src/llm/types.ts` — add `cache_creation_tokens` to `LLMResponse`; add `tokenUsage` optional to `StageRunResult`; extend `LLMCallFn.tokenUsage` shape contract
+- `packages/core-engine/src/llm/types.ts` — add `cache_creation_tokens` to `ChatResponse` (and `StreamChunk.usage`); add `tokenUsage` optional to `StageRunResult`; extend `LLMCallFn.tokenUsage` shape contract
 - `packages/core-engine/src/llm/anthropic.ts` — capture `cache_creation_input_tokens` in both streaming + non-streaming branches
 - `packages/core-engine/src/llm/bedrock.ts` — same
 - `apps/api/src/services/llm-proxy.ts` — propagate `cache_creation_tokens`; extend accumulator to 4 fields; optional external accumulator param
@@ -39,7 +39,7 @@
 
 ---
 
-## Task 1: Extend `LLMResponse` type with `cache_creation_tokens`
+## Task 1: Extend `ChatResponse` type with `cache_creation_tokens`
 
 **Files:**
 - Modify: `packages/core-engine/src/llm/types.ts`
@@ -48,9 +48,9 @@
 
 Run: `sed -n '1,60p' packages/core-engine/src/llm/types.ts` to confirm the existing shape before editing.
 
-- [ ] **Step 2: Add `cache_creation_tokens?: number` to `LLMResponse`**
+- [ ] **Step 2: Add `cache_creation_tokens?: number` to `ChatResponse`**
 
-Locate the `LLMResponse` interface (look for the existing `cached_tokens?: number` field) and add, immediately below it:
+Locate the `ChatResponse` interface (the LLM response type — look for the existing `cached_tokens?: number` field) and add, immediately below it:
 
 ```typescript
   /** Tokens written to prompt cache this call (Anthropic: cache_creation_input_tokens). Priced at 1.25× base input. */
@@ -84,7 +84,7 @@ Expected: clean (no errors).
 
 ```bash
 git add packages/core-engine/src/llm/types.ts
-git commit -m "feat(core-engine): add cache_creation_tokens to LLMResponse, tokenUsage to StageRunResult"
+git commit -m "feat(core-engine): add cache_creation_tokens to ChatResponse, tokenUsage to StageRunResult"
 ```
 
 ---
