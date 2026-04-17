@@ -149,6 +149,29 @@ async function bootstrap() {
     routePrefix: "/docs",
   });
 
+  // Setup guard: short-circuit non-setup requests with 503 until wizard completes.
+  // Dynamic import avoids a circular import at module load time (setup-token → db → server).
+  // Runs after all plugins are registered so DB is reachable.
+  fastify.addHook("onRequest", async (req, reply) => {
+    const path = req.url.split("?")[0];
+    if (
+      path.startsWith("/setup") ||
+      path === "/health" ||
+      path.startsWith("/internal") ||
+      path.startsWith("/metrics") ||
+      path.startsWith("/docs")
+    ) {
+      return;
+    }
+    const { isSetupComplete } = await import("@/services/setup-token.js");
+    if (!(await isSetupComplete())) {
+      return reply.code(503).send({
+        error: "Setup not complete",
+        redirect: "/setup",
+      });
+    }
+  });
+
   // Register routes
   await fastify.register(authRoutes);
   await fastify.register(projectRoutes);
