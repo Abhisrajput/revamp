@@ -2,10 +2,14 @@
  * Fastify auth plugin backed by Keycloak JWKS.
  *
  * Decorates:
- *   - app.requireAuth: preHandler that enforces a valid Keycloak bearer token.
- *     Populates BOTH request.keycloakUser AND (req as any).user from the token's
- *     claims, then UPSERTs the REVAMP users row keyed on keycloak_sub.
+ *   - app.requireAuth / app.authenticate (alias): preHandler that enforces a valid
+ *     Keycloak bearer token. Populates BOTH request.keycloakUser AND (req as any).user
+ *     from the token's claims, then UPSERTs the REVAMP users row keyed on keycloak_sub.
  *   - app.requireRole(role): preHandler that requires a specific realm role.
+ *   - app.authorize(roles[]): preHandler that requires one of the listed RevampRoles.
+ *   - app.requireProjectAdmin: preHandler for admin or project-owner access.
+ *   - app.requireProjectAccess: preHandler for project membership check (:projectId param).
+ *   - app.requirePipelineAccess: preHandler for pipeline membership check (:pipelineRunId param).
  *
  * Why request.keycloakUser AND request.user:
  *   The 14 existing route files access request.user.sub / .role / .organization_id.
@@ -31,8 +35,8 @@ import {
   type RevampRole,
 } from "@/services/keycloak-jwks.js";
 import { db } from "@/db/index.js";
-import { users } from "@/db/schema.js";
-import { eq } from "drizzle-orm";
+import { users, projectMembers, projects, pipelineRuns } from "@/db/schema.js";
+import { eq, and } from "drizzle-orm";
 
 /**
  * Keycloak user shape populated on request.keycloakUser after requireAuth.
@@ -57,9 +61,17 @@ declare module "fastify" {
   }
   interface FastifyInstance {
     requireAuth: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    /** Backward-compat alias for requireAuth — existing routes call fastify.authenticate.
+     *  Typed as `any` to match the auth-legacy module augmentation (TS2717 otherwise). */
+    authenticate: any;
     requireRole: (
       role: RevampRole,
     ) => (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    /** Typed to match the auth-legacy declaration exactly (avoids TS2717). */
+    authorize: (roles: RevampRole[]) => any;
+    requireProjectAdmin: any;
+    requireProjectAccess: any;
+    requirePipelineAccess: any;
   }
 }
 
@@ -154,8 +166,101 @@ const plugin: FastifyPluginAsync = async (app) => {
       }
     };
 
+  // ─── authorize — enforce bearer + check a RevampRole membership ────────────
+  // Ported from auth-legacy. Keycloak path: requireAuth populates (req as any).user.role.
+  const authorize =
+    (roles: RevampRole[]) =>
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      await requireAuth(req, reply);
+      if (reply.sent) return;
+      const user = (req as any).user;
+      if (!user || !roles.includes(user.role)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+    };
+
+  // ─── requireProjectAdmin — system admin OR project owner ─────────────────
+  const requireProjectAdmin = async (
+    req: FastifyRequest<{ Params: { projectId?: string } }>,
+    reply: FastifyReply,
+  ) => {
+    await requireAuth(req, reply);
+    if (reply.sent) return;
+    const user = (req as any).user;
+    if (user?.role === "admin") return;
+    const projectId = req.params?.projectId;
+    if (!projectId) return reply.code(400).send({ error: "Project ID is required" });
+    const membership = await db.query.projectMembers.findFirst({
+      where: and(
+        eq(projectMembers.project_id, projectId),
+        eq(projectMembers.user_id, user.sub),
+      ),
+    });
+    if (!membership || membership.role !== "owner") {
+      return reply.code(403).send({ error: "Forbidden — requires system admin or project owner role" });
+    }
+  };
+
+  // ─── requireProjectAccess — user must be a project member or admin ────────
+  const requireProjectAccess = async (
+    req: FastifyRequest<{ Params: { projectId?: string } }>,
+    reply: FastifyReply,
+  ) => {
+    await requireAuth(req, reply);
+    if (reply.sent) return;
+    const user = (req as any).user;
+    if (user?.role === "admin") return;
+    const projectId = req.params?.projectId;
+    if (!projectId) return reply.code(400).send({ error: "Project ID is required" });
+    const project = await db.query.projects.findFirst({
+      where: eq(projects.id, projectId),
+      columns: { organization_id: true },
+    });
+    if (!project) return reply.code(404).send({ error: "Project not found" });
+    const membership = await db.query.projectMembers.findFirst({
+      where: and(
+        eq(projectMembers.project_id, projectId),
+        eq(projectMembers.user_id, user.sub),
+      ),
+    });
+    if (!membership) return reply.code(403).send({ error: "Access denied — not a project member" });
+  };
+
+  // ─── requirePipelineAccess — user must have access to the pipeline's project ─
+  const requirePipelineAccess = async (
+    req: FastifyRequest<{ Params: { pipelineRunId?: string } }>,
+    reply: FastifyReply,
+  ) => {
+    await requireAuth(req, reply);
+    if (reply.sent) return;
+    const user = (req as any).user;
+    if (user?.role === "admin") return;
+    const pipelineRunId = req.params?.pipelineRunId;
+    if (!pipelineRunId) return reply.code(400).send({ error: "Pipeline run ID is required" });
+    const run = await db.query.pipelineRuns.findFirst({
+      where: eq(pipelineRuns.id, pipelineRunId),
+      columns: { project_id: true },
+    });
+    if (!run) return reply.code(404).send({ error: "Pipeline run not found" });
+    const membership = await db.query.projectMembers.findFirst({
+      where: and(
+        eq(projectMembers.project_id, run.project_id),
+        eq(projectMembers.user_id, user.sub),
+      ),
+    });
+    if (!membership) return reply.code(403).send({ error: "Access denied — not a project member" });
+  };
+
   app.decorate("requireAuth", requireAuth);
+  // Backward-compat alias — 144 existing route handlers call fastify.authenticate.
+  // Both enforce a valid bearer token; keeping the alias avoids a blanket rename
+  // across every route file during the Keycloak rollout.
+  app.decorate("authenticate", requireAuth);
   app.decorate("requireRole", requireRole);
+  app.decorate("authorize", authorize);
+  app.decorate("requireProjectAdmin", requireProjectAdmin);
+  app.decorate("requireProjectAccess", requireProjectAccess);
+  app.decorate("requirePipelineAccess", requirePipelineAccess);
 };
 
 export default fp(plugin, { name: "auth-keycloak" });
