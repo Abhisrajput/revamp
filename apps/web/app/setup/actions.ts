@@ -25,3 +25,47 @@ export async function createRealmAdmin(
 export async function finalize(token: string) {
   return apiPost("/setup/finalize", { token });
 }
+
+export async function createIdpAzure(
+  token: string,
+  params: { tenantId: string; clientId: string; clientSecret: string },
+) {
+  return apiPost("/setup/idp/azure", { token, ...params });
+}
+
+export async function createIdpOkta(
+  token: string,
+  params: { domain: string; clientId: string; clientSecret: string },
+) {
+  return apiPost("/setup/idp/okta", { token, ...params });
+}
+
+export async function createIdpGoogle(
+  token: string,
+  params: { hostedDomain: string; clientId: string; clientSecret: string },
+) {
+  return apiPost("/setup/idp/google", { token, ...params });
+}
+
+export async function createIdpSaml(
+  token: string,
+  params: { alias?: string; singleSignOnServiceUrl: string; entityId?: string },
+) {
+  return apiPost("/setup/idp/saml", { token, ...params });
+}
+
+export async function createIdpOidc(
+  token: string,
+  params: {
+    alias?: string;
+    authorizationUrl: string;
+    tokenUrl: string;
+    userInfoUrl: string;
+    jwksUrl: string;
+    issuer: string;
+    clientId: string;
+    clientSecret: string;
+  },
+) {
+  return apiPost("/setup/idp/oidc", { token, ...params });
+}

@@ -37,6 +37,133 @@ const setupRoutes: FastifyPluginAsync = async (app) => {
     await markSetupComplete();
     return { ok: true };
   });
+
+  // ─── Identity Provider registration (Step 2 of the wizard) ─────────
+
+  app.post("/setup/idp/azure", async (req: any, reply) => {
+    const { token, tenantId, clientId, clientSecret } = req.body ?? {};
+    if (!token || !(await verifyBootstrapToken(token))) {
+      return reply.code(401).send({ error: "Invalid bootstrap token" });
+    }
+    const kc = new KeycloakAdmin();
+    await kc.createIdentityProvider("revamp", {
+      alias: "azure",
+      providerId: "oidc",
+      displayName: "Microsoft / Azure AD",
+      config: {
+        authorizationUrl: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`,
+        tokenUrl: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
+        userInfoUrl: "https://graph.microsoft.com/oidc/userinfo",
+        jwksUrl: `https://login.microsoftonline.com/${tenantId}/discovery/v2.0/keys`,
+        issuer: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+        clientId,
+        clientSecret,
+        defaultScope: "openid profile email",
+        syncMode: "FORCE",
+      },
+    });
+    return { ok: true };
+  });
+
+  app.post("/setup/idp/okta", async (req: any, reply) => {
+    const { token, domain, clientId, clientSecret } = req.body ?? {};
+    if (!token || !(await verifyBootstrapToken(token))) {
+      return reply.code(401).send({ error: "Invalid bootstrap token" });
+    }
+    const kc = new KeycloakAdmin();
+    await kc.createIdentityProvider("revamp", {
+      alias: "okta",
+      providerId: "oidc",
+      displayName: "Okta",
+      config: {
+        authorizationUrl: `https://${domain}/oauth2/v1/authorize`,
+        tokenUrl: `https://${domain}/oauth2/v1/token`,
+        userInfoUrl: `https://${domain}/oauth2/v1/userinfo`,
+        jwksUrl: `https://${domain}/oauth2/v1/keys`,
+        issuer: `https://${domain}`,
+        clientId,
+        clientSecret,
+        defaultScope: "openid profile email groups",
+        syncMode: "FORCE",
+      },
+    });
+    return { ok: true };
+  });
+
+  app.post("/setup/idp/google", async (req: any, reply) => {
+    const { token, hostedDomain, clientId, clientSecret } = req.body ?? {};
+    if (!token || !(await verifyBootstrapToken(token))) {
+      return reply.code(401).send({ error: "Invalid bootstrap token" });
+    }
+    const kc = new KeycloakAdmin();
+    await kc.createIdentityProvider("revamp", {
+      alias: "google",
+      providerId: "google",
+      displayName: "Google Workspace",
+      config: {
+        clientId,
+        clientSecret,
+        hostedDomain,
+        defaultScope: "openid profile email",
+      },
+    });
+    return { ok: true };
+  });
+
+  app.post("/setup/idp/saml", async (req: any, reply) => {
+    const { token, alias, singleSignOnServiceUrl, entityId } = req.body ?? {};
+    if (!token || !(await verifyBootstrapToken(token))) {
+      return reply.code(401).send({ error: "Invalid bootstrap token" });
+    }
+    const kc = new KeycloakAdmin();
+    await kc.createIdentityProvider("revamp", {
+      alias: alias || "saml",
+      providerId: "saml",
+      displayName: "SAML 2.0 IdP",
+      config: {
+        singleSignOnServiceUrl,
+        entityId: entityId || "revamp",
+        postBindingResponse: "true",
+        nameIDPolicyFormat:
+          "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+      },
+    });
+    return { ok: true };
+  });
+
+  app.post("/setup/idp/oidc", async (req: any, reply) => {
+    const {
+      token,
+      alias,
+      authorizationUrl,
+      tokenUrl,
+      userInfoUrl,
+      jwksUrl,
+      issuer,
+      clientId,
+      clientSecret,
+    } = req.body ?? {};
+    if (!token || !(await verifyBootstrapToken(token))) {
+      return reply.code(401).send({ error: "Invalid bootstrap token" });
+    }
+    const kc = new KeycloakAdmin();
+    await kc.createIdentityProvider("revamp", {
+      alias: alias || "oidc",
+      providerId: "oidc",
+      displayName: "OIDC IdP",
+      config: {
+        authorizationUrl,
+        tokenUrl,
+        userInfoUrl,
+        jwksUrl,
+        issuer,
+        clientId,
+        clientSecret,
+        defaultScope: "openid profile email",
+      },
+    });
+    return { ok: true };
+  });
 };
 
 export default setupRoutes;

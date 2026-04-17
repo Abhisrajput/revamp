@@ -1,7 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { verifyToken, createRealmAdmin } from "./actions";
+import {
+  verifyToken,
+  createRealmAdmin,
+  createIdpAzure,
+  createIdpOkta,
+  createIdpGoogle,
+  createIdpSaml,
+  createIdpOidc,
+} from "./actions";
 
 type Step = "token" | "admin" | "idp" | "mapping" | "test" | "users" | "done";
 
@@ -145,21 +153,81 @@ function AdminStep(props: { token: string; onNext: () => void }) {
   );
 }
 
+type IdpProvider = "azure" | "okta" | "google" | "saml" | "oidc";
+
 function IdpStep(props: { token: string; onNext: () => void }) {
-  const [provider, setProvider] = useState<
-    "azure" | "okta" | "google" | "saml" | "oidc"
-  >("azure");
+  const [provider, setProvider] = useState<IdpProvider>("azure");
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // Per-provider field state
+  const [azure, setAzure] = useState({ tenantId: "", clientId: "", clientSecret: "" });
+  const [okta, setOkta] = useState({ domain: "", clientId: "", clientSecret: "" });
+  const [google, setGoogle] = useState({ hostedDomain: "", clientId: "", clientSecret: "" });
+  const [saml, setSaml] = useState({ alias: "", singleSignOnServiceUrl: "", entityId: "" });
+  const [oidc, setOidc] = useState({
+    alias: "",
+    authorizationUrl: "",
+    tokenUrl: "",
+    userInfoUrl: "",
+    jwksUrl: "",
+    issuer: "",
+    clientId: "",
+    clientSecret: "",
+  });
+
+  const inputClass = "border rounded px-3 py-2 w-full";
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setErr(null);
+    setLoading(true);
+    try {
+      let r: Awaited<ReturnType<typeof createIdpAzure>>;
+      if (provider === "azure") {
+        r = await createIdpAzure(props.token, azure);
+      } else if (provider === "okta") {
+        r = await createIdpOkta(props.token, okta);
+      } else if (provider === "google") {
+        r = await createIdpGoogle(props.token, google);
+      } else if (provider === "saml") {
+        r = await createIdpSaml(props.token, {
+          alias: saml.alias || undefined,
+          singleSignOnServiceUrl: saml.singleSignOnServiceUrl,
+          entityId: saml.entityId || undefined,
+        });
+      } else {
+        r = await createIdpOidc(props.token, {
+          alias: oidc.alias || undefined,
+          authorizationUrl: oidc.authorizationUrl,
+          tokenUrl: oidc.tokenUrl,
+          userInfoUrl: oidc.userInfoUrl,
+          jwksUrl: oidc.jwksUrl,
+          issuer: oidc.issuer,
+          clientId: oidc.clientId,
+          clientSecret: oidc.clientSecret,
+        });
+      }
+      if (!r.ok) {
+        setErr((r.body as any)?.error ?? `Failed (status ${r.status})`);
+        return;
+      }
+      props.onNext();
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     <div className="space-y-4">
       <h2 className="text-xl font-semibold">Step 2: Pick your identity provider</h2>
-      <p className="text-sm text-gray-600">
-        Forms for each provider are implemented in Task 13. For now, you can skip this step and
-        configure federation later through Keycloak&apos;s admin UI.
-      </p>
+
       <select
         value={provider}
-        onChange={(e) => setProvider(e.target.value as "azure" | "okta" | "google" | "saml" | "oidc")}
+        onChange={(e) => {
+          setProvider(e.target.value as IdpProvider);
+          setErr(null);
+        }}
         className="border rounded px-3 py-2"
       >
         <option value="azure">Azure AD</option>
@@ -168,14 +236,209 @@ function IdpStep(props: { token: string; onNext: () => void }) {
         <option value="saml">Generic SAML 2.0</option>
         <option value="oidc">Generic OIDC</option>
       </select>
-      <div>
-        <button
-          onClick={() => props.onNext()}
-          className="bg-gray-200 text-gray-900 px-4 py-2 rounded hover:bg-gray-300"
-        >
-          Skip (configure later)
-        </button>
-      </div>
+
+      <form onSubmit={submit} className="space-y-3">
+        {provider === "azure" && (
+          <>
+            <input
+              className={inputClass}
+              placeholder="tenantId"
+              type="text"
+              value={azure.tenantId}
+              onChange={(e) => setAzure({ ...azure, tenantId: e.target.value })}
+              required
+            />
+            <input
+              className={inputClass}
+              placeholder="clientId"
+              type="text"
+              value={azure.clientId}
+              onChange={(e) => setAzure({ ...azure, clientId: e.target.value })}
+              required
+            />
+            <input
+              className={inputClass}
+              placeholder="clientSecret"
+              type="password"
+              value={azure.clientSecret}
+              onChange={(e) => setAzure({ ...azure, clientSecret: e.target.value })}
+              required
+            />
+          </>
+        )}
+
+        {provider === "okta" && (
+          <>
+            <input
+              className={inputClass}
+              placeholder="domain (e.g. your-org.okta.com)"
+              type="text"
+              value={okta.domain}
+              onChange={(e) => setOkta({ ...okta, domain: e.target.value })}
+              required
+            />
+            <input
+              className={inputClass}
+              placeholder="clientId"
+              type="text"
+              value={okta.clientId}
+              onChange={(e) => setOkta({ ...okta, clientId: e.target.value })}
+              required
+            />
+            <input
+              className={inputClass}
+              placeholder="clientSecret"
+              type="password"
+              value={okta.clientSecret}
+              onChange={(e) => setOkta({ ...okta, clientSecret: e.target.value })}
+              required
+            />
+          </>
+        )}
+
+        {provider === "google" && (
+          <>
+            <input
+              className={inputClass}
+              placeholder="hostedDomain (e.g. yourcompany.com)"
+              type="text"
+              value={google.hostedDomain}
+              onChange={(e) => setGoogle({ ...google, hostedDomain: e.target.value })}
+              required
+            />
+            <input
+              className={inputClass}
+              placeholder="clientId"
+              type="text"
+              value={google.clientId}
+              onChange={(e) => setGoogle({ ...google, clientId: e.target.value })}
+              required
+            />
+            <input
+              className={inputClass}
+              placeholder="clientSecret"
+              type="password"
+              value={google.clientSecret}
+              onChange={(e) => setGoogle({ ...google, clientSecret: e.target.value })}
+              required
+            />
+          </>
+        )}
+
+        {provider === "saml" && (
+          <>
+            <input
+              className={inputClass}
+              placeholder="alias (optional, defaults to saml)"
+              type="text"
+              value={saml.alias}
+              onChange={(e) => setSaml({ ...saml, alias: e.target.value })}
+            />
+            <input
+              className={inputClass}
+              placeholder="singleSignOnServiceUrl"
+              type="url"
+              value={saml.singleSignOnServiceUrl}
+              onChange={(e) => setSaml({ ...saml, singleSignOnServiceUrl: e.target.value })}
+              required
+            />
+            <input
+              className={inputClass}
+              placeholder="entityId (optional, defaults to revamp)"
+              type="text"
+              value={saml.entityId}
+              onChange={(e) => setSaml({ ...saml, entityId: e.target.value })}
+            />
+          </>
+        )}
+
+        {provider === "oidc" && (
+          <>
+            <input
+              className={inputClass}
+              placeholder="alias (optional, defaults to oidc)"
+              type="text"
+              value={oidc.alias}
+              onChange={(e) => setOidc({ ...oidc, alias: e.target.value })}
+            />
+            <input
+              className={inputClass}
+              placeholder="authorizationUrl"
+              type="url"
+              value={oidc.authorizationUrl}
+              onChange={(e) => setOidc({ ...oidc, authorizationUrl: e.target.value })}
+              required
+            />
+            <input
+              className={inputClass}
+              placeholder="tokenUrl"
+              type="url"
+              value={oidc.tokenUrl}
+              onChange={(e) => setOidc({ ...oidc, tokenUrl: e.target.value })}
+              required
+            />
+            <input
+              className={inputClass}
+              placeholder="userInfoUrl"
+              type="url"
+              value={oidc.userInfoUrl}
+              onChange={(e) => setOidc({ ...oidc, userInfoUrl: e.target.value })}
+              required
+            />
+            <input
+              className={inputClass}
+              placeholder="jwksUrl"
+              type="url"
+              value={oidc.jwksUrl}
+              onChange={(e) => setOidc({ ...oidc, jwksUrl: e.target.value })}
+              required
+            />
+            <input
+              className={inputClass}
+              placeholder="issuer"
+              type="url"
+              value={oidc.issuer}
+              onChange={(e) => setOidc({ ...oidc, issuer: e.target.value })}
+              required
+            />
+            <input
+              className={inputClass}
+              placeholder="clientId"
+              type="text"
+              value={oidc.clientId}
+              onChange={(e) => setOidc({ ...oidc, clientId: e.target.value })}
+              required
+            />
+            <input
+              className={inputClass}
+              placeholder="clientSecret"
+              type="password"
+              value={oidc.clientSecret}
+              onChange={(e) => setOidc({ ...oidc, clientSecret: e.target.value })}
+              required
+            />
+          </>
+        )}
+
+        {err && <p className="text-red-600 text-sm">{err}</p>}
+
+        <div className="flex gap-3">
+          <button
+            type="submit"
+            disabled={loading}
+            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+          >
+            {loading ? "Configuring..." : "Configure IdP"}
+          </button>
+          <button
+            type="button"
+            onClick={() => props.onNext()}
+            className="bg-gray-200 text-gray-900 px-4 py-2 rounded hover:bg-gray-300"
+          >
+            Skip (configure later)
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
