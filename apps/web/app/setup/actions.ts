@@ -69,3 +69,49 @@ export async function createIdpOidc(
 ) {
   return apiPost("/setup/idp/oidc", { token, ...params });
 }
+
+// ─── Step 3: Attribute mapping ────────────────────────────────────────────
+
+export async function createAttributeMapping(
+  token: string,
+  params: {
+    idpAlias: string;
+    emailAttr: string;
+    firstNameAttr: string;
+    lastNameAttr: string;
+    groupAttr: string;
+    roleMap: Record<string, "admin" | "architect" | "developer" | "sme">;
+  },
+) {
+  return apiPost("/setup/mapping", { token, ...params });
+}
+
+// ─── Step 3b: MFA policy ──────────────────────────────────────────────────
+
+export async function setMfaPolicy(
+  token: string,
+  policy: "all" | "admins_only" | "optional",
+) {
+  return apiPost("/setup/mfa", { token, policy });
+}
+
+// ─── Step 4: Test IdP connection ─────────────────────────────────────────
+
+export async function getIdpTestUrl(alias: string): Promise<{ ok: boolean; body: { url?: string } | null }> {
+  const r = await fetch(`${API}/setup/test-idp/${encodeURIComponent(alias)}`);
+  return { ok: r.ok, body: await r.json().catch(() => null) };
+}
+
+// ─── Step 5: Bulk user CSV import ─────────────────────────────────────────
+
+export async function importUsersFromCsv(
+  token: string,
+  rows: Array<{
+    email: string;
+    firstName: string;
+    lastName: string;
+    role: "admin" | "architect" | "developer" | "sme";
+  }>,
+) {
+  return apiPost("/setup/users-csv", { token, rows });
+}
