@@ -53,6 +53,7 @@
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
+      "webOrigins": [],
       "attributes": {
         "oauth2.device.authorization.grant.enabled": "true"
       }
