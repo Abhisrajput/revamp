@@ -43,6 +43,19 @@
       "webOrigins": [
         "http://localhost:3000",
         "https://lamp.tavant.com"
+      ],
+      "protocolMappers": [
+        {
+          "name": "audience-revamp-web",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "revamp-web",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
       ]
     },
     {
@@ -56,7 +69,20 @@
       "webOrigins": [],
       "attributes": {
         "oauth2.device.authorization.grant.enabled": "true"
-      }
+      },
+      "protocolMappers": [
+        {
+          "name": "audience-revamp-vscode",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "revamp-vscode",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
     }
   ]
 }
