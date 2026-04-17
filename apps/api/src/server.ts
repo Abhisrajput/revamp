@@ -27,6 +27,8 @@ import { jiraRoutes } from "@/routes/jira.js";
 import { agentEventsRoutes } from "@/routes/agent-events.js";
 import { agentTaskRoutes } from "@/routes/agent-tasks.js";
 import { agentFeatureRoutes } from "@/routes/agent-features.js";
+import setupRoutes from "@/routes/setup.js";
+import { ensureBootstrapToken } from "@/services/setup-token.js";
 
 import { closeDatabaseConnection } from "@/db/index.js";
 // Lazy-import lsp-manager — it's a 65KB module with 63 language server configs
@@ -162,6 +164,7 @@ async function bootstrap() {
   await fastify.register(agentTaskRoutes);
   await fastify.register(agentFeatureRoutes);
   await fastify.register(jiraRoutes);
+  await fastify.register(setupRoutes);
 
   // Health check endpoint (includes BREE Engine status)
   fastify.get("/health", async (request, reply) => {
@@ -359,6 +362,10 @@ async function bootstrap() {
       }
     }
   }
+
+  // Generate bootstrap token on first boot (no-op if already generated or setup complete).
+  // Runs after migrations so revamp_settings table is guaranteed to exist.
+  await ensureBootstrapToken(fastify.log);
 
   try {
     await fastify.listen({ port: PORT, host: HOST });
