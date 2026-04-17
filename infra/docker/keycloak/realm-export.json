@@ -1,0 +1,61 @@
+{
+  "realm": "revamp",
+  "enabled": true,
+  "displayName": "REVAMP",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "offlineSessionIdleTimeout": 2592000,
+  "offlineSessionMaxLifespanEnabled": false,
+  "roles": {
+    "realm": [
+      { "name": "admin",     "description": "REVAMP admin" },
+      { "name": "architect", "description": "REVAMP architect" },
+      { "name": "developer", "description": "REVAMP developer" },
+      { "name": "sme",       "description": "REVAMP subject-matter expert" }
+    ]
+  },
+  "defaultRoles": ["developer"],
+  "clients": [
+    {
+      "clientId": "revamp-web",
+      "name": "REVAMP Web",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "redirectUris": [
+        "http://localhost:3000/auth/callback",
+        "https://lamp.tavant.com/auth/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "https://lamp.tavant.com"
+      ]
+    },
+    {
+      "clientId": "revamp-vscode",
+      "name": "REVAMP VS Code Extension",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "true"
+      }
+    }
+  ]
+}
