@@ -46,7 +46,7 @@ export interface KeycloakUser {
   roles: string[];
   /** Alias for id — populated so existing routes that read request.user.sub continue to work. */
   sub: string;
-  /** Always null for Keycloak-authenticated users until org-scoping is wired in Task 7. */
+  /** Sourced from the REVAMP users row (users table is the source of truth for org membership). Null for new users who have not yet been assigned to an org. */
   organization_id: string | null;
 }
 
@@ -75,7 +75,9 @@ function extractBearer(req: FastifyRequest): string | null {
  * On first login: inserts with email, role, first_name (from display name).
  * On subsequent logins: updates email, role, last_login, updated_at.
  */
-async function projectUser(claims: KeycloakClaims): Promise<{ id: string }> {
+async function projectUser(
+  claims: KeycloakClaims,
+): Promise<{ id: string; organization_id: string | null }> {
   const existing = await db.query.users.findFirst({
     where: eq(users.keycloak_sub, claims.sub),
   });
@@ -91,7 +93,7 @@ async function projectUser(claims: KeycloakClaims): Promise<{ id: string }> {
         updated_at: new Date(),
       })
       .where(eq(users.id, existing.id));
-    return { id: existing.id };
+    return { id: existing.id, organization_id: existing.organization_id ?? null };
   }
 
   const [inserted] = await db
@@ -105,7 +107,8 @@ async function projectUser(claims: KeycloakClaims): Promise<{ id: string }> {
     })
     .returning({ id: users.id });
 
-  return { id: inserted.id };
+  // New users have no org yet — setup wizard or admin will assign them.
+  return { id: inserted.id, organization_id: null };
 }
 
 const plugin: FastifyPluginAsync = async (app) => {
@@ -115,17 +118,17 @@ const plugin: FastifyPluginAsync = async (app) => {
       return reply.code(401).send({ error: "Missing bearer token" });
     try {
       const claims = await verifyKeycloakToken(token);
-      const { id } = await projectUser(claims);
+      const projected = await projectUser(claims);
       const userPayload = {
-        id,
+        id: projected.id,
         keycloak_sub: claims.sub,
         email: claims.email,
         role: claims.role,
         roles: claims.roles,
         // Fields expected by existing route handlers that read request.user.sub,
         // request.user.organization_id, and request.user.role.
-        sub: id,                    // routes use sub as the REVAMP user primary key
-        organization_id: null as string | null,  // Keycloak users are not yet org-scoped; routes that require org_id must be revisited in Task 7
+        sub: projected.id,          // routes use sub as the REVAMP user primary key
+        organization_id: projected.organization_id,  // sourced from the REVAMP users row — the source of truth for org membership
       };
       req.keycloakUser = userPayload;
       // Backward-compat: existing route files access request.user.sub / .role / .organization_id.
