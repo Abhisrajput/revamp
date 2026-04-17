@@ -4,6 +4,15 @@
 # Provisions a single EC2 instance running the full REVAMP stack behind nginx+TLS.
 # Secrets generated on the instance; Let's Encrypt issues a cert if DNS resolves.
 #
+# Security model:
+#   - IMDSv2 required (HttpTokens=required); IMDS hop limit = 1 (containers
+#     cannot reach IMDS on the bridge network).
+#   - When --github-token is provided for a private repo, the token is stored
+#     in AWS Secrets Manager (not embedded in user-data). An EC2 instance role
+#     with least-privilege access to THAT secret only is attached; user-data
+#     fetches the token at runtime, uses it for the initial git clone, then
+#     scrubs it from the git remote so it never persists on disk.
+#
 # Usage:
 #   ./deploy.sh \
 #       --region us-east-1 \
@@ -19,9 +28,6 @@
 #   - AWS CLI authenticated (`aws sts get-caller-identity` succeeds)
 #   - jq
 #   - DNS: create an A record for --domain pointing at the instance's EIP
-#     (this script prints the EIP; do the DNS update yourself and the deploy
-#      will pick up the cert on the next certbot-renew cycle, or SSH in and
-#      retry manually)
 #
 # Idempotency: re-running with the same --domain reuses the existing instance
 # if found. To destroy, `./destroy.sh --domain lamp.tavant.com`.
@@ -63,16 +69,11 @@ done
 [[ -z "$DOMAIN" ]] && { echo "--domain required" >&2; exit 1; }
 [[ -z "$EMAIL"  ]] && { echo "--email required (for Let's Encrypt)" >&2; exit 1; }
 
-# If the repo is private, embed the token in the clone URL.
-CLONE_URL="$REPO_URL"
-if [[ -n "$GITHUB_TOKEN" && "$REPO_URL" == https://github.com/* ]]; then
-  CLONE_URL="${REPO_URL/https:\/\//https:\/\/${GITHUB_TOKEN}@}"
-fi
-
 STACK="revamp-$(echo "$DOMAIN" | tr '.' '-')"
 SG_NAME="${STACK}-sg"
-EIP_TAG_KEY="revamp:stack"
-EIP_TAG_VALUE="$STACK"
+ROLE_NAME="${STACK}-role"
+PROFILE_NAME="${STACK}-profile"
+SECRET_NAME="revamp/${STACK}/github-token"
 
 echo "[deploy] Region:        $REGION"
 echo "[deploy] Domain:        $DOMAIN"
@@ -84,7 +85,7 @@ echo ""
 # ─── sanity checks ───────────────────────────────────────────────────────────
 command -v aws >/dev/null || { echo "aws CLI missing" >&2; exit 1; }
 command -v jq  >/dev/null || { echo "jq missing" >&2; exit 1; }
-aws sts get-caller-identity --region "$REGION" >/dev/null
+ACCOUNT_ID=$(aws sts get-caller-identity --region "$REGION" --query Account --output text)
 
 # ─── discover VPC + subnet (use default VPC) ─────────────────────────────────
 VPC_ID=$(aws ec2 describe-vpcs --region "$REGION" \
@@ -124,6 +125,49 @@ else
   echo "[deploy] Reusing security group $SG_ID"
 fi
 
+# ─── GitHub PAT → Secrets Manager + IAM role (only when --github-token set) ─
+SECRET_ARN=""
+if [[ -n "$GITHUB_TOKEN" ]]; then
+  # Create or update the secret (token never persisted in user-data).
+  if aws secretsmanager describe-secret --region "$REGION" --secret-id "$SECRET_NAME" >/dev/null 2>&1; then
+    aws secretsmanager put-secret-value --region "$REGION" \
+      --secret-id "$SECRET_NAME" --secret-string "$GITHUB_TOKEN" >/dev/null
+  else
+    aws secretsmanager create-secret --region "$REGION" \
+      --name "$SECRET_NAME" \
+      --description "GitHub PAT for $STACK clone at first boot" \
+      --secret-string "$GITHUB_TOKEN" \
+      --tags Key=revamp:stack,Value="$STACK" >/dev/null
+  fi
+  SECRET_ARN=$(aws secretsmanager describe-secret --region "$REGION" \
+    --secret-id "$SECRET_NAME" --query ARN --output text)
+  echo "[deploy] Stored PAT in Secrets Manager: $SECRET_NAME"
+
+  # IAM role with least-privilege access to ONLY that secret.
+  TRUST_DOC='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+  if ! aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+    aws iam create-role --role-name "$ROLE_NAME" \
+      --assume-role-policy-document "$TRUST_DOC" \
+      --tags Key=revamp:stack,Value="$STACK" >/dev/null
+  fi
+  # Inline policy — scope is exactly this one secret ARN.
+  POLICY_DOC=$(jq -n --arg arn "$SECRET_ARN" '{
+    Version: "2012-10-17",
+    Statement: [{ Effect: "Allow", Action: ["secretsmanager:GetSecretValue"], Resource: $arn }]
+  }')
+  aws iam put-role-policy --role-name "$ROLE_NAME" \
+    --policy-name "${STACK}-github-token-read" \
+    --policy-document "$POLICY_DOC" >/dev/null
+
+  if ! aws iam get-instance-profile --instance-profile-name "$PROFILE_NAME" >/dev/null 2>&1; then
+    aws iam create-instance-profile --instance-profile-name "$PROFILE_NAME" >/dev/null
+    aws iam add-role-to-instance-profile --instance-profile-name "$PROFILE_NAME" --role-name "$ROLE_NAME"
+    # IAM propagation: wait briefly before run-instances uses it.
+    sleep 10
+  fi
+  echo "[deploy] IAM profile $PROFILE_NAME ready"
+fi
+
 # ─── find Amazon Linux 2023 AMI ──────────────────────────────────────────────
 AMI_ID=$(aws ec2 describe-images --region "$REGION" --owners amazon \
   --filters \
@@ -132,7 +176,7 @@ AMI_ID=$(aws ec2 describe-images --region "$REGION" --owners amazon \
   --query 'sort_by(Images, &CreationDate)[-1].ImageId' --output text)
 echo "[deploy] AMI: $AMI_ID (Amazon Linux 2023)"
 
-# ─── prepare user-data ───────────────────────────────────────────────────────
+# ─── prepare user-data (no secrets embedded) ─────────────────────────────────
 USER_DATA_DIR=$(mktemp -d)
 trap 'rm -rf "$USER_DATA_DIR"' EXIT
 USER_DATA_PATH="$USER_DATA_DIR/user-data.sh"
@@ -140,8 +184,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 sed \
   -e "s|{{PUBLIC_HOST}}|${DOMAIN}|g" \
   -e "s|{{LE_EMAIL}}|${EMAIL}|g" \
-  -e "s|{{REPO_URL}}|${CLONE_URL}|g" \
+  -e "s|{{REPO_URL}}|${REPO_URL}|g" \
   -e "s|{{REPO_REF}}|${REPO_REF}|g" \
+  -e "s|{{AWS_REGION}}|${REGION}|g" \
+  -e "s|{{SECRET_ARN}}|${SECRET_ARN}|g" \
   "${SCRIPT_DIR}/user-data.sh" > "$USER_DATA_PATH"
 
 # ─── reuse existing instance if one is tagged for this stack ────────────────
@@ -155,17 +201,24 @@ if [[ "$EXISTING_ID" != "None" && -n "$EXISTING_ID" ]]; then
   INSTANCE_ID="$EXISTING_ID"
   echo "[deploy] Reusing existing instance $INSTANCE_ID"
 else
-  INSTANCE_ID=$(aws ec2 run-instances --region "$REGION" \
-    --image-id "$AMI_ID" \
-    --instance-type "$INSTANCE_TYPE" \
-    --key-name "$KEY_NAME" \
-    --security-group-ids "$SG_ID" \
-    --subnet-id "$SUBNET_ID" \
-    --associate-public-ip-address \
-    --block-device-mappings "[{\"DeviceName\":\"/dev/xvda\",\"Ebs\":{\"VolumeSize\":${VOLUME_GB},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true}}]" \
-    --user-data "file://$USER_DATA_PATH" \
-    --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$STACK},{Key=revamp:stack,Value=$STACK}]" \
-    --query 'Instances[0].InstanceId' --output text)
+  RUN_ARGS=(
+    --region "$REGION"
+    --image-id "$AMI_ID"
+    --instance-type "$INSTANCE_TYPE"
+    --key-name "$KEY_NAME"
+    --security-group-ids "$SG_ID"
+    --subnet-id "$SUBNET_ID"
+    --associate-public-ip-address
+    --block-device-mappings "[{\"DeviceName\":\"/dev/xvda\",\"Ebs\":{\"VolumeSize\":${VOLUME_GB},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true}}]"
+    --user-data "file://$USER_DATA_PATH"
+    # IMDSv2 required; hop limit 1 blocks container access via the docker bridge.
+    --metadata-options "HttpTokens=required,HttpPutResponseHopLimit=1,HttpEndpoint=enabled"
+    --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$STACK},{Key=revamp:stack,Value=$STACK}]"
+  )
+  if [[ -n "$SECRET_ARN" ]]; then
+    RUN_ARGS+=(--iam-instance-profile "Name=$PROFILE_NAME")
+  fi
+  INSTANCE_ID=$(aws ec2 run-instances "${RUN_ARGS[@]}" --query 'Instances[0].InstanceId' --output text)
   echo "[deploy] Launched instance $INSTANCE_ID — waiting for running state"
 fi
 
@@ -196,6 +249,8 @@ cat <<EOF
 ║ Region:       $REGION
 ║ Public IP:    $PUBLIC_IP
 ║ Domain:       $DOMAIN
+║ IMDS:         v2 required, hop-limit 1 (containers cannot reach IMDS)
+║ PAT:          ${SECRET_ARN:-<public repo — no token needed>}
 ║
 ║ Next steps:
 ║   1. Point your DNS A record for $DOMAIN at $PUBLIC_IP
