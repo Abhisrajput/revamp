@@ -46,10 +46,19 @@ ENV NODE_ENV=production
 # Turbo needs to find pnpm in PATH — already on via corepack above.
 RUN pnpm turbo build --filter=@revamp/api...
 
-# Drizzle SQL migrations are gitignored in this repo, so we regenerate from
-# schema.ts at image-build time. The resulting drizzle/*.sql files ship with
-# the runtime image and are applied on boot by the entrypoint below.
-RUN cd apps/api && pnpm drizzle-kit generate
+# Drizzle SQL migrations are gitignored in this repo, but the journal at
+# apps/api/drizzle/meta/_journal.json IS committed and references .sql files
+# we don't have. Wipe the drizzle folder entirely and regenerate from
+# schema.ts to get a single consolidated migration representing the full
+# current schema. This is safe for fresh DBs (our deploy target) because
+# drizzle-orm tracks applied migrations in its own __drizzle_migrations
+# ledger and is idempotent on re-run.
+RUN cd apps/api && \
+    rm -rf drizzle && \
+    mkdir -p drizzle/meta && \
+    echo '{"version":"7","dialect":"postgresql","entries":[]}' > drizzle/meta/_journal.json && \
+    pnpm drizzle-kit generate && \
+    echo "=== generated migrations ===" && ls -la drizzle/
 
 # ─── runner: minimal production image ───────────────────────────────────────
 FROM node:20-alpine AS runner
