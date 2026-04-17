@@ -120,6 +120,30 @@ else
   fi
 fi
 
+# ─── generate self-signed TLS cert for HTTPS on the IP ─────────────────────
+# Can't use Let's Encrypt for a bare IP, but Chrome auto-upgrades typed URLs to
+# https:// and corporate proxies often block plain HTTP — so we ship a
+# self-signed cert. Users click through the browser warning once.
+TLS_DIR="${SCRIPT_DIR}/tls"
+mkdir -p "${TLS_DIR}"
+if [[ ! -s "${TLS_DIR}/fullchain.pem" ]] || ! openssl x509 -in "${TLS_DIR}/fullchain.pem" -noout -ext subjectAltName 2>/dev/null | grep -q "${PUBLIC_HOST}"; then
+  echo "[setup] Generating self-signed TLS cert for ${PUBLIC_HOST}..."
+  openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
+    -keyout "${TLS_DIR}/privkey.pem" \
+    -out "${TLS_DIR}/fullchain.pem" \
+    -days 365 \
+    -subj "/CN=${PUBLIC_HOST}" \
+    -addext "subjectAltName=IP:${PUBLIC_HOST},DNS:${PUBLIC_HOST}" \
+    2>/dev/null
+  chmod 600 "${TLS_DIR}/privkey.pem"
+  chmod 644 "${TLS_DIR}/fullchain.pem"
+fi
+
+# ─── switch URLs to https:// so OIDC redirects stay on TLS ──────────────────
+# With the cert in place, we prefer https:// everywhere. Chrome won't downgrade,
+# and Keycloak's own redirects (built from X-Forwarded-Proto) stay on https.
+SCHEME="https"
+
 # ─── patch realm-export with PUBLIC_HOST ────────────────────────────────────
 # Keycloak's realm-export.json hardcodes redirect URIs for localhost + lamp.tavant.com.
 # For an IP deploy we need to inject the current PUBLIC_HOST so the OIDC callback

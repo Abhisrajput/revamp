@@ -191,8 +191,12 @@ services:
     depends_on: [revamp-web, keycloak]
     volumes:
       - ./nginx-http.conf:/etc/nginx/nginx.conf:ro
+      # Self-signed cert for the IP deploy. Chrome will warn once; users click
+      # "Proceed". Generated on the host by setup-on-host.sh before `up`.
+      - ./tls:/etc/nginx/tls:ro
     ports:
       - "80:80"
+      - "443:443"
     networks: [revamp]
     restart: unless-stopped
 

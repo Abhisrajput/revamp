@@ -72,6 +72,12 @@ PATCHED=$(curl -sf -H "Authorization: Bearer ${TOKEN}" \
 curl -sf -X PUT -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
   "http://localhost/kc/admin/realms/revamp/clients/${CID}" -d "${PATCHED}"
 
+echo "[kc-patch] Setting realm sslRequired=NONE (IP deploy runs on plain HTTP)..."
+REALM_JSON=$(curl -sf -H "Authorization: Bearer ${TOKEN}" \
+  "http://localhost/kc/admin/realms/revamp" | jq '.sslRequired = "none"')
+curl -sf -X PUT -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  "http://localhost/kc/admin/realms/revamp" -d "${REALM_JSON}"
+
 echo "[kc-patch] Done. redirect URIs now include:"
 curl -sf -H "Authorization: Bearer ${TOKEN}" \
   "http://localhost/kc/admin/realms/revamp/clients/${CID}" | \
