@@ -53,9 +53,12 @@ export async function GET(req: Request) {
   const roles = payload.realm_access?.roles ?? [];
   const role = priority.find((r) => roles.includes(r)) ?? "developer";
 
+  // NOTE: do not persist id_token — combined with access+refresh it blows the 4KB
+  // cookie limit (Keycloak RS256 tokens are bulky). We decoded the claims we need
+  // (sub/email/name/role) above; the id_token body itself is not needed after this
+  // request. Logout falls back to post_logout_redirect_uri without id_token_hint.
   session.access_token = tokens.access_token;
   session.refresh_token = tokens.refresh_token;
-  session.id_token = tokens.id_token;
   session.expires_at = Date.now() + tokens.expires_in * 1000;
   session.keycloak_sub = payload.sub;
   session.email = payload.email;
