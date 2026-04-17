@@ -32,11 +32,17 @@ function getJwks() {
 }
 
 function getExpectedAudiences(): string[] {
-  const raw = process.env.KEYCLOAK_AUDIENCE || "";
-  return raw
+  const raw = process.env.KEYCLOAK_AUDIENCE ?? "";
+  const audiences = raw
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  if (audiences.length === 0) {
+    throw new Error(
+      "KEYCLOAK_AUDIENCE not configured (must be comma-separated client IDs)"
+    );
+  }
+  return audiences;
 }
 
 function pickHighestRole(roles: string[]): RevampRole {

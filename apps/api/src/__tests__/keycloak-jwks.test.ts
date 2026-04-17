@@ -84,4 +84,14 @@ describe("verifyKeycloakToken", () => {
     const claims = await verifyKeycloakToken("multi-role");
     expect(claims.role).toBe("admin");
   });
+
+  it("throws when KEYCLOAK_AUDIENCE is unset", async () => {
+    delete process.env.KEYCLOAK_AUDIENCE;
+    await expect(verifyKeycloakToken("any-token")).rejects.toThrow(/KEYCLOAK_AUDIENCE/);
+  });
+
+  it("throws when KEYCLOAK_AUDIENCE is blank", async () => {
+    process.env.KEYCLOAK_AUDIENCE = "   ";
+    await expect(verifyKeycloakToken("any-token")).rejects.toThrow(/KEYCLOAK_AUDIENCE/);
+  });
 });
