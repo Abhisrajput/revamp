@@ -20,7 +20,7 @@ export const users = pgTable(
   "users",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    keycloak_sub: uuid("keycloak_sub").notNull().unique(),
+    keycloak_sub: uuid("keycloak_sub").unique(),
     email: varchar("email", { length: 255 }).notNull().unique(),
     password_hash: text("password_hash"), // nullable: OTP-only users don't have passwords. Enforced at app level for password signups.
     first_name: varchar("first_name", { length: 255 }),

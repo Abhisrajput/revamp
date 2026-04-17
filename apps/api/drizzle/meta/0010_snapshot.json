@@ -4529,7 +4529,7 @@
           "name": "keycloak_sub",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "email": {
           "name": "email",

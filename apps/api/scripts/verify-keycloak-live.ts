@@ -78,7 +78,7 @@ async function main() {
     enabled: true,
   });
   // Clear Keycloak's auto-attached UPDATE_PROFILE required-action so the direct-grant works
-  const userBody = await fetch(`${base}/admin/realms/${REALM}/users/${sub}`, { headers: h }).then((r) => r.json());
+  const userBody = await fetch(`${base}/admin/realms/${REALM}/users/${sub}`, { headers: h }).then((r) => r.json() as Promise<Record<string, unknown>>);
   await fetch(`${base}/admin/realms/${REALM}/users/${sub}`, {
     method: "PUT",
     headers: h,
@@ -102,7 +102,7 @@ async function main() {
   const patchedWeb = {
     ...webClient,
     directAccessGrantsEnabled: true,
-    attributes: { ...webClient.attributes, "pkce.code.challenge.method": "" },
+    attributes: { ...(webClient.attributes ?? {}), "pkce.code.challenge.method": "" },
   };
   await fetch(`${base}/admin/realms/${REALM}/clients/${webId}`, {
     method: "PUT",
@@ -143,7 +143,7 @@ async function main() {
         ...webClient,
         directAccessGrantsEnabled: origDG,
         attributes: {
-          ...webClient.attributes,
+          ...(webClient.attributes ?? {}),
           "pkce.code.challenge.method": origPkce ?? "S256",
         },
       }),
