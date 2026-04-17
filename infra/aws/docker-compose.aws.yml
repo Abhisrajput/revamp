@@ -131,6 +131,25 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY:-}
+      AGENT_WORKER_URL: http://agent-worker:9090
+    networks: [revamp]
+    restart: unless-stopped
+
+  agent-worker:
+    build:
+      context: ../../services/agent-worker
+      dockerfile: Dockerfile
+    container_name: revamp-agent-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: 9090
+      DATABASE_URL: postgresql://revamp:${POSTGRES_PASSWORD}@postgres:5432/revamp
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      LOG_LEVEL: info
     networks: [revamp]
     restart: unless-stopped
 
