@@ -9,7 +9,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -23,6 +23,6 @@
       "@revamp/core-engine/llm": ["../../packages/core-engine/dist/llm/index"]
     }
   },
-  "include": ["src"],
+  "include": ["src", "scripts"],
   "exclude": ["node_modules", "dist"]
 }
