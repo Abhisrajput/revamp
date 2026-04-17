@@ -174,6 +174,9 @@ services:
     command: ["start-dev", "--import-realm"]
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
+      # Mount only our custom theme; don't shadow the container's built-in
+      # themes directory (parent=keycloak relies on it).
+      - ./keycloak/themes/revamp:/opt/keycloak/themes/revamp:ro
     ports:
       - "8080:8080"
     networks:
