@@ -60,11 +60,18 @@ echo "[kc-patch] Patching revamp-web (${CID}) with http://${PUBLIC_HOST}..."
 
 PATCHED=$(curl -sf -H "Authorization: Bearer ${TOKEN}" \
   "http://localhost/kc/admin/realms/revamp/clients/${CID}" | \
-  jq --arg h "http://${PUBLIC_HOST}" '
-    .redirectUris = ((.redirectUris // []) + [$h + "/auth/callback"] | unique) |
-    .webOrigins = ((.webOrigins // []) + [$h] | unique) |
+  jq --arg http "http://${PUBLIC_HOST}" --arg https "https://${PUBLIC_HOST}" '
+    .redirectUris = (
+      (.redirectUris // [])
+        + [$http + "/auth/callback", $https + "/auth/callback"]
+      | unique
+    ) |
+    .webOrigins = (
+      (.webOrigins // []) + [$http, $https] | unique
+    ) |
     .attributes["post.logout.redirect.uris"] = (
-      (((.attributes["post.logout.redirect.uris"] // "") | split("##")) + [$h + "/"])
+      (((.attributes["post.logout.redirect.uris"] // "") | split("##"))
+        + [$http + "/", $https + "/"])
       | map(select(length > 0)) | unique | join("##")
     )
   ')
