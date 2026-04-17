@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@revamp/ui/components/button';
@@ -60,8 +60,19 @@ const STRENGTH_LABELS: Record<PasswordStrength, string> = {
 };
 
 // --- Page ---
+//
+// useSearchParams() requires a Suspense boundary at build time (Next 14+).
+// Wrap the inner view accordingly; the outer component is the one Next exports.
 
 export default function ResetPasswordPage() {
+  return (
+    <Suspense fallback={<Card className="bg-white dark:bg-slate-900"><div className="p-8">Loading…</div></Card>}>
+      <ResetPasswordInner />
+    </Suspense>
+  );
+}
+
+function ResetPasswordInner() {
   const searchParams = useSearchParams();
   const token = searchParams.get('token');
 
