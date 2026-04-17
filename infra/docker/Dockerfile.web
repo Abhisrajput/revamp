@@ -19,7 +19,9 @@ COPY packages/core-engine/package.json packages/core-engine/
 COPY packages/shared-types/package.json packages/shared-types/
 COPY packages/ui/package.json         packages/ui/
 COPY packages/views/package.json      packages/views/
-COPY packages/config/package.json     packages/config/
+# NOTE: packages/config/ is a folder of shared eslint/tailwind/tsconfig
+# fragments (no package.json of its own), consumed via relative paths — not
+# a workspace package, so nothing to install from it.
 
 RUN pnpm install --no-frozen-lockfile
 
