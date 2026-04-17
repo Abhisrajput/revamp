@@ -71,6 +71,13 @@
       "when": 1776390385565,
       "tag": "0009_tidy_miss_america",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1776401400312,
+      "tag": "0010_curved_hydra",
+      "breakpoints": true
     }
   ]
 }
