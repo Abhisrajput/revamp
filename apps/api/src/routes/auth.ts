@@ -33,12 +33,19 @@ function getRedis(): Redis | null {
 
 // In-memory fallback when Redis is unavailable
 const resetTokenMapFallback = new Map<string, { token: string; expiry: number; userId: string }>();
-setInterval(() => {
-  const now = Date.now();
-  for (const [email, data] of resetTokenMapFallback) {
-    if (now > data.expiry) resetTokenMapFallback.delete(email);
-  }
-}, 15 * 60 * 1000).unref();
+// Cleanup interval is started inside authRoutes() so it only runs when the plugin is registered.
+// A module-level setInterval would fire even when LEGACY_AUTH_ENABLED=false.
+let _cleanupIntervalStarted = false;
+function ensureCleanupInterval() {
+  if (_cleanupIntervalStarted) return;
+  _cleanupIntervalStarted = true;
+  setInterval(() => {
+    const now = Date.now();
+    for (const [email, data] of resetTokenMapFallback) {
+      if (now > data.expiry) resetTokenMapFallback.delete(email);
+    }
+  }, 15 * 60 * 1000).unref();
+}
 
 const resetTokenStore = {
   async set(email: string, data: { token: string; expiry: number; userId: string }) {
@@ -209,6 +216,9 @@ async function trySendEmail(
 }
 
 export async function authRoutes(fastify: FastifyInstance) {
+  // Start the in-memory reset-token cleanup interval now that the plugin is active.
+  ensureCleanupInterval();
+
   // Tight per-route rate limits on sensitive auth endpoints.
   // These override the global rate-limit plugin config for these routes.
   const isDev = process.env.NODE_ENV !== "production";

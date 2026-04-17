@@ -64,6 +64,13 @@
       "when": 1776365151477,
       "tag": "0008_brief_vengeance",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1776390385565,
+      "tag": "0009_tidy_miss_america",
+      "breakpoints": true
     }
   ]
 }

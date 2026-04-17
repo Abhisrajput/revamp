@@ -1,19 +1,21 @@
 
-
 import { useState } from 'react';
 import { Download, FileText, Code, Loader2, X, CheckCircle2 } from 'lucide-react';
 import { Badge } from '@revamp/ui/components/badge';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+// All export requests go through the /api/fastify proxy, which attaches the
+// Keycloak Bearer token server-side. The browser never sees the token.
+const PROXY_BASE = '/api/fastify';
 
 interface ExportDialogProps {
   projectId: string;
   projectName: string;
-  token: string | null;
+  /** @deprecated token is no longer needed — auth is handled by the proxy */
+  token?: string | null;
   onClose: () => void;
 }
 
-export function ExportDialog({ projectId, projectName, token, onClose }: ExportDialogProps) {
+export function ExportDialog({ projectId, projectName, onClose }: ExportDialogProps) {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [completed, setCompleted] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -23,10 +25,10 @@ export function ExportDialog({ projectId, projectName, token, onClose }: ExportD
     setError(null);
 
     try {
-      const url = `${API_BASE_URL}/export/project/${projectId}/${type}`;
+      const url = `${PROXY_BASE}/export/project/${projectId}/${type}`;
       const response = await fetch(url, {
+        credentials: 'include',
         headers: {
-          Authorization: `Bearer ${token}`,
           Accept: type === 'summary' ? 'application/json' : 'application/octet-stream',
         },
       });

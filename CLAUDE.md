@@ -77,6 +77,21 @@ LLM-generated stage outputs hallucinate versions, component counts, and dependen
 - **core-engine changes need `pnpm --filter @revamp/core-engine build`** — the API imports from the compiled `dist/`, not source.
 - **Fastify 5 response schemas must include `additionalProperties: true`** — otherwise the response body gets stripped to empty.
 - **sessionStorage for activity data, NOT localStorage** — survives page refresh within the tab, but doesn't leak between tabs.
+- Keycloak restart kills active browser sessions — users are silently re-logged in
+  via their IdP, but forms in flight lose their CSRF token. Don't restart Keycloak
+  during working hours without a maintenance banner.
+- `setup_complete=false` in revamp_settings → app traps everything at /setup. Reset
+  manually for local dev: `UPDATE revamp_settings SET setup_complete=false, bootstrap_token_hash=null;` then restart the API.
+- Keycloak admin base URL differs in local (localhost:8080) vs AWS (auth.lamp.tavant.com).
+  Env vars KEYCLOAK_ISSUER and KEYCLOAK_ADMIN_BASE_URL must match the target deployment.
+- Host port 8080 conflict: a leftover llm-orche Go service still binds 8080 in some dev
+  environments. Stop it before running `pnpm docker:dev` or Keycloak will fail to bind.
+- Next.js iron-session cookie (`revamp_session`) carries the access token server-side
+  only — never read it in the browser. Client code calls /api/fastify/<path> and the
+  proxy attaches Bearer server-side.
+- WebSocket connects currently still read authStore.token directly (apps/web/app/providers.tsx)
+  — a known follow-up to this Keycloak rollout; ticket-based WS auth comes in a
+  separate PR.
 
 ## Tech Stack
 
@@ -135,7 +150,10 @@ turbo build --filter=@revamp/web
 
 13 tables: `users`, `organizations`, `projects`, `project_members`, `pipeline_runs`, `stage_artifacts`, `llm_usage`, `audit_logs`, `approval_gates`, `prompt_templates`, `project_metrics`, `sessions`, `invitations`
 
-Auth: JWT + bcrypt + OTP, RBAC roles: `admin`, `architect`, `developer`, `sme`
+Auth: Keycloak 25 (OIDC Authorization Code + PKCE for web, device-code for VS Code).
+Realm 'revamp', 4 realm roles (admin, architect, developer, sme). Legacy JWT path
+gated by LEGACY_AUTH_ENABLED=true for rollback; slated for removal one release after
+migration 3 (drop legacy password/OTP columns).
 
 ## Go Agent Worker (services/agent-worker/)
 

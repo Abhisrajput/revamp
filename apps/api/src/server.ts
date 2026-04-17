@@ -13,7 +13,6 @@ import { websocketPlugin } from "@/plugins/websocket.js";
 import errorHandlerPlugin from "@/plugins/error-handler.js";
 import metricsPlugin from "@/plugins/metrics.js";
 
-import { authRoutes } from "@/routes/auth.js";
 import { projectRoutes } from "@/routes/projects.js";
 import { pipelineRoutes } from "@/routes/pipeline.js";
 import { agentRoutes } from "@/routes/agents.js";
@@ -27,6 +26,8 @@ import { jiraRoutes } from "@/routes/jira.js";
 import { agentEventsRoutes } from "@/routes/agent-events.js";
 import { agentTaskRoutes } from "@/routes/agent-tasks.js";
 import { agentFeatureRoutes } from "@/routes/agent-features.js";
+import setupRoutes from "@/routes/setup.js";
+import { ensureBootstrapToken } from "@/services/setup-token.js";
 
 import { closeDatabaseConnection } from "@/db/index.js";
 // Lazy-import lsp-manager — it's a 65KB module with 63 language server configs
@@ -147,8 +148,38 @@ async function bootstrap() {
     routePrefix: "/docs",
   });
 
+  // Setup guard: short-circuit non-setup requests with 503 until wizard completes.
+  // Dynamic import avoids a circular import at module load time (setup-token → db → server).
+  // Runs after all plugins are registered so DB is reachable.
+  fastify.addHook("onRequest", async (req, reply) => {
+    const path = req.url.split("?")[0];
+    if (
+      path.startsWith("/setup") ||
+      path === "/health" ||
+      path.startsWith("/internal") ||
+      path.startsWith("/metrics") ||
+      path.startsWith("/docs")
+    ) {
+      return;
+    }
+    const { isSetupComplete } = await import("@/services/setup-token.js");
+    if (!(await isSetupComplete())) {
+      return reply.code(503).send({
+        error: "Setup not complete",
+        redirect: "/setup",
+      });
+    }
+  });
+
   // Register routes
-  await fastify.register(authRoutes);
+  // Legacy auth path — only registered when LEGACY_AUTH_ENABLED=true (rollback window).
+  if (process.env.LEGACY_AUTH_ENABLED === "true") {
+    const { authRoutes } = await import("@/routes/auth.js");
+    await fastify.register(authRoutes);
+    fastify.log.warn(
+      "LEGACY_AUTH_ENABLED=true — legacy /auth/* routes active (intended for rollback only)",
+    );
+  }
   await fastify.register(projectRoutes);
   await fastify.register(pipelineRoutes);
   await fastify.register(agentRoutes);
@@ -162,6 +193,13 @@ async function bootstrap() {
   await fastify.register(agentTaskRoutes);
   await fastify.register(agentFeatureRoutes);
   await fastify.register(jiraRoutes);
+  await fastify.register(setupRoutes);
+
+  // Dev-only internal test helpers (disabled in production)
+  if (process.env.NODE_ENV !== "production") {
+    const { default: internalTestRoutes } = await import("@/routes/internal-test.js");
+    await fastify.register(internalTestRoutes);
+  }
 
   // Health check endpoint (includes BREE Engine status)
   fastify.get("/health", async (request, reply) => {
@@ -359,6 +397,10 @@ async function bootstrap() {
       }
     }
   }
+
+  // Generate bootstrap token on first boot (no-op if already generated or setup complete).
+  // Runs after migrations so revamp_settings table is guaranteed to exist.
+  await ensureBootstrapToken(fastify.log);
 
   try {
     await fastify.listen({ port: PORT, host: HOST });

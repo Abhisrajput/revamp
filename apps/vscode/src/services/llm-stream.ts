@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { getApiClient } from "./api-client.js";
+import { getAccessToken } from "../auth/device-flow.js";
 
 export interface StreamEvent {
   type: "start" | "content" | "complete" | "error";
@@ -9,6 +10,12 @@ export interface StreamEvent {
 
 export class LLMStreamClient {
   private abortController: AbortController | null = null;
+  private ctx: vscode.ExtensionContext | null = null;
+
+  /** Call once during extension activation to wire up the ExtensionContext. */
+  setContext(ctx: vscode.ExtensionContext): void {
+    this.ctx = ctx;
+  }
 
   async *stream(agentType: string, code: string, language: string): AsyncGenerator<StreamEvent> {
     this.abortController = new AbortController();
@@ -108,9 +115,17 @@ export class LLMStreamClient {
   }
 
   private async getAuthToken(): Promise<string> {
-    // Get from VS Code secrets or configuration
-    const token = await vscode.authentication.getSession("revamp", [], { silent: true });
-    return token?.accessToken || "";
+    if (!this.ctx) return "";
+    const token = await getAccessToken(this.ctx);
+    if (!token) {
+      vscode.window
+        .showWarningMessage("REVAMP: not signed in. Please sign in first.", "Sign In")
+        .then((sel) => {
+          if (sel === "Sign In") vscode.commands.executeCommand("revamp.signIn");
+        });
+      return "";
+    }
+    return token;
   }
 }
 

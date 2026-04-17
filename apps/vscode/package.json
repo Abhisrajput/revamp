@@ -20,7 +20,9 @@
     "onCommand:revamp.runPipeline",
     "onCommand:revamp.showDashboard",
     "onCommand:revamp.modernizeFile",
-    "onCommand:revamp.compareVersions"
+    "onCommand:revamp.compareVersions",
+    "onCommand:revamp.signIn",
+    "onCommand:revamp.signOut"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -48,6 +50,16 @@
       {
         "command": "revamp.compareVersions",
         "title": "REVAMP: Compare Original & Modernized"
+      },
+      {
+        "command": "revamp.signIn",
+        "title": "REVAMP: Sign In",
+        "category": "REVAMP"
+      },
+      {
+        "command": "revamp.signOut",
+        "title": "REVAMP: Sign Out",
+        "category": "REVAMP"
       }
     ],
     "viewsContainers": {
@@ -110,10 +122,15 @@
     "configuration": {
       "title": "REVAMP",
       "properties": {
+        "revamp.keycloakIssuer": {
+          "type": "string",
+          "default": "http://localhost:8080/realms/revamp",
+          "description": "Keycloak OIDC issuer URL (format: https://<keycloak-host>/realms/<realm-name>)"
+        },
         "revamp.apiUrl": {
           "type": "string",
-          "default": "http://localhost:3000",
-          "description": "URL of the REVAMP API server"
+          "default": "http://localhost:8787",
+          "description": "REVAMP API base URL"
         },
         "revamp.defaultModel": {
           "type": "string",

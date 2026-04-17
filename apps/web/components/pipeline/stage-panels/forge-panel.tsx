@@ -21,7 +21,6 @@ import { AgentBotGrid } from '@/components/pipeline/agent-bot-grid';
 import { usePipelineActivityStore } from '@revamp/core/stores/pipeline-activity-store';
 import { useStagePanel } from '@revamp/core/hooks/use-stage-panel';
 import { useUIPreferencesStore } from '@revamp/core/stores/ui-preferences-store';
-import { useAuthStore } from '@revamp/core/stores/auth-store';
 import { apiClient } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 import { inferLanguage, buildFileTree } from '@revamp/core/utils/file-tree';
@@ -210,12 +209,11 @@ export default function ForgePanel({
                 onClick={async () => {
                   if (!pipelineRunId) return;
                   try {
-                    const token = useAuthStore.getState().token;
+                    // Auth is handled by the /api/fastify proxy — no manual token needed.
                     const response = await apiClient.get(
                       `/export/project/${pipelineRunId}/code`,
                       {
                         responseType: 'blob',
-                        headers: token ? { Authorization: `Bearer ${token}` } : {},
                       },
                     );
                     const url = window.URL.createObjectURL(new Blob([response.data]));

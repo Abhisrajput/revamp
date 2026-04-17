@@ -43,3 +43,6 @@ build
 
 # Misc
 *.pem
+
+# Un-ignore source lib/ (root .gitignore excludes lib/ as build artifact)
+!lib/

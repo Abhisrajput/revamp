@@ -29,7 +29,16 @@ export class RevampApiClient {
       (response) => response,
       (error: AxiosError) => {
         if (error.response?.status === 401) {
-          vscode.commands.executeCommand("revamp.logout");
+          // Token expired or rejected — prompt re-authentication via device flow
+          this.clearAuthToken();
+          vscode.commands.executeCommand("setContext", "revamp.authenticated", false);
+          vscode.window
+            .showWarningMessage("REVAMP session expired. Please sign in again.", "Sign In")
+            .then((selection) => {
+              if (selection === "Sign In") {
+                vscode.commands.executeCommand("revamp.signIn");
+              }
+            });
         }
         return Promise.reject(error);
       }
@@ -38,6 +47,10 @@ export class RevampApiClient {
 
   async setAuthToken(token: string): Promise<void> {
     this.client.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+  }
+
+  clearAuthToken(): void {
+    delete this.client.defaults.headers.common["Authorization"];
   }
 
   async signin(email: string, password: string): Promise<{ token: string; user: any }> {
