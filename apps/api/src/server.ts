@@ -195,6 +195,12 @@ async function bootstrap() {
   await fastify.register(jiraRoutes);
   await fastify.register(setupRoutes);
 
+  // Dev-only internal test helpers (disabled in production)
+  if (process.env.NODE_ENV !== "production") {
+    const { default: internalTestRoutes } = await import("@/routes/internal-test.js");
+    await fastify.register(internalTestRoutes);
+  }
+
   // Health check endpoint (includes BREE Engine status)
   fastify.get("/health", async (request, reply) => {
     let breeStatus = "unavailable";
