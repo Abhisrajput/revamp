@@ -20,6 +20,7 @@ export const users = pgTable(
   "users",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    keycloak_sub: uuid("keycloak_sub").unique(),
     email: varchar("email", { length: 255 }).notNull().unique(),
     password_hash: text("password_hash"), // nullable: OTP-only users don't have passwords. Enforced at app level for password signups.
     first_name: varchar("first_name", { length: 255 }),
@@ -430,6 +431,16 @@ export const stageExecutionLogs = pgTable(
     runStageIdx: index("stage_execution_logs_run_stage_idx").on(table.pipeline_run_id, table.stage_name),
   })
 );
+
+// Revamp Settings — single-row config table (id always = 1)
+export const revampSettings = pgTable("revamp_settings", {
+  id: integer("id").primaryKey().default(1),
+  setup_complete: boolean("setup_complete").notNull().default(false),
+  bootstrap_token_hash: varchar("bootstrap_token_hash", { length: 128 }),
+  federation_tested_at: timestamp("federation_tested_at"),
+  created_at: timestamp("created_at").defaultNow().notNull(),
+  updated_at: timestamp("updated_at").defaultNow().notNull(),
+});
 
 // Relations
 export const usersRelations = relations(users, ({ many, one }) => ({
