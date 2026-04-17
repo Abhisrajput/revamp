@@ -8,11 +8,27 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_PATH="${SCRIPT_DIR}/.env"
-if [[ ! -r "${ENV_PATH}" ]]; then
-  echo "[kc-patch] Can't read ${ENV_PATH} — run with sudo." >&2
+# Try script dir first, then common repo layouts, then $REVAMP_ENV override.
+CANDIDATES=(
+  "${REVAMP_ENV:-}"
+  "${SCRIPT_DIR}/.env"
+  "${SCRIPT_DIR}/../../infra/aws/.env"
+  "$(pwd)/infra/aws/.env"
+  "/home/ec2-user/Revamp/infra/aws/.env"
+  "/home/ec2-user/lampv2/Revamp/infra/aws/.env"
+  "/home/ec2-user/lampv2/infra/aws/.env"
+)
+ENV_PATH=""
+for c in "${CANDIDATES[@]}"; do
+  [[ -n "$c" && -r "$c" ]] && { ENV_PATH="$c"; break; }
+done
+if [[ -z "${ENV_PATH}" ]]; then
+  echo "[kc-patch] Can't locate infra/aws/.env. Tried:" >&2
+  for c in "${CANDIDATES[@]}"; do [[ -n "$c" ]] && echo "  $c" >&2; done
+  echo "Re-run with sudo, or: sudo REVAMP_ENV=/path/to/.env bash $0" >&2
   exit 1
 fi
+echo "[kc-patch] Using env file: ${ENV_PATH}"
 # shellcheck disable=SC1090
 source "${ENV_PATH}"
 
