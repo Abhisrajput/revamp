@@ -13,7 +13,6 @@ import { websocketPlugin } from "@/plugins/websocket.js";
 import errorHandlerPlugin from "@/plugins/error-handler.js";
 import metricsPlugin from "@/plugins/metrics.js";
 
-import { authRoutes } from "@/routes/auth.js";
 import { projectRoutes } from "@/routes/projects.js";
 import { pipelineRoutes } from "@/routes/pipeline.js";
 import { agentRoutes } from "@/routes/agents.js";
@@ -173,7 +172,14 @@ async function bootstrap() {
   });
 
   // Register routes
-  await fastify.register(authRoutes);
+  // Legacy auth path — only registered when LEGACY_AUTH_ENABLED=true (rollback window).
+  if (process.env.LEGACY_AUTH_ENABLED === "true") {
+    const { authRoutes } = await import("@/routes/auth.js");
+    await fastify.register(authRoutes);
+    fastify.log.warn(
+      "LEGACY_AUTH_ENABLED=true — legacy /auth/* routes active (intended for rollback only)",
+    );
+  }
   await fastify.register(projectRoutes);
   await fastify.register(pipelineRoutes);
   await fastify.register(agentRoutes);
