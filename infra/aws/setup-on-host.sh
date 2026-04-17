@@ -139,7 +139,7 @@ cat <<EOF
 ║ Web:           http://${PUBLIC_HOST}/
 ║ Setup wizard:  http://${PUBLIC_HOST}/setup
 ║ Login:         http://${PUBLIC_HOST}/auth/login
-║ Keycloak admin: http://${PUBLIC_HOST}/auth/admin/ — creds in .env
+║ Keycloak admin: http://${PUBLIC_HOST}/kc/admin/ — creds in .env
 ║
 ║ Bootstrap token (paste at /setup):
 EOF
