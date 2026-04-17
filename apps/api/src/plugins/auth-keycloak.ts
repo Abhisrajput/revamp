@@ -3,16 +3,18 @@
  *
  * Decorates:
  *   - app.requireAuth: preHandler that enforces a valid Keycloak bearer token.
- *     Populates request.keycloakUser from the token's claims and UPSERTs the
- *     REVAMP users row keyed on keycloak_sub.
+ *     Populates BOTH request.keycloakUser AND (req as any).user from the token's
+ *     claims, then UPSERTs the REVAMP users row keyed on keycloak_sub.
  *   - app.requireRole(role): preHandler that requires a specific realm role.
  *
- * Why request.keycloakUser and not request.user:
- *   @fastify/jwt already augments FastifyRequest.user (typed via FastifyJWT.payload).
- *   Re-declaring user with a different shape causes a TypeScript conflict because
- *   both declarations exist at compile time even though only one plugin loads at
- *   runtime. Using a separate property avoids this conflict cleanly and lets both
- *   auth worlds coexist during the rollout window.
+ * Why request.keycloakUser AND request.user:
+ *   The 14 existing route files access request.user.sub / .role / .organization_id.
+ *   @fastify/jwt augments FastifyRequest.user via its FastifyJWT.payload declaration;
+ *   the Keycloak plugin never calls jwtVerify(), so request.user is undefined in
+ *   Keycloak mode unless explicitly set here. We write both properties so all routes
+ *   work without modification. (req as any).user sidesteps the TypeScript type conflict
+ *   between the two module augmentations — the long-term fix (merging declarations) is
+ *   a separate type-cleanup task.
  *
  * Schema notes:
  *   - users.role is varchar(50) with default "developer" — safe to write any RevampRole.
@@ -42,6 +44,10 @@ export interface KeycloakUser {
   email: string;
   role: RevampRole;
   roles: string[];
+  /** Alias for id — populated so existing routes that read request.user.sub continue to work. */
+  sub: string;
+  /** Always null for Keycloak-authenticated users until org-scoping is wired in Task 7. */
+  organization_id: string | null;
 }
 
 declare module "fastify" {
@@ -110,13 +116,25 @@ const plugin: FastifyPluginAsync = async (app) => {
     try {
       const claims = await verifyKeycloakToken(token);
       const { id } = await projectUser(claims);
-      req.keycloakUser = {
+      const userPayload = {
         id,
         keycloak_sub: claims.sub,
         email: claims.email,
         role: claims.role,
         roles: claims.roles,
+        // Fields expected by existing route handlers that read request.user.sub,
+        // request.user.organization_id, and request.user.role.
+        sub: id,                    // routes use sub as the REVAMP user primary key
+        organization_id: null as string | null,  // Keycloak users are not yet org-scoped; routes that require org_id must be revisited in Task 7
       };
+      req.keycloakUser = userPayload;
+      // Backward-compat: existing route files access request.user.sub / .role / .organization_id.
+      // The legacy @fastify/jwt plugin populated request.user via JWT verification; the Keycloak
+      // plugin never called jwtVerify(), so request.user stays undefined without this assignment.
+      // Using (req as any) sidesteps the TypeScript conflict between @fastify/jwt's FastifyJWT
+      // payload declaration and this plugin's shape — the correct long-term fix is to merge the
+      // module augmentation, but that is deferred to a dedicated type-cleanup task.
+      (req as any).user = userPayload;
     } catch (err) {
       req.log.warn({ err }, "keycloak token validation failed");
       return reply.code(401).send({ error: "Invalid or expired token" });
