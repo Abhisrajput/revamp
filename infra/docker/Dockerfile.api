@@ -46,6 +46,11 @@ ENV NODE_ENV=production
 # Turbo needs to find pnpm in PATH — already on via corepack above.
 RUN pnpm turbo build --filter=@revamp/api...
 
+# Drizzle SQL migrations are gitignored in this repo, so we regenerate from
+# schema.ts at image-build time. The resulting drizzle/*.sql files ship with
+# the runtime image and are applied on boot by the entrypoint below.
+RUN cd apps/api && pnpm drizzle-kit generate
+
 # ─── runner: minimal production image ───────────────────────────────────────
 FROM node:20-alpine AS runner
 WORKDIR /app
@@ -71,7 +76,9 @@ WORKDIR /app/apps/api
 EXPOSE 8787
 ENV PORT=8787
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
   CMD node -e "require('http').get('http://127.0.0.1:' + (process.env.PORT||8787) + '/health', (r) => { if (r.statusCode !== 200) throw new Error(r.statusCode) })"
 
-CMD ["node", "dist/server.js"]
+# Apply any pending Drizzle migrations, then launch the server. Idempotent:
+# drizzle-orm records applied migrations in its own __drizzle_migrations table.
+CMD ["sh", "-c", "node dist/db/migrate.js && exec node dist/server.js"]
