@@ -69,15 +69,23 @@ RUN corepack enable && corepack prepare pnpm@9 --activate
 # Unprivileged user
 RUN addgroup -g 1001 -S nodejs && adduser -S fastify -u 1001
 
-# Copy the built API and all production node_modules (hoisted)
-COPY --from=builder --chown=fastify:nodejs /app/node_modules           ./node_modules
-COPY --from=builder --chown=fastify:nodejs /app/package.json           ./package.json
-COPY --from=builder --chown=fastify:nodejs /app/pnpm-workspace.yaml    ./pnpm-workspace.yaml
-COPY --from=builder --chown=fastify:nodejs /app/apps/api/package.json  ./apps/api/package.json
-COPY --from=builder --chown=fastify:nodejs /app/apps/api/dist          ./apps/api/dist
-COPY --from=builder --chown=fastify:nodejs /app/apps/api/drizzle       ./apps/api/drizzle
-COPY --from=builder --chown=fastify:nodejs /app/apps/api/node_modules  ./apps/api/node_modules
-COPY --from=builder --chown=fastify:nodejs /app/packages               ./packages
+# Copy source + all workspace deps. We run via tsx at runtime instead of
+# compiled dist/ because:
+#   - The monorepo's tsconfig uses @/ path aliases that tsc alone doesn't
+#     rewrite; tsx resolves them transparently (same as `pnpm dev`).
+#   - packages/core-engine's compiled output has some extension-less imports
+#     that break under strict Node ESM; tsx handles extension resolution.
+# Once tsc + tsc-alias + extension-fixups are fully wired for production
+# builds, swap back to `node dist/server.js`.
+COPY --from=builder --chown=fastify:nodejs /app/node_modules            ./node_modules
+COPY --from=builder --chown=fastify:nodejs /app/package.json            ./package.json
+COPY --from=builder --chown=fastify:nodejs /app/pnpm-workspace.yaml     ./pnpm-workspace.yaml
+COPY --from=builder --chown=fastify:nodejs /app/apps/api/package.json   ./apps/api/package.json
+COPY --from=builder --chown=fastify:nodejs /app/apps/api/tsconfig.json  ./apps/api/tsconfig.json
+COPY --from=builder --chown=fastify:nodejs /app/apps/api/src            ./apps/api/src
+COPY --from=builder --chown=fastify:nodejs /app/apps/api/drizzle        ./apps/api/drizzle
+COPY --from=builder --chown=fastify:nodejs /app/apps/api/node_modules   ./apps/api/node_modules
+COPY --from=builder --chown=fastify:nodejs /app/packages                ./packages
 
 USER fastify
 WORKDIR /app/apps/api
@@ -88,6 +96,7 @@ ENV PORT=8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
   CMD node -e "require('http').get('http://127.0.0.1:' + (process.env.PORT||8787) + '/health', (r) => { if (r.statusCode !== 200) throw new Error(r.statusCode) })"
 
-# Apply any pending Drizzle migrations, then launch the server. Idempotent:
+# Apply any pending Drizzle migrations, then launch the server via tsx
+# (resolves @/ path aliases + extension-less imports). Idempotent:
 # drizzle-orm records applied migrations in its own __drizzle_migrations table.
-CMD ["sh", "-c", "node dist/db/migrate.js && exec node dist/server.js"]
+CMD ["sh", "-c", "npx -y tsx src/db/migrate.ts && exec npx -y tsx src/server.ts"]
