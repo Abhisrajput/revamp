@@ -1,7 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { usePipelineStore } from '../stores/pipeline-store';
 import { usePipelineActivityStore } from '../stores/pipeline-activity-store';
-import { useAuthStore } from '../stores/auth-store';
 import { stageRequiresApproval } from '../types/stage';
 import { getApiClient } from '../api/types';
 import { getNotifier } from '../api/notifications';
@@ -275,8 +274,6 @@ export function useStageExecution(): UseStageExecutionReturn {
         }
       });
 
-      const authToken = useAuthStore.getState().token;
-
       // Subscribe to pipeline events via WebSocket BEFORE starting execution
       const topic = `pipeline:${pipelineRunId}`;
       let unsubscribed = false;
@@ -323,12 +320,12 @@ export function useStageExecution(): UseStageExecutionReturn {
       }
 
       // HTTP POST to start execution (no streaming response expected)
+      // Auth is handled by the /api/fastify proxy (Bearer token attached server-side).
       fetch(`${getBaseUrl()}/pipeline/${pipelineRunId}/stage/${stageName}`, {
         method: 'POST',
         credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
         },
         body: JSON.stringify({
           skip_llm_eval: options.skipLlmEval ?? false,
@@ -675,18 +672,16 @@ export function useStageExecution(): UseStageExecutionReturn {
         setProgress(100);
 
         // FORGE: fetch modernized file contents from API after completion
+        // Auth is handled by the /api/fastify proxy (Bearer token attached server-side).
         if (stageName === 'FORGE' && s.currentPipelineRunId) {
           const pipeId = s.currentPipelineRunId;
-          const authToken = useAuthStore.getState().token;
-          const headers: Record<string, string> = {};
-          if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
 
-          fetch(`${getBaseUrl()}/pipeline/${pipeId}/modernized-files`, { headers })
+          fetch(`${getBaseUrl()}/pipeline/${pipeId}/modernized-files`, { credentials: 'include' })
             .then((r) => r.json())
             .then((data) => {
               const files = data?.files || [];
               for (const file of files) {
-                fetch(`${getBaseUrl()}/pipeline/${pipeId}/modernized-files/${file.id}`, { headers })
+                fetch(`${getBaseUrl()}/pipeline/${pipeId}/modernized-files/${file.id}`, { credentials: 'include' })
                   .then((r) => r.json())
                   .then((detail) => {
                     if (detail?.content) {

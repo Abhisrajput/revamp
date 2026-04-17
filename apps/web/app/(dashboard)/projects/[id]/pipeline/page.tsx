@@ -46,7 +46,6 @@ export default function PipelinePage() {
 
   // ─── Auth ──────────────────────────────────────────────────
   const user = useAuthStore((s) => s.user);
-  const authToken = useAuthStore((s) => s.token);
   const userRole = user?.role ?? 'developer';
 
   // ─── React Query: Single source of truth for pipeline data ──────
@@ -1150,7 +1149,6 @@ export default function PipelinePage() {
         <ExportDialog
           projectId={projectId}
           projectName={project?.name ?? 'project'}
-          token={authToken}
           onClose={() => setExportDialogOpen(false)}
         />
       )}

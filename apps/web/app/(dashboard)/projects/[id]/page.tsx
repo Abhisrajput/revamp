@@ -26,7 +26,6 @@ import Link from 'next/link';
 import { apiClient } from '@/lib/api-client';
 import { usePipelineStore } from '@revamp/core/stores/pipeline-store';
 import { usePipelineActivityStore } from '@revamp/core/stores/pipeline-activity-store';
-import { useAuthStore } from '@revamp/core/stores/auth-store';
 import { STAGE_DISPLAY_LABELS } from '@revamp/shared-types';
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────
@@ -134,7 +133,6 @@ export default function ProjectDetailPage() {
   const projectId = params.id as string;
   const pipelineStages = usePipelineStore((s) => s.stages);
   const setActiveStage = usePipelineStore((s) => s.setActiveStage);
-  const token = useAuthStore((s) => s.token);
   const [showExport, setShowExport] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
@@ -526,7 +524,6 @@ export default function ProjectDetailPage() {
         <ExportDialog
           projectId={projectId}
           projectName={project.name}
-          token={token}
           onClose={() => setShowExport(false)}
         />
       )}

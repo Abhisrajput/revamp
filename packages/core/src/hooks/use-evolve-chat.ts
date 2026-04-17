@@ -1,7 +1,6 @@
 
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { useAuthStore } from '../stores/auth-store';
 import { getApiClient } from '../api/types';
 import { getWSManager } from '../api/ws';
 import type { WSEvent } from '../api/ws';
@@ -98,15 +97,15 @@ export function useEvolveChat(pipelineRunId: string | null): UseEvolveChatReturn
       });
 
       // Send message via HTTP POST (no streaming response)
+      // Auth is handled by the /api/fastify proxy (Bearer token attached server-side).
       try {
-        const token = useAuthStore.getState().token;
-        const apiUrl = (getApiClient() as any).getBaseUrl?.() || 'http://localhost:8787';
+        const apiUrl = (getApiClient() as any).getBaseUrl?.() || '/api/fastify';
 
         const response = await fetch(`${apiUrl}/pipeline/${pipelineRunId}/chat`, {
           method: 'POST',
+          credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
           body: JSON.stringify({
             message: text,
