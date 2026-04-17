@@ -120,6 +120,39 @@ else
   fi
 fi
 
+# ─── patch realm-export with PUBLIC_HOST ────────────────────────────────────
+# Keycloak's realm-export.json hardcodes redirect URIs for localhost + lamp.tavant.com.
+# For an IP deploy we need to inject the current PUBLIC_HOST so the OIDC callback
+# is allowed. Realms are only imported on FIRST boot — if keycloak-db already has
+# data, this has no effect (use the admin console at /kc/admin/ to add URIs).
+REALM_SRC="${REPO_ROOT}/infra/docker/keycloak/realm-export.json"
+if [[ -f "${REALM_SRC}" ]] && ! grep -q "http://${PUBLIC_HOST}/auth/callback" "${REALM_SRC}"; then
+  # Add IP-based redirect + web origin next to the localhost entries. Idempotent.
+  tmp=$(mktemp)
+  python3 - "$REALM_SRC" "$PUBLIC_HOST" > "$tmp" <<'PY' && mv "$tmp" "$REALM_SRC"
+import json, sys
+path, host = sys.argv[1], sys.argv[2]
+with open(path) as f: data = json.load(f)
+for c in data.get("clients", []):
+    if c.get("clientId") == "revamp-web":
+        for url in (f"http://{host}/auth/callback",):
+            if url not in c.setdefault("redirectUris", []):
+                c["redirectUris"].append(url)
+        for url in (f"http://{host}",):
+            if url not in c.setdefault("webOrigins", []):
+                c["webOrigins"].append(url)
+        for url in (f"http://{host}/",):
+            attrs = c.setdefault("attributes", {})
+            existing = attrs.get("post.logout.redirect.uris", "")
+            parts = [p for p in existing.split("##") if p]
+            if url not in parts:
+                parts.append(url)
+            attrs["post.logout.redirect.uris"] = "##".join(parts)
+print(json.dumps(data, indent=2))
+PY
+  echo "[setup] Injected ${PUBLIC_HOST} into realm-export.json redirect URIs"
+fi
+
 # ─── build + start ───────────────────────────────────────────────────────────
 echo "[setup] Building images + starting stack (first run: ~8-12 min)..."
 docker compose --env-file "${ENV_PATH}" -f docker-compose.aws-ip.yml up -d --build

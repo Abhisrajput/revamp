@@ -160,6 +160,11 @@ services:
     build:
       context: ../..
       dockerfile: infra/docker/Dockerfile.web
+      # NEXT_PUBLIC_* vars are INLINED at build time by Next.js — they must be
+      # passed as build args, not just runtime env. If you change PUBLIC_HOST
+      # after building, rebuild with `docker compose build revamp-web`.
+      args:
+        NEXT_PUBLIC_APP_URL: https://${PUBLIC_HOST}
     container_name: revamp-web
     depends_on: [revamp-api]
     environment:
