@@ -1,32 +1,46 @@
-import { useCallback } from 'react';
-import { getApiClient } from '../api/types';
-import { useAuthStore } from '../stores/auth-store';
+"use client";
+
+import { useQuery } from "@tanstack/react-query";
+
+interface User {
+  id: string;
+  email: string;
+  name?: string;
+  role: "admin" | "architect" | "developer" | "sme";
+}
 
 export function useAuth() {
-  const { user, isAuthenticated, setAuth, clearAuth } = useAuthStore();
+  const q = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: async (): Promise<{ user: User | null }> => {
+      // Use native fetch so this works without the injected axios client.
+      // Credentials (iron-session cookie) are sent automatically.
+      const r = await fetch("/api/auth/me", { credentials: "include" });
+      if (!r.ok) return { user: null };
+      return r.json() as Promise<{ user: User | null }>;
+    },
+    staleTime: 5 * 60_000,
+  });
 
-  const login = useCallback(async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const response = await getApiClient().post('/auth/login', { email, password });
-      const { token, user: userData } = response.data;
-      if (token && userData) {
-        setAuth(token, userData);
-        return { success: true };
+  return {
+    user: q.data?.user ?? null,
+    isLoading: q.isLoading,
+    login: () => {
+      if (typeof window !== "undefined") {
+        window.location.href = "/auth/login";
       }
-      return { success: false, error: 'No token returned from server' };
-    } catch (err: any) {
-      const msg =
-        err?.response?.data?.error ||
-        err?.response?.data?.message ||
-        err?.message ||
-        `HTTP ${err?.response?.status ?? 'unknown'}`;
-      return { success: false, error: msg };
-    }
-  }, [setAuth]);
-
-  const logout = useCallback(() => {
-    clearAuth();
-  }, [clearAuth]);
-
-  return { login, logout, user, isAuthenticated };
+    },
+    logout: () => {
+      if (typeof window !== "undefined") {
+        window.location.href = "/auth/logout";
+      }
+    },
+    // Legacy stub — credential-based login is now handled by Keycloak OIDC.
+    // Consumers that still call this will get a loud runtime error prompting migration.
+    loginWithCredentials: (_email: string, _password: string): Promise<{ success: boolean; error?: string }> => {
+      throw new Error(
+        "loginWithCredentials() removed: use Keycloak OIDC via /auth/login instead",
+      );
+    },
+  };
 }
