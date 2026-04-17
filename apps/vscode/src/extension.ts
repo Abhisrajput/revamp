@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { getApiClient, setAuthToken, getAuthToken } from "./services/api-client.js";
+import { getApiClient } from "./services/api-client.js";
 import { getConfig } from "./utils/config.js";
 import { analyzeCodeCommand } from "./commands/analyze.js";
 import { modernizeFileCommand } from "./commands/modernize.js";
@@ -7,6 +7,8 @@ import { runPipelineCommand } from "./commands/pipeline.js";
 import { ProjectTreeDataProvider } from "./providers/project-tree.js";
 import { PipelineViewDataProvider } from "./providers/pipeline-view.js";
 import { DashboardPanelProvider } from "./providers/dashboard-panel.js";
+import { startDeviceFlow, getAccessToken, signOut } from "./auth/device-flow.js";
+import { llmStreamClient } from "./services/llm-stream.js";
 
 let extensionContext: vscode.ExtensionContext | null = null;
 
@@ -21,21 +23,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
   console.log("REVAMP extension activating...");
 
-  // Try to restore auth token from secrets
-  const savedToken = await context.secrets.get("revamp.authToken");
+  // Wire the ExtensionContext into services that need secret-based auth
+  llmStreamClient.setContext(context);
+
+  // Try to restore Keycloak token from secrets and attach to API client
+  const savedToken = await getAccessToken(context);
   if (savedToken) {
     await apiClient.setAuthToken(savedToken);
-
-    try {
-      const verification = await apiClient.verifyToken();
-      if (verification.valid) {
-        vscode.commands.executeCommand("setContext", "revamp.authenticated", true);
-      } else {
-        await context.secrets.delete("revamp.authToken");
-      }
-    } catch {
-      await context.secrets.delete("revamp.authToken");
-    }
+    vscode.commands.executeCommand("setContext", "revamp.authenticated", true);
   }
 
   // Register commands
@@ -87,42 +82,24 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Auth commands
+  // Keycloak device-code auth commands
   context.subscriptions.push(
-    vscode.commands.registerCommand("revamp.signin", async () => {
-      const email = await vscode.window.showInputBox({
-        prompt: "Email",
-        placeHolder: "you@example.com",
-      });
-
-      if (!email) return;
-
-      const password = await vscode.window.showInputBox({
-        prompt: "Password",
-        password: true,
-      });
-
-      if (!password) return;
-
+    vscode.commands.registerCommand("revamp.signIn", async () => {
       try {
-        const result = await apiClient.signin(email, password);
-        await context.secrets.store("revamp.authToken", result.token);
-        await apiClient.setAuthToken(result.token);
-
+        const bundle = await startDeviceFlow(context);
+        await apiClient.setAuthToken(bundle.access_token);
         vscode.commands.executeCommand("setContext", "revamp.authenticated", true);
-        vscode.window.showInformationMessage(`Welcome, ${result.user.first_name}!`);
-      } catch (error) {
-        vscode.window.showErrorMessage(`Sign in failed: ${error}`);
+        vscode.window.showInformationMessage("Signed in to REVAMP.");
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`Sign-in failed: ${err.message}`);
       }
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand("revamp.logout", async () => {
-      await context.secrets.delete("revamp.authToken");
+    }),
+    vscode.commands.registerCommand("revamp.signOut", async () => {
+      await signOut(context);
+      apiClient.clearAuthToken();
       vscode.commands.executeCommand("setContext", "revamp.authenticated", false);
-      vscode.window.showInformationMessage("Signed out successfully");
-    })
+      vscode.window.showInformationMessage("Signed out of REVAMP.");
+    }),
   );
 
   // Register tree data providers
@@ -147,8 +124,12 @@ export async function activate(context: vscode.ExtensionContext) {
     )
   );
 
-  // Auto-refresh UI periodically
-  setInterval(() => {
+  // Auto-refresh UI periodically; also re-attach the latest token on each tick
+  setInterval(async () => {
+    const token = await getAccessToken(context);
+    if (token) {
+      await apiClient.setAuthToken(token);
+    }
     projectTreeProvider.refresh();
     pipelineViewProvider.refresh();
   }, 30000); // Every 30 seconds
