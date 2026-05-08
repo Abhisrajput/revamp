@@ -14,11 +14,19 @@ export interface RevampSession {
   oidc_state?: string;
 }
 
+// SESSION_COOKIE_SECURE lets the operator force the Secure cookie flag off for
+// non-TLS deployments (e.g. a demo behind a plain-http EC2 IP). Default is
+// "secure = NODE_ENV === production", matching normal behaviour.
+const secureCookie =
+  process.env.SESSION_COOKIE_SECURE != null
+    ? process.env.SESSION_COOKIE_SECURE !== "false"
+    : process.env.NODE_ENV === "production";
+
 const options: SessionOptions = {
   password: process.env.SESSION_SECRET!,
   cookieName: "revamp_session",
   cookieOptions: {
-    secure: process.env.NODE_ENV === "production",
+    secure: secureCookie,
     sameSite: "lax",
     httpOnly: true,
     path: "/",

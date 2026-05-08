@@ -1,49 +1,66 @@
-# Multi-stage build for Next.js production image
+# Multi-stage build for the Next.js web app (pnpm monorepo).
+#
+# Relies on `output: 'standalone'` in apps/web/next.config.ts so the runtime
+# image only carries the minimal node_modules subset Next traces.
 
+# ─── deps: install pnpm + all workspace deps ────────────────────────────────
 FROM node:20-alpine AS deps
+RUN apk add --no-cache libc6-compat python3 make g++ git
+RUN corepack enable && corepack prepare pnpm@9 --activate
 WORKDIR /app
-COPY package*.json pnpm-lock.yaml* ./
-RUN npm install -g pnpm && pnpm install --frozen-lockfile
 
+COPY package.json pnpm-workspace.yaml turbo.json ./
+COPY pnpm-lock.yaml* ./
+COPY apps/api/package.json            apps/api/
+COPY apps/web/package.json            apps/web/
+COPY apps/vscode/package.json         apps/vscode/
+COPY packages/core/package.json       packages/core/
+COPY packages/core-engine/package.json packages/core-engine/
+COPY packages/shared-types/package.json packages/shared-types/
+COPY packages/ui/package.json         packages/ui/
+COPY packages/views/package.json      packages/views/
+# NOTE: packages/config/ is a folder of shared eslint/tailwind/tsconfig
+# fragments (no package.json of its own), consumed via relative paths — not
+# a workspace package, so nothing to install from it.
+
+RUN pnpm install --no-frozen-lockfile
+
+# ─── builder: build the web app via turbo (resolves workspace deps) ─────────
 FROM node:20-alpine AS builder
+RUN corepack enable && corepack prepare pnpm@9 --activate
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app ./
 COPY . .
 
-# Build arguments
-ARG NEXT_PUBLIC_API_URL
-ARG NEXT_PUBLIC_WS_URL
-
-ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
-ENV NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL}
+ARG NEXT_PUBLIC_APP_URL
+ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
 
-# Build the application
-RUN npm run build
+RUN pnpm turbo build --filter=@revamp/web...
 
+# ─── runner: Next.js standalone server ──────────────────────────────────────
 FROM node:20-alpine AS runner
 WORKDIR /app
-
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# Create unprivileged user
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nextjs -u 1001
+RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
 
-# Copy built application from builder
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
+# Next's standalone output puts a minimal server at <root>/apps/web/server.js
+# with only the node_modules it needs, tracing via outputFileTracingRoot.
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static     ./apps/web/.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/public           ./apps/web/public
 
 USER nextjs
+WORKDIR /app/apps/web
 
 EXPOSE 3000
-
 ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
+  CMD node -e "require('http').get('http://127.0.0.1:' + (process.env.PORT||3000) + '/', (r) => { if (r.statusCode >= 500) throw new Error(r.statusCode) })"
 
 CMD ["node", "server.js"]

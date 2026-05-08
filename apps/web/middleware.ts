@@ -28,11 +28,18 @@ async function isSetupComplete(): Promise<boolean> {
 
 // ---------------------------------------------------------------------------
 
+// Match the session lib: allow SESSION_COOKIE_SECURE override for non-TLS
+// deployments (demo on a plain-http IP). Default preserves production behaviour.
+const secureCookie =
+  process.env.SESSION_COOKIE_SECURE != null
+    ? process.env.SESSION_COOKIE_SECURE !== "false"
+    : process.env.NODE_ENV === "production";
+
 const options: SessionOptions = {
   password: process.env.SESSION_SECRET!,
   cookieName: "revamp_session",
   cookieOptions: {
-    secure: process.env.NODE_ENV === "production",
+    secure: secureCookie,
     sameSite: "lax",
     httpOnly: true,
     path: "/",

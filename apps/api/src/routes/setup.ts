@@ -15,16 +15,23 @@ const setupRoutes: FastifyPluginAsync = async (app) => {
 
   // Step 1 — create realm admin
   app.post("/setup/realm-admin", async (req: any, reply) => {
-    const { token, email, firstName, lastName } = req.body ?? {};
+    const { token, email, password, firstName, lastName } = req.body ?? {};
     if (!token || !(await verifyBootstrapToken(token))) {
       return reply.code(401).send({ error: "Invalid bootstrap token" });
     }
+    if (!email) return reply.code(400).send({ error: "email is required" });
     const kc = new KeycloakAdmin();
-    const sub = await kc.createUser("revamp", { email, firstName, lastName, enabled: true });
+    const sub = await kc.createUser("revamp", {
+      email,
+      firstName,
+      lastName,
+      enabled: true,
+      requiredActions: [], // admin sets their password directly; no UPDATE_PASSWORD required-action
+    });
     await kc.assignRealmRoleToUser("revamp", sub, "admin");
-    // Note: password setting moves to Task 12 (wizard UI); the created user has
-    // no credential here and must get one via Keycloak's password-reset flow OR
-    // via an admin reset API call that Task 12 will add.
+    if (password && typeof password === "string" && password.length > 0) {
+      await kc.setUserPassword("revamp", sub, password, false);
+    }
     return { ok: true, userId: sub };
   });
 

@@ -2,7 +2,7 @@
   "realm": "revamp",
   "enabled": true,
   "displayName": "REVAMP",
-  "sslRequired": "external",
+  "sslRequired": "none",
   "registrationAllowed": false,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,

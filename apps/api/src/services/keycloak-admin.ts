@@ -76,10 +76,16 @@ export class KeycloakAdmin {
   }
 
   async createUser(realm: string, input: CreateUserInput): Promise<string> {
+    // Keycloak 25 requires `username` on user creation even when the realm has
+    // loginWithEmailAllowed=true. Default to the email when caller didn't supply one.
     const res = await this.authed(`/admin/realms/${realm}/users`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...input, enabled: input.enabled ?? true }),
+      body: JSON.stringify({
+        username: (input as { username?: string }).username ?? input.email,
+        ...input,
+        enabled: input.enabled ?? true,
+      }),
     });
     if (res.status !== 201) throw new Error(`createUser failed: ${res.status} ${await res.text()}`);
     const loc = res.headers.get("Location") || "";
@@ -95,6 +101,15 @@ export class KeycloakAdmin {
     if (!res.ok) throw new Error(`findUserByEmail failed: ${res.status}`);
     const users = (await res.json()) as Array<{ id: string; email: string }>;
     return users[0]?.id ?? null;
+  }
+
+  async setUserPassword(realm: string, userId: string, password: string, temporary = false): Promise<void> {
+    const res = await this.authed(`/admin/realms/${realm}/users/${userId}/reset-password`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "password", value: password, temporary }),
+    });
+    if (res.status !== 204) throw new Error(`setUserPassword failed: ${res.status} ${await res.text()}`);
   }
 
   async assignRealmRoleToUser(realm: string, userId: string, roleName: string): Promise<void> {

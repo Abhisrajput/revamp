@@ -1,0 +1,304 @@
+/* REVAMP / AIgnite branded Keycloak login theme.
+ * Mirrors the previous apps/web/app/(auth)/login/page.tsx styling.
+ */
+
+:root {
+  --revamp-slate-50:  #f8fafc;
+  --revamp-slate-100: #f1f5f9;
+  --revamp-slate-200: #e2e8f0;
+  --revamp-slate-300: #cbd5e1;
+  --revamp-slate-500: #64748b;
+  --revamp-slate-600: #475569;
+  --revamp-slate-700: #334155;
+  --revamp-slate-900: #0f172a;
+  --revamp-slate-950: #020617;
+  --revamp-primary-500: #3b82f6;
+  --revamp-primary-600: #2563eb;
+  --revamp-primary-700: #1d4ed8;
+  --revamp-red-50:  #fef2f2;
+  --revamp-red-200: #fecaca;
+  --revamp-red-600: #dc2626;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  background: linear-gradient(135deg, var(--revamp-slate-50) 0%, var(--revamp-slate-100) 100%);
+  color: var(--revamp-slate-900);
+  -webkit-font-smoothing: antialiased;
+}
+
+.login-pf body {
+  background: linear-gradient(135deg, var(--revamp-slate-50) 0%, var(--revamp-slate-100) 100%);
+}
+
+#kc-header {
+  margin: 0 0 2rem 0;
+  width: 100%;
+  max-width: 28rem;
+}
+#kc-header-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--revamp-slate-900);
+  padding: 0;
+  background: transparent;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+#kc-header-wrapper .tavant {
+  color: var(--revamp-slate-500);
+  letter-spacing: 0.12em;
+  font-weight: 700;
+}
+#kc-header-wrapper .sep {
+  color: var(--revamp-slate-600);
+  font-weight: 400;
+}
+#kc-header-wrapper .logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  background: var(--revamp-primary-500);
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1;
+}
+
+.login-pf-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+}
+
+/* Brand header (TAVANT | </> AIgnite) injected via ::before on the page */
+.login-pf-page::before {
+  content: "";
+  display: block;
+  width: 100%;
+  max-width: 28rem;
+  margin-bottom: 2rem;
+}
+.login-pf-page #revamp-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+  font-weight: 700;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: var(--revamp-slate-900);
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+.login-pf-page #revamp-brand .tavant {
+  color: var(--revamp-slate-500);
+  letter-spacing: 0.12em;
+}
+.login-pf-page #revamp-brand .sep {
+  color: var(--revamp-slate-600);
+}
+.login-pf-page #revamp-brand .logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  background: var(--revamp-primary-500);
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Card */
+.card-pf, .login-pf .card-pf, .login-pf-page .card-pf {
+  width: 100%;
+  max-width: 28rem;
+  padding: 2rem;
+  background: #fff;
+  border: 1px solid var(--revamp-slate-200);
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 15px -3px rgba(15, 23, 42, 0.08), 0 4px 6px -4px rgba(15, 23, 42, 0.06);
+  margin: 0 auto;
+}
+
+/* Heading styling (the "Sign in to your account" text) */
+#kc-page-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--revamp-slate-900);
+  margin: 0 0 0.25rem 0;
+  padding: 0;
+  text-align: left;
+}
+#kc-page-title + * { /* subtitle spacing */
+  margin-top: 0.25rem;
+}
+.login-pf-page .subtitle {
+  display: none;
+}
+
+/* Form */
+form#kc-form-login {
+  margin-top: 1.25rem;
+}
+#kc-form-login .form-group {
+  margin-bottom: 1rem;
+}
+#kc-form-login label,
+.pf-c-form__label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--revamp-slate-700);
+  margin-bottom: 0.375rem;
+}
+input[type="text"],
+input[type="email"],
+input[type="password"],
+.pf-c-form-control {
+  display: block;
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  color: var(--revamp-slate-900);
+  background: #fff;
+  border: 1px solid var(--revamp-slate-300);
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+  box-sizing: border-box;
+}
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+.pf-c-form-control:focus {
+  outline: none;
+  border-color: var(--revamp-primary-500);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+}
+
+/* Forgot-password link */
+#kc-form-options a, #kc-registration a, .kc-form-buttons a,
+a:not([data-cta]):not(.btn-primary) {
+  color: var(--revamp-primary-600);
+  font-size: 0.875rem;
+  text-decoration: none;
+}
+#kc-form-options a:hover, #kc-registration a:hover {
+  text-decoration: underline;
+}
+
+/* Primary button */
+.btn-primary,
+#kc-login,
+.pf-c-button.pf-m-primary,
+input[type="submit"].btn-primary {
+  width: 100%;
+  padding: 0.625rem 1rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--revamp-primary-600);
+  border: 1px solid var(--revamp-primary-600);
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+  margin-top: 0.5rem;
+}
+.btn-primary:hover, #kc-login:hover, .pf-c-button.pf-m-primary:hover {
+  background: var(--revamp-primary-700);
+  border-color: var(--revamp-primary-700);
+}
+.btn-primary:focus, #kc-login:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.35);
+}
+
+/* Feedback messages */
+.alert, .pf-c-alert {
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+.alert.alert-error, .alert-danger, .pf-c-alert.pf-m-danger {
+  background: var(--revamp-red-50);
+  border: 1px solid var(--revamp-red-200);
+  color: var(--revamp-red-600);
+}
+
+/* Social-provider buttons (federated IdP) */
+#kc-social-providers {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--revamp-slate-200);
+}
+#kc-social-providers h4 {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--revamp-slate-500);
+  margin: 0 0 0.75rem 0;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+#kc-social-providers ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+#kc-social-providers a {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--revamp-slate-300);
+  border-radius: 0.5rem;
+  color: var(--revamp-slate-700);
+  text-decoration: none;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  transition: background-color 120ms ease;
+}
+#kc-social-providers a:hover {
+  background: var(--revamp-slate-50);
+}
+
+/* Footer */
+.login-pf-page::after {
+  content: "By using AIgnite, you agree to our Terms of Service and Privacy Policy";
+  display: block;
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--revamp-slate-600);
+  margin-top: 2rem;
+  max-width: 28rem;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Hide things we don't want */
+#kc-info, .login-pf-signup, #kc-registration-container {
+  display: none;
+}
